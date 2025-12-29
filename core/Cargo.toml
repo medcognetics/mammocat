@@ -35,3 +35,7 @@ json = ["serde", "serde_json"]
 [[bin]]
 name = "mammocat"
 path = "src/main.rs"
+
+[[bin]]
+name = "mammoselect"
+path = "src/bin/mammoselect.rs"

@@ -107,6 +107,15 @@ pub fn get_multi_string_value(dcm: &InMemDicomObject, tag: Tag) -> Option<Vec<St
     })
 }
 
+/// Helper to get u16 value from DICOM tag
+///
+/// Returns `None` if the tag is not present or cannot be converted to u16
+pub fn get_u16_value(dcm: &InMemDicomObject, tag: Tag) -> Option<u16> {
+    dcm.element(tag)
+        .ok()
+        .and_then(|elem| elem.to_int::<u16>().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

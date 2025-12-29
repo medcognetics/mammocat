@@ -2,9 +2,11 @@ pub mod api;
 pub mod cli;
 pub mod error;
 pub mod extraction;
+pub mod selection;
 pub mod types;
 
 pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
 pub use error::{MammocatError, Result};
+pub use selection::{get_preferred_views, MammogramRecord};
 pub use types::*;

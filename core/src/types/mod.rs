@@ -6,4 +6,4 @@ mod view;
 pub use enums::{Laterality, MammogramType, PhotometricInterpretation, ViewPosition};
 pub use image_type::ImageType;
 pub use pixel_spacing::PixelSpacing;
-pub use view::MammogramView;
+pub use view::{MammogramView, STANDARD_MAMMO_VIEWS};

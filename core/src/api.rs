@@ -1,5 +1,8 @@
 use crate::error::Result;
-use crate::extraction::tags::{get_string_value, BREAST_IMPLANT_PRESENT, PRESENTATION_INTENT_TYPE};
+use crate::extraction::tags::{
+    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, MANUFACTURER, MANUFACTURER_MODEL_NAME,
+    NUMBER_OF_FRAMES, PRESENTATION_INTENT_TYPE,
+};
 use crate::extraction::{
     extract_image_type, extract_laterality, extract_mammogram_type, extract_view_position,
 };
@@ -50,6 +53,9 @@ impl MammogramExtractor {
             image_type: extract_image_type(dcm),
             is_for_processing: Self::extract_for_processing(dcm),
             has_implant: Self::extract_implant_status(dcm),
+            manufacturer: get_string_value(dcm, MANUFACTURER),
+            model: get_string_value(dcm, MANUFACTURER_MODEL_NAME),
+            number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
         })
     }
 
@@ -91,6 +97,15 @@ pub struct MammogramMetadata {
 
     /// Whether breast implant is present
     pub has_implant: bool,
+
+    /// Manufacturer name
+    pub manufacturer: Option<String>,
+
+    /// Manufacturer model name
+    pub model: Option<String>,
+
+    /// Number of frames (for DBT/tomosynthesis)
+    pub number_of_frames: i32,
 }
 
 impl MammogramMetadata {
@@ -123,6 +138,9 @@ mod tests {
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
+            manufacturer: Some("Test Manufacturer".to_string()),
+            model: Some("Test Model".to_string()),
+            number_of_frames: 1,
         };
 
         let view = metadata.mammogram_view();
@@ -141,6 +159,9 @@ mod tests {
             image_type: ImageType::new("DERIVED".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
+            manufacturer: Some("Test Manufacturer".to_string()),
+            model: Some("Test Model".to_string()),
+            number_of_frames: 50,
         };
 
         assert!(!metadata.is_2d());

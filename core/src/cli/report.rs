@@ -34,6 +34,17 @@ impl<'a> fmt::Display for TextReport<'a> {
             self.metadata.view_position.simple_name()
         )?;
         writeln!(f, "Image Type:     {}", self.metadata.image_type)?;
+        writeln!(
+            f,
+            "Manufacturer:   {}",
+            self.metadata.manufacturer.as_deref().unwrap_or("unknown")
+        )?;
+        writeln!(
+            f,
+            "Model:          {}",
+            self.metadata.model.as_deref().unwrap_or("unknown")
+        )?;
+        writeln!(f, "Frames:         {}", self.metadata.number_of_frames)?;
         writeln!(f, "For Processing: {}", self.metadata.is_for_processing)?;
         writeln!(f, "Has Implant:    {}", self.metadata.has_implant)?;
         writeln!(f)?;
@@ -62,6 +73,9 @@ mod tests {
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
+            manufacturer: Some("Test Manufacturer".to_string()),
+            model: Some("Test Model".to_string()),
+            number_of_frames: 1,
         };
 
         let report = TextReport::new(&metadata);
@@ -71,5 +85,8 @@ mod tests {
         assert!(output.contains("Type:           ffdm"));
         assert!(output.contains("Laterality:     left"));
         assert!(output.contains("View Position:  cc"));
+        assert!(output.contains("Manufacturer:   Test Manufacturer"));
+        assert!(output.contains("Model:          Test Model"));
+        assert!(output.contains("Frames:         1"));
     }
 }

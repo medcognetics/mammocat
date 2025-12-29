@@ -67,9 +67,9 @@ pub fn extract_mammogram_type_impl(
         .unwrap_or_default()
         .to_lowercase();
 
-    // If fields 1 and 2 were missing, we know nothing
+    // If fields 1 and 2 were missing, default to FFDM
     if img_type.pixels.is_empty() || img_type.exam.is_empty() {
-        return Ok(MammogramType::Unknown);
+        return Ok(MammogramType::Ffdm);
     }
 
     // 4. Apply classification rules
