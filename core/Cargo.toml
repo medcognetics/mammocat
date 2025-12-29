@@ -1,15 +1,37 @@
 [package]
-name = "rust-template-core"
+name = "mammocat-core"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# DICOM handling
+dicom = "0.7.0"
+dicom-core = "0.7.0"
+dicom-dictionary-std = "0.7.0"
+dicom-object = "0.7.0"
 
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Utilities
+regex = "1.10"
+log = "0.4"
+env_logger = "0.11"
+
+# Optional: JSON output
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"
 rstest = "0.19"
 
+[features]
+json = ["serde", "serde_json"]
+
 [[bin]]
-name = "rust-template"
+name = "mammocat"
 path = "src/main.rs"
