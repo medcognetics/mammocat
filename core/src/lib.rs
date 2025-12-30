@@ -5,6 +5,10 @@ pub mod extraction;
 pub mod selection;
 pub mod types;
 
+// Python bindings module (optional)
+#[cfg(feature = "python")]
+pub mod python;
+
 pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
 pub use error::{MammocatError, Result};
