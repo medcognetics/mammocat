@@ -89,6 +89,10 @@ pub fn extract_mammogram_type_impl(
     }
 
     // Ok rules
+    if flavor.contains("tomo_2d") {
+        return Ok(MammogramType::Synth);
+    }
+
     if let Some(ref extras) = img_type.extras {
         if extras
             .iter()
@@ -134,15 +138,82 @@ pub fn extract_image_type(dcm: &InMemDicomObject) -> ImageType {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_extract_image_type_basic() {
-        // Note: This is a minimal test. Full tests require actual DICOM objects
-        // which will be added in integration tests
+    use super::*;
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_object::InMemDicomObject;
+
+    /// Helper to create a minimal DICOM object for testing
+    fn create_test_dicom(image_type: &str, modality: &str) -> InMemDicomObject {
+        let mut obj = InMemDicomObject::new_empty();
+
+        // Add MODALITY tag
+        obj.put(DataElement::new(
+            MODALITY,
+            VR::CS,
+            PrimitiveValue::from(modality),
+        ));
+
+        // Add IMAGE_TYPE tag (multi-valued string)
+        let image_type_parts: Vec<&str> = image_type.split('|').collect();
+        obj.put(DataElement::new(
+            IMAGE_TYPE,
+            VR::CS,
+            PrimitiveValue::Strs(image_type_parts.iter().map(|s| s.to_string()).collect()),
+        ));
+
+        obj
     }
 
     #[test]
-    fn test_mammogram_type_logic() {
-        // Test the classification logic with mock data
-        // Full tests with real DICOM files will be in integration tests
+    fn test_tomo_2d_classification() {
+        // Test that TOMO_2D in flavor field is classified as SYNTH
+        let dcm = create_test_dicom("DERIVED|PRIMARY|TOMO_2D|LEFT", "MG");
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+        assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn test_tomo_2d_case_insensitive() {
+        // Test that the check is case insensitive
+        let dcm = create_test_dicom("DERIVED|PRIMARY|tomo_2d", "MG");
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+        assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn test_original_pixels_classified_as_ffdm() {
+        // Test that ORIGINAL in pixels field is classified as FFDM
+        let dcm = create_test_dicom("ORIGINAL|PRIMARY", "MG");
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+        assert_eq!(result, MammogramType::Ffdm);
+    }
+
+    #[test]
+    fn test_sfm_flag_takes_precedence() {
+        // Test that is_sfm flag takes precedence over other rules
+        let dcm = create_test_dicom("DERIVED|PRIMARY|TOMO_2D", "MG");
+        let result = extract_mammogram_type(&dcm, true).unwrap();
+        assert_eq!(result, MammogramType::Sfm);
+    }
+
+    #[test]
+    fn test_multiframe_classified_as_tomo() {
+        // Test that NumberOfFrames > 1 is classified as TOMO
+        let mut dcm = create_test_dicom("ORIGINAL|PRIMARY", "MG");
+        dcm.put(DataElement::new(
+            NUMBER_OF_FRAMES,
+            VR::IS,
+            PrimitiveValue::from("10"),
+        ));
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+        assert_eq!(result, MammogramType::Tomo);
+    }
+
+    #[test]
+    fn test_default_to_ffdm() {
+        // Test that DERIVED|PRIMARY without special markers defaults to FFDM
+        let dcm = create_test_dicom("DERIVED|PRIMARY", "MG");
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+        assert_eq!(result, MammogramType::Ffdm);
     }
 }
