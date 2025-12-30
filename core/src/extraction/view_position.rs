@@ -3,7 +3,8 @@ use crate::types::ViewPosition;
 use dicom_object::InMemDicomObject;
 
 use super::tags::{
-    get_string_value, CODE_MEANING, VIEW_CODE_SEQUENCE, VIEW_POSITION as VIEW_POSITION_TAG,
+    get_string_value, CODE_MEANING, VIEW_CODE_SEQUENCE, VIEW_MODIFIER_CODE_SEQUENCE,
+    VIEW_POSITION as VIEW_POSITION_TAG,
 };
 
 // Pattern sets for view position matching
@@ -15,38 +16,45 @@ const CV_STRINGS: &[&str] = &["cleavage view", "valley-view"];
 
 /// Extracts view position from DICOM file
 ///
-/// Implements the extraction logic from Python types.py:547-555
+/// Implements the extraction logic from Python types.py:586-594
 ///
 /// # Algorithm
 ///
 /// 1. Extract from ViewPosition tag with pattern matching
-/// 2. If UNKNOWN, fall back to ViewCodeSequence → CodeMeaning
+/// 2. Extract from all ViewCodeSequence → CodeMeaning entries
+/// 3. Extract from all ViewModifierCodeSequence → CodeMeaning entries (including nested)
+/// 4. Return the candidate with the highest enum value (Unknown < Xccl < ... < Cv)
 ///
-/// Note: ViewModifierCodeSequence extraction is not yet implemented as it's
-/// rarely used in practice for primary view position identification.
+/// This matches the Python behavior of combining all sources and selecting the maximum.
 pub fn extract_view_position(dcm: &InMemDicomObject) -> Result<ViewPosition> {
-    // First try ViewPosition tag
+    let mut candidates = Vec::new();
+
+    // Extract from ViewPosition tag (loose mode)
     if let Some(vp) = get_string_value(dcm, VIEW_POSITION_TAG) {
         let result = from_str(&vp, false);
         if !result.is_unknown() {
-            return Ok(result);
+            candidates.push(result);
         }
     }
 
-    // Fall back to ViewCodeSequence
-    if let Some(view_pos) = extract_from_view_code_sequence(dcm) {
-        if !view_pos.is_unknown() {
-            return Ok(view_pos);
-        }
-    }
+    // Extract from ViewCodeSequence (strict mode)
+    candidates.extend(extract_all_from_view_code_sequence(dcm));
 
-    Ok(ViewPosition::Unknown)
+    // Extract from ViewModifierCodeSequence (strict mode, including nested)
+    candidates.extend(extract_all_from_view_modifier_code_sequence(dcm));
+
+    // Return the maximum value (Python: sorted(candidates, key=lambda x: x.value)[-1])
+    // ViewPosition derives Ord, so we can use max() directly
+    Ok(candidates
+        .into_iter()
+        .max()
+        .unwrap_or(ViewPosition::Unknown))
 }
 
-/// Extracts view position from ViewCodeSequence
+/// Extracts all view positions from ViewCodeSequence
 ///
 /// Navigates: ViewCodeSequence items → CodeMeaning
-/// This mirrors the Python implementation in types.py:564-569
+/// This mirrors the Python implementation in types.py:591
 ///
 /// # Arguments
 ///
@@ -54,24 +62,68 @@ pub fn extract_view_position(dcm: &InMemDicomObject) -> Result<ViewPosition> {
 ///
 /// # Returns
 ///
-/// `Some(ViewPosition)` if CodeMeaning is found and valid, `None` otherwise
-fn extract_from_view_code_sequence(dcm: &InMemDicomObject) -> Option<ViewPosition> {
+/// Vector of all valid ViewPosition values found in ViewCodeSequence
+fn extract_all_from_view_code_sequence(dcm: &InMemDicomObject) -> Vec<ViewPosition> {
+    let mut results = Vec::new();
+
     // Try to get ViewCodeSequence
-    dcm.element(VIEW_CODE_SEQUENCE)
-        .ok()
-        .and_then(|seq_elem| seq_elem.items())
-        .and_then(|items| {
-            // Iterate through sequence items to find the first valid CodeMeaning
+    if let Ok(seq_elem) = dcm.element(VIEW_CODE_SEQUENCE) {
+        if let Some(items) = seq_elem.items() {
             for item in items {
                 if let Some(code_meaning) = get_string_value(item, CODE_MEANING) {
                     let view_pos = from_str(&code_meaning, true); // strict mode
                     if !view_pos.is_unknown() {
-                        return Some(view_pos);
+                        results.push(view_pos);
                     }
                 }
             }
-            None
-        })
+        }
+    }
+
+    results
+}
+
+/// Extracts all view positions from ViewModifierCodeSequence
+///
+/// Navigates: ViewModifierCodeSequence items → CodeMeaning
+/// Also recursively checks ViewModifierCodeSequence within ViewCodeSequence items
+/// This mirrors the Python implementation in types.py:53-62 and types.py:592
+///
+/// # Arguments
+///
+/// * `dcm` - DICOM object to extract from
+///
+/// # Returns
+///
+/// Vector of all valid ViewPosition values found in ViewModifierCodeSequence
+fn extract_all_from_view_modifier_code_sequence(dcm: &InMemDicomObject) -> Vec<ViewPosition> {
+    let mut results = Vec::new();
+
+    // Extract from top-level ViewModifierCodeSequence
+    if let Ok(seq_elem) = dcm.element(VIEW_MODIFIER_CODE_SEQUENCE) {
+        if let Some(items) = seq_elem.items() {
+            for item in items {
+                if let Some(code_meaning) = get_string_value(item, CODE_MEANING) {
+                    let view_pos = from_str(&code_meaning, true); // strict mode
+                    if !view_pos.is_unknown() {
+                        results.push(view_pos);
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check ViewModifierCodeSequence nested within ViewCodeSequence items
+    if let Ok(seq_elem) = dcm.element(VIEW_CODE_SEQUENCE) {
+        if let Some(items) = seq_elem.items() {
+            for view_code_item in items {
+                // Recursively extract from nested ViewModifierCodeSequence
+                results.extend(extract_all_from_view_modifier_code_sequence(view_code_item));
+            }
+        }
+    }
+
+    results
 }
 
 /// Parses view position from string
@@ -261,14 +313,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_from_view_code_sequence_empty() {
-        // Empty DICOM should return None
+    fn test_extract_all_from_view_code_sequence_empty() {
+        // Empty DICOM should return empty vector
         let dcm = InMemDicomObject::new_empty();
-        assert!(extract_from_view_code_sequence(&dcm).is_none());
+        assert!(extract_all_from_view_code_sequence(&dcm).is_empty());
     }
 
     #[test]
-    fn test_extract_from_view_code_sequence_cranio_caudal() {
+    fn test_extract_all_from_view_code_sequence_cranio_caudal() {
         // Test the user's example: CodeMeaning = "cranio-caudal" should parse to CC
         let mut dcm = InMemDicomObject::new_empty();
 
@@ -289,12 +341,12 @@ mod tests {
         dcm.put(view_code_seq);
 
         // Test extraction
-        let result = extract_from_view_code_sequence(&dcm);
-        assert_eq!(result, Some(ViewPosition::Cc));
+        let results = extract_all_from_view_code_sequence(&dcm);
+        assert_eq!(results, vec![ViewPosition::Cc]);
     }
 
     #[test]
-    fn test_extract_from_view_code_sequence_mlo() {
+    fn test_extract_all_from_view_code_sequence_mlo() {
         // Test medio-lateral oblique
         let mut dcm = InMemDicomObject::new_empty();
 
@@ -312,8 +364,8 @@ mod tests {
 
         dcm.put(view_code_seq);
 
-        let result = extract_from_view_code_sequence(&dcm);
-        assert_eq!(result, Some(ViewPosition::Mlo));
+        let results = extract_all_from_view_code_sequence(&dcm);
+        assert_eq!(results, vec![ViewPosition::Mlo]);
     }
 
     #[test]
@@ -374,8 +426,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_from_view_code_sequence_multiple_items() {
-        // Test with multiple items in sequence - should return first valid match
+    fn test_extract_all_from_view_code_sequence_multiple_items() {
+        // Test with multiple items in sequence - should return all valid matches
         let mut dcm = InMemDicomObject::new_empty();
 
         // Create first item with invalid CodeMeaning
@@ -386,7 +438,161 @@ mod tests {
         )]);
 
         // Create second item with valid CodeMeaning
-        let valid_item = InMemDicomObject::from_element_iter([DataElement::new(
+        let mlo_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
+        )]);
+
+        // Create third item with another valid CodeMeaning
+        let cc_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("cranio-caudal"),
+        )]);
+
+        let view_code_seq = DataElement::new(
+            VIEW_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![invalid_item, mlo_item, cc_item]),
+        );
+
+        dcm.put(view_code_seq);
+
+        let results = extract_all_from_view_code_sequence(&dcm);
+        assert_eq!(results, vec![ViewPosition::Mlo, ViewPosition::Cc]);
+    }
+
+    #[test]
+    fn test_extract_all_from_view_modifier_code_sequence_empty() {
+        // Empty DICOM should return empty vector
+        let dcm = InMemDicomObject::new_empty();
+        assert!(extract_all_from_view_modifier_code_sequence(&dcm).is_empty());
+    }
+
+    #[test]
+    fn test_extract_all_from_view_modifier_code_sequence_top_level() {
+        // Test extraction from top-level ViewModifierCodeSequence
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Create a ViewModifierCodeSequence item with CodeMeaning "axillary tail"
+        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("axillary tail"),
+        )]);
+
+        let modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![modifier_item]),
+        );
+
+        dcm.put(modifier_seq);
+
+        let results = extract_all_from_view_modifier_code_sequence(&dcm);
+        assert_eq!(results, vec![ViewPosition::At]);
+    }
+
+    #[test]
+    fn test_extract_all_from_view_modifier_code_sequence_nested() {
+        // Test extraction from ViewModifierCodeSequence nested within ViewCodeSequence
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Create a nested ViewModifierCodeSequence within a ViewCodeSequence item
+        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("cleavage view"),
+        )]);
+
+        let modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![modifier_item]),
+        );
+
+        let mut view_code_item = InMemDicomObject::new_empty();
+        view_code_item.put(modifier_seq);
+
+        let view_code_seq = DataElement::new(
+            VIEW_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![view_code_item]),
+        );
+
+        dcm.put(view_code_seq);
+
+        let results = extract_all_from_view_modifier_code_sequence(&dcm);
+        assert_eq!(results, vec![ViewPosition::Cv]);
+    }
+
+    #[test]
+    fn test_extract_all_from_view_modifier_code_sequence_both_levels() {
+        // Test extraction from both top-level and nested ViewModifierCodeSequence
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Top-level ViewModifierCodeSequence with "axillary tail"
+        let top_modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("axillary tail"),
+        )]);
+
+        let top_modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![top_modifier_item]),
+        );
+
+        dcm.put(top_modifier_seq);
+
+        // Nested ViewModifierCodeSequence with "cleavage view"
+        let nested_modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("cleavage view"),
+        )]);
+
+        let nested_modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![nested_modifier_item]),
+        );
+
+        let mut view_code_item = InMemDicomObject::new_empty();
+        view_code_item.put(nested_modifier_seq);
+
+        let view_code_seq = DataElement::new(
+            VIEW_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![view_code_item]),
+        );
+
+        dcm.put(view_code_seq);
+
+        let results = extract_all_from_view_modifier_code_sequence(&dcm);
+        // Should get both: At from top-level and Cv from nested
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&ViewPosition::At));
+        assert!(results.contains(&ViewPosition::Cv));
+    }
+
+    #[test]
+    fn test_extract_view_position_selects_maximum() {
+        // Test that extract_view_position selects the candidate with highest enum value
+        // When we have both CC (value 3) and MLO (value 4), should return MLO
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Add ViewPosition tag with CC
+        dcm.put(DataElement::new(
+            VIEW_POSITION_TAG,
+            VR::CS,
+            dicom_core::value::PrimitiveValue::from("CC"),
+        ));
+
+        // Add ViewCodeSequence with MLO (higher value than CC)
+        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
             CODE_MEANING,
             VR::LO,
             dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
@@ -395,12 +601,133 @@ mod tests {
         let view_code_seq = DataElement::new(
             VIEW_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![invalid_item, valid_item]),
+            DataSetSequence::from(vec![view_code_item]),
         );
 
         dcm.put(view_code_seq);
 
-        let result = extract_from_view_code_sequence(&dcm);
-        assert_eq!(result, Some(ViewPosition::Mlo));
+        // Should return MLO because it has higher enum value than CC
+        let result = extract_view_position(&dcm).unwrap();
+        assert_eq!(result, ViewPosition::Mlo);
+    }
+
+    #[test]
+    fn test_extract_view_position_with_view_modifier() {
+        // Test extraction when ViewPosition comes from ViewModifierCodeSequence
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Add ViewPosition tag with CC
+        dcm.put(DataElement::new(
+            VIEW_POSITION_TAG,
+            VR::CS,
+            dicom_core::value::PrimitiveValue::from("CC"),
+        ));
+
+        // Add ViewModifierCodeSequence with CV (cleavage view, highest value)
+        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("cleavage view"),
+        )]);
+
+        let modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![modifier_item]),
+        );
+
+        dcm.put(modifier_seq);
+
+        // Should return CV because it has highest enum value
+        let result = extract_view_position(&dcm).unwrap();
+        assert_eq!(result, ViewPosition::Cv);
+    }
+
+    #[test]
+    fn test_extract_view_position_all_three_sources() {
+        // Test combining all three sources: ViewPosition, ViewCodeSequence, ViewModifierCodeSequence
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Add ViewPosition tag with CC (value 3)
+        dcm.put(DataElement::new(
+            VIEW_POSITION_TAG,
+            VR::CS,
+            dicom_core::value::PrimitiveValue::from("CC"),
+        ));
+
+        // Add ViewCodeSequence with MLO (value 4)
+        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
+        )]);
+
+        let view_code_seq = DataElement::new(
+            VIEW_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![view_code_item]),
+        );
+
+        dcm.put(view_code_seq);
+
+        // Add ViewModifierCodeSequence with AT (value 8, highest)
+        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("axillary tail"),
+        )]);
+
+        let modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![modifier_item]),
+        );
+
+        dcm.put(modifier_seq);
+
+        // Should return AT because it has the highest enum value
+        let result = extract_view_position(&dcm).unwrap();
+        assert_eq!(result, ViewPosition::At);
+    }
+
+    #[test]
+    fn test_extract_view_position_nested_modifier_wins() {
+        // Test that nested ViewModifierCodeSequence is included in selection
+        let mut dcm = InMemDicomObject::new_empty();
+
+        // Add ViewPosition tag with CC (value 3)
+        dcm.put(DataElement::new(
+            VIEW_POSITION_TAG,
+            VR::CS,
+            dicom_core::value::PrimitiveValue::from("CC"),
+        ));
+
+        // Add nested ViewModifierCodeSequence with CV (value 9, highest)
+        let nested_modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            dicom_core::value::PrimitiveValue::from("cleavage view"),
+        )]);
+
+        let nested_modifier_seq = DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![nested_modifier_item]),
+        );
+
+        let mut view_code_item = InMemDicomObject::new_empty();
+        view_code_item.put(nested_modifier_seq);
+
+        let view_code_seq = DataElement::new(
+            VIEW_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![view_code_item]),
+        );
+
+        dcm.put(view_code_seq);
+
+        // Should return CV from nested ViewModifierCodeSequence
+        let result = extract_view_position(&dcm).unwrap();
+        assert_eq!(result, ViewPosition::Cv);
     }
 }
