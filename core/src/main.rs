@@ -1,9 +1,13 @@
 use clap::Parser;
-use dicom_object::open_file;
+use dicom_core::Tag;
+use dicom_object::OpenFileOptions;
 use log::{error, info};
 use mammocat_core::cli::{Cli, OutputFormat};
 use mammocat_core::{MammogramExtractor, TextReport};
 use std::process;
+
+/// DICOM pixel data tag - we stop reading before this to avoid loading pixel data
+const PIXEL_DATA_TAG: Tag = Tag(0x7FE0, 0x0010);
 
 fn main() {
     let cli = Cli::parse();
@@ -21,8 +25,11 @@ fn main() {
 
     info!("Reading DICOM file: {}", cli.file.display());
 
-    // Open DICOM file
-    let dcm = match open_file(&cli.file) {
+    // Open DICOM file (metadata only, skip pixel data for performance)
+    let dcm = match OpenFileOptions::new()
+        .read_until(PIXEL_DATA_TAG)
+        .open_file(&cli.file)
+    {
         Ok(obj) => obj,
         Err(e) => {
             error!("Failed to read DICOM file: {}", e);

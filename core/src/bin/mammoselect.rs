@@ -1,6 +1,9 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
-use mammocat_core::{get_preferred_views, MammogramRecord, MammogramView, STANDARD_MAMMO_VIEWS};
+use mammocat_core::{
+    get_preferred_views_with_order, MammogramRecord, MammogramView, PreferenceOrder,
+    STANDARD_MAMMO_VIEWS,
+};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -20,6 +23,10 @@ struct Cli {
     #[arg(short, long, default_value = "text")]
     format: OutputFormat,
 
+    /// Preference ordering strategy for selecting mammogram types
+    #[arg(short, long, default_value = "default")]
+    preference: PreferenceOrderArg,
+
     /// Verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -34,6 +41,24 @@ enum OutputFormat {
     Json,
     /// File paths only (one per line)
     Paths,
+}
+
+/// Preference ordering for mammogram type selection
+#[derive(Debug, Clone, ValueEnum)]
+enum PreferenceOrderArg {
+    /// Default ordering: FFDM > SYNTH > TOMO > SFM (prefers 2D for inference)
+    Default,
+    /// Tomosynthesis first: TOMO > FFDM > SYNTH > SFM (maximizes 3D imaging)
+    TomoFirst,
+}
+
+impl From<PreferenceOrderArg> for PreferenceOrder {
+    fn from(arg: PreferenceOrderArg) -> Self {
+        match arg {
+            PreferenceOrderArg::Default => PreferenceOrder::Default,
+            PreferenceOrderArg::TomoFirst => PreferenceOrder::TomoFirst,
+        }
+    }
 }
 
 fn main() {
@@ -88,8 +113,12 @@ fn main() {
 
     info!("Successfully processed {} files", records.len());
 
+    // Convert preference order argument to core type
+    let preference_order: PreferenceOrder = cli.preference.into();
+    info!("Using preference order: {:?}", preference_order);
+
     // Select preferred views
-    let selections = get_preferred_views(&records);
+    let selections = get_preferred_views_with_order(&records, preference_order);
 
     // Output results
     output_selections(&selections, cli.format);
