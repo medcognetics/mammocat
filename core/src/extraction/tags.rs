@@ -71,6 +71,12 @@ pub const BODY_PART_THICKNESS: Tag = Tag(0x0018, 0x1075);
 pub const PRESENTATION_INTENT_TYPE: Tag = Tag(0x0008, 0x0068);
 pub const ACCESSION_NUMBER: Tag = Tag(0x0008, 0x0050);
 
+// Pixel Data Tag - used to stop reading before large pixel data
+pub const PIXEL_DATA_TAG: Tag = Tag(0x7FE0, 0x0010);
+
+/// DICOM magic bytes that appear at offset 128 in valid DICOM files
+pub const DICOM_MAGIC_BYTES: &[u8] = b"DICM";
+
 /// Helper to get string value from DICOM tag
 ///
 /// Returns `None` if the tag is not present or cannot be converted to string
@@ -114,6 +120,16 @@ pub fn get_u16_value(dcm: &InMemDicomObject, tag: Tag) -> Option<u16> {
     dcm.element(tag)
         .ok()
         .and_then(|elem| elem.to_int::<u16>().ok())
+}
+
+/// Helper to get lowercase string value from DICOM tag
+///
+/// Returns empty string if the tag is not present or cannot be converted.
+/// Equivalent to `get_string_value(dcm, tag).unwrap_or_default().to_lowercase()`.
+pub fn get_lowercase_string(dcm: &InMemDicomObject, tag: Tag) -> String {
+    get_string_value(dcm, tag)
+        .unwrap_or_default()
+        .to_lowercase()
 }
 
 #[cfg(test)]

@@ -1,3 +1,14 @@
+//! DICOM metadata extraction algorithms
+//!
+//! This module contains the classification and extraction logic for mammography
+//! metadata, implementing the same algorithms as the Python dicom-utils library.
+//!
+//! - [`laterality`]: Laterality extraction with fallback hierarchy
+//! - [`mammo_type`]: Mammogram type classification (TOMO/FFDM/SYNTH/SFM)
+//! - [`view_position`]: View position parsing from multiple DICOM fields
+//! - [`view_modifiers`]: Spot compression, magnification, and implant displaced detection
+//! - [`tags`]: DICOM tag constants and helper functions
+
 pub mod laterality;
 pub mod mammo_type;
 pub mod tags;

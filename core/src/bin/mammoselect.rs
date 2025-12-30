@@ -1,5 +1,6 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
+use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
     get_preferred_views_with_order, MammogramRecord, MammogramView, PreferenceOrder,
     STANDARD_MAMMO_VIEWS,
@@ -184,7 +185,7 @@ fn is_dicom_file(path: &PathBuf) -> bool {
     match file.read(&mut buffer) {
         Ok(n) if n >= 132 => {
             // Check for "DICM" magic bytes at offset 128
-            &buffer[128..132] == b"DICM"
+            &buffer[128..132] == DICOM_MAGIC_BYTES
         }
         _ => false,
     }
