@@ -2,7 +2,9 @@ use crate::error::Result;
 use crate::types::ViewPosition;
 use dicom_object::InMemDicomObject;
 
-use super::tags::{get_string_value, CODE_MEANING, VIEW_CODE_SEQUENCE, VIEW_POSITION as VIEW_POSITION_TAG};
+use super::tags::{
+    get_string_value, CODE_MEANING, VIEW_CODE_SEQUENCE, VIEW_POSITION as VIEW_POSITION_TAG,
+};
 
 // Pattern sets for view position matching
 const CC_STRINGS: &[&str] = &["cranio-caudal", "caudal-cranial"];
