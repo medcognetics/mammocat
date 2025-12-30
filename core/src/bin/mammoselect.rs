@@ -2,10 +2,10 @@ use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
-    get_preferred_views_with_order, MammogramRecord, MammogramView, PreferenceOrder,
-    STANDARD_MAMMO_VIEWS,
+    get_preferred_views_filtered, FilterConfig, MammogramRecord, MammogramType, MammogramView,
+    PreferenceOrder, STANDARD_MAMMO_VIEWS,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::process;
@@ -31,6 +31,30 @@ struct Cli {
     /// Verbose logging
     #[arg(short, long)]
     verbose: bool,
+
+    /// Allowed mammogram types (comma-separated: ffdm,tomo,synth,sfm)
+    #[arg(long, value_delimiter = ',')]
+    allowed_types: Option<Vec<MammogramTypeArg>>,
+
+    /// Exclude views with breast implants
+    #[arg(long)]
+    exclude_implants: bool,
+
+    /// Only include standard views (CC and MLO)
+    #[arg(long)]
+    only_standard_views: bool,
+
+    /// Include FOR PROCESSING views (excluded by default)
+    #[arg(long)]
+    include_for_processing: bool,
+
+    /// Include secondary capture images (excluded by default)
+    #[arg(long)]
+    include_secondary_capture: bool,
+
+    /// Include non-MG modality (excluded by default)
+    #[arg(long)]
+    include_non_mg: bool,
 }
 
 /// Output format options
@@ -58,6 +82,30 @@ impl From<PreferenceOrderArg> for PreferenceOrder {
         match arg {
             PreferenceOrderArg::Default => PreferenceOrder::Default,
             PreferenceOrderArg::TomoFirst => PreferenceOrder::TomoFirst,
+        }
+    }
+}
+
+/// Mammogram type argument for filtering
+#[derive(Debug, Clone, ValueEnum)]
+enum MammogramTypeArg {
+    /// Full-field digital mammography
+    Ffdm,
+    /// Tomosynthesis
+    Tomo,
+    /// Synthesized 2D from tomosynthesis
+    Synth,
+    /// Screen-film mammography
+    Sfm,
+}
+
+impl From<MammogramTypeArg> for MammogramType {
+    fn from(arg: MammogramTypeArg) -> Self {
+        match arg {
+            MammogramTypeArg::Ffdm => MammogramType::Ffdm,
+            MammogramTypeArg::Tomo => MammogramType::Tomo,
+            MammogramTypeArg::Synth => MammogramType::Synth,
+            MammogramTypeArg::Sfm => MammogramType::Sfm,
         }
     }
 }
@@ -114,12 +162,16 @@ fn main() {
 
     info!("Successfully processed {} files", records.len());
 
+    // Build filter configuration
+    let filter_config = build_filter_config(&cli);
+    info!("Filter config: {:?}", filter_config);
+
     // Convert preference order argument to core type
     let preference_order: PreferenceOrder = cli.preference.into();
     info!("Using preference order: {:?}", preference_order);
 
-    // Select preferred views
-    let selections = get_preferred_views_with_order(&records, preference_order);
+    // Select preferred views with filtering
+    let selections = get_preferred_views_filtered(&records, &filter_config, preference_order);
 
     // Output results
     output_selections(&selections, cli.format);
@@ -189,6 +241,31 @@ fn is_dicom_file(path: &PathBuf) -> bool {
         }
         _ => false,
     }
+}
+
+/// Builds FilterConfig from CLI arguments
+fn build_filter_config(cli: &Cli) -> FilterConfig {
+    let mut config = FilterConfig::default();
+
+    // Handle allowed types (whitelist)
+    if let Some(type_args) = &cli.allowed_types {
+        let allowed: HashSet<MammogramType> = type_args
+            .iter()
+            .map(|arg| MammogramType::from(arg.clone()))
+            .collect();
+        config = config.with_allowed_types(allowed);
+    }
+
+    // Handle exclude flags
+    config = config.exclude_implants(cli.exclude_implants);
+    config = config.exclude_non_standard_views(cli.only_standard_views);
+
+    // Handle include flags (inverted logic)
+    config = config.exclude_for_processing(!cli.include_for_processing);
+    config = config.exclude_secondary_capture(!cli.include_secondary_capture);
+    config = config.exclude_non_mg_modality(!cli.include_non_mg);
+
+    config
 }
 
 fn output_selections(

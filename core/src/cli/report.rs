@@ -54,6 +54,16 @@ impl<'a> fmt::Display for TextReport<'a> {
         )?;
         writeln!(f, "Spot Compression: {}", self.metadata.is_spot_compression)?;
         writeln!(f, "Magnification:  {}", self.metadata.is_magnified)?;
+        writeln!(
+            f,
+            "Secondary Capture: {}",
+            self.metadata.is_secondary_capture
+        )?;
+        writeln!(
+            f,
+            "Modality:       {}",
+            self.metadata.modality.as_deref().unwrap_or("unknown")
+        )?;
         writeln!(f)?;
 
         // Additional derived information
@@ -86,6 +96,8 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
+            is_secondary_capture: false,
+            modality: Some("MG".to_string()),
         };
 
         let report = TextReport::new(&metadata);

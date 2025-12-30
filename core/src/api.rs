@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::extraction::tags::{
     get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, MANUFACTURER, MANUFACTURER_MODEL_NAME,
-    NUMBER_OF_FRAMES, PRESENTATION_INTENT_TYPE,
+    MODALITY, NUMBER_OF_FRAMES, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
 };
 use crate::extraction::{
     extract_image_type, extract_laterality, extract_mammogram_type, extract_view_position,
@@ -87,6 +87,8 @@ impl MammogramExtractor {
             manufacturer: get_string_value(dcm, MANUFACTURER),
             model: get_string_value(dcm, MANUFACTURER_MODEL_NAME),
             number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
+            is_secondary_capture: Self::extract_secondary_capture(dcm),
+            modality: Self::extract_modality(dcm),
         })
     }
 
@@ -102,6 +104,24 @@ impl MammogramExtractor {
         get_string_value(dcm, BREAST_IMPLANT_PRESENT)
             .map(|s| s.to_uppercase() == "YES")
             .unwrap_or(false)
+    }
+
+    /// Extracts secondary capture status
+    ///
+    /// Checks if SOP Class UID indicates a secondary capture image.
+    /// Secondary Capture SOP Class UID: 1.2.840.10008.5.1.4.1.1.7
+    /// Multi-frame variants: .7.1, .7.2, .7.3, .7.4
+    fn extract_secondary_capture(dcm: &InMemDicomObject) -> bool {
+        get_string_value(dcm, SOP_CLASS_UID)
+            .map(|uid| uid.starts_with("1.2.840.10008.5.1.4.1.1.7"))
+            .unwrap_or(false)
+    }
+
+    /// Extracts modality
+    ///
+    /// Returns the DICOM Modality tag value (should be "MG" for mammography)
+    fn extract_modality(dcm: &InMemDicomObject) -> Option<String> {
+        get_string_value(dcm, MODALITY)
     }
 }
 
@@ -146,6 +166,12 @@ pub struct MammogramMetadata {
 
     /// Number of frames (for DBT/tomosynthesis)
     pub number_of_frames: i32,
+
+    /// Whether this is a secondary capture image
+    pub is_secondary_capture: bool,
+
+    /// DICOM Modality (should be "MG" for mammography)
+    pub modality: Option<String>,
 }
 
 impl MammogramMetadata {
@@ -184,6 +210,8 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
+            is_secondary_capture: false,
+            modality: Some("MG".to_string()),
         };
 
         let view = metadata.mammogram_view();
@@ -208,6 +236,8 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 50,
+            is_secondary_capture: false,
+            modality: Some("MG".to_string()),
         };
 
         assert!(!metadata.is_2d());

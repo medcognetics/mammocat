@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::enums::{PyMammogramView, PyPreferenceOrder};
+use super::filter::PyFilterConfig;
 use super::record::PyMammogramRecord;
 
 /// Select preferred views from a collection of mammogram records (using default preference order)
@@ -80,6 +81,60 @@ pub fn py_get_preferred_views_with_order(
     // Call Rust function
     let result =
         crate::selection::get_preferred_views_with_order(&rust_records, preference_order.inner);
+
+    // Convert HashMap to Python dict
+    hashmap_to_py_dict(py, result)
+}
+
+/// Select preferred views with filtering
+///
+/// Applies filters before selecting preferred views. For each of the 4 standard views
+/// (L-MLO, R-MLO, L-CC, R-CC), selects the most preferred mammogram from filtered candidates.
+///
+/// Args:
+///     records: List of MammogramRecord objects to select from
+///     filter_config: FilterConfig specifying which records to include
+///     preference_order: The preference ordering strategy to use
+///
+/// Returns:
+///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
+///
+/// Example:
+///     >>> from mammocat import (
+///     ...     MammogramRecord,
+///     ...     FilterConfig,
+///     ...     get_preferred_views_filtered,
+///     ...     PreferenceOrder,
+///     ...     MammogramType
+///     ... )
+///     >>> from pathlib import Path
+///     >>> config = FilterConfig(
+///     ...     allowed_types=[MammogramType.FFDM, MammogramType.TOMO],
+///     ...     exclude_implants=True
+///     ... )
+///     >>> records = [MammogramRecord.from_file(f) for f in Path("dicoms").glob("*.dcm")]
+///     >>> selections = get_preferred_views_filtered(
+///     ...     records,
+///     ...     config,
+///     ...     PreferenceOrder.DEFAULT
+///     ... )
+#[pyfunction]
+#[pyo3(name = "get_preferred_views_filtered")]
+pub fn py_get_preferred_views_filtered(
+    py: Python,
+    records: Vec<PyMammogramRecord>,
+    filter_config: PyFilterConfig,
+    preference_order: PyPreferenceOrder,
+) -> PyResult<Py<PyDict>> {
+    // Convert Python records to Rust records
+    let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
+
+    // Call Rust function
+    let result = crate::selection::get_preferred_views_filtered(
+        &rust_records,
+        &filter_config.inner,
+        preference_order.inner,
+    );
 
     // Convert HashMap to Python dict
     hashmap_to_py_dict(py, result)

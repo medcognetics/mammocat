@@ -12,5 +12,8 @@ pub mod python;
 pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
 pub use error::{MammocatError, Result};
-pub use selection::{get_preferred_views, get_preferred_views_with_order, MammogramRecord};
+pub use selection::{
+    get_preferred_views, get_preferred_views_filtered, get_preferred_views_with_order,
+    MammogramRecord,
+};
 pub use types::*;

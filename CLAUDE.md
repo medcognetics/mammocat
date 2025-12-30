@@ -102,6 +102,13 @@ make quality-fix
 
 # Verbose logging
 ./target/release/mammoselect --verbose /path/to/directory
+
+# Filtering options
+./target/release/mammoselect --allowed-types ffdm /path/to/directory
+./target/release/mammoselect --allowed-types ffdm,tomo --exclude-implants /path/to/directory
+./target/release/mammoselect --only-standard-views /path/to/directory
+./target/release/mammoselect --include-for-processing /path/to/directory
+./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
 
 ## Architecture
@@ -116,6 +123,7 @@ The codebase follows a clear separation of concerns:
 
 **`types/`** - Core type system and domain models
 - `enums.rs`: MammogramType, Laterality, ViewPosition, PhotometricInterpretation, PreferenceOrder
+- `filter.rs`: FilterConfig struct for record filtering during view selection
 - `image_type.rs`: ImageType struct for decomposed DICOM ImageType field
 - `view.rs`: MammogramView combining laterality + view position
 - `pixel_spacing.rs`: PixelSpacing parsing
@@ -132,16 +140,18 @@ The codebase follows a clear separation of concerns:
 
 **`selection/`** - Preferred view selection logic
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
-- `views.rs`: get_preferred_views and get_preferred_views_with_order for selecting best views
+- `views.rs`: get_preferred_views, get_preferred_views_with_order, and get_preferred_views_filtered for selecting best views
 
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
-- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames)
+- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames, is_secondary_capture, modality)
 
 **`python/`** - PyO3 bindings (enabled with `--features python`)
 - `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)
+- `filter.rs`: PyFilterConfig wrapper
 - `metadata.rs`: PyMammogramMetadata wrapper
 - `record.rs`: PyMammogramRecord wrapper
+- `selection.rs`: Python wrappers for selection functions (get_preferred_views_filtered, etc.)
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
 **`cli/`** - Command-line interface
@@ -166,6 +176,24 @@ MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the se
 **Rule-Based Classification**: Mammogram type classification follows a strict order of rules (see core/src/extraction/mammo_type.rs:26-50 for algorithm). Rules are categorized as "very solid", "ok", and "not good" matching Python implementation. Defaults to FFDM when ImageType fields are missing.
 
 **Enum Combinators**: Laterality has a `reduce()` method for combining lateralities (e.g., LEFT + RIGHT → BILATERAL). ViewPosition has helper methods like `is_standard_view()`, `is_mlo_like()`, `is_cc_like()`.
+
+**Filtering Architecture**: The `FilterConfig` struct bundles all filtering options for view selection:
+- `allowed_types`: Whitelist approach - only specified types included (None = allow all)
+- Boolean exclusion flags: `exclude_implants`, `exclude_non_standard_views`, etc.
+- Default behavior: Excludes FOR PROCESSING, secondary capture, and non-MG modality
+- Permissive mode: `FilterConfig::permissive()` disables all filters
+
+Hard filtering is used - records that don't pass filters are completely excluded from the candidate pool before view selection runs. This ensures filtered records never appear in results.
+
+Filtering flow:
+1. Load all DICOM files into MammogramRecord collection
+2. Apply FilterConfig to remove unwanted records via `apply_filters()`
+3. Run view selection algorithm (`get_preferred_views_with_order`) on filtered set
+4. Return best views from remaining candidates
+
+New metadata fields for filtering:
+- `is_secondary_capture`: Detected via SOP Class UID (checks if starts with "1.2.840.10008.5.1.4.1.1.7")
+- `modality`: DICOM Modality tag value (should be "MG" for mammography)
 
 ### Python Compatibility
 

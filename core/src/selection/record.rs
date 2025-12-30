@@ -276,6 +276,8 @@ mod tests {
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
+                is_secondary_capture: false,
+                modality: Some("MG".to_string()),
             },
             rows,
             columns,
