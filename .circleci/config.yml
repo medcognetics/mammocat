@@ -3,43 +3,94 @@ version: 2.1
 jobs:
     quality:
         docker:
-            - image: rust:latest
+            - image: cimg/python:3.12
         steps:
             - checkout
             - run:
-                name: Install dependencies
+                name: Install Rust
+                command: |
+                    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+                    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
+            - run:
+                name: Install Rust components
                 command: rustup component add rustfmt clippy
             - run:
+                name: Install uv
+                command: curl -LsSf https://astral.sh/uv/install.sh | sh
+            - restore_cache:
+                keys:
+                    - quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                    - quality-cache-v1-
+            - run:
+                name: Install Python dependencies
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make dev
+            - run:
                 name: Check formatting
-                command: cargo fmt -- --check
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make format-check
             - run:
-                name: General check
-                command: cargo check --all-features
+                name: Run linting
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make lint
             - run:
-                name: Clippy check
-                command: cargo clippy --all-features -- -D warnings
+                name: Type checking
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make typecheck
+            - save_cache:
+                key: quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                paths:
+                    - "~/.cargo"
+                    - "./target"
+                    - "./.venv"
 
     build:
         docker:
-            - image: rust:latest
+            - image: cimg/python:3.12
         steps:
             - checkout
+            - run:
+                name: Install Rust
+                command: |
+                    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+                    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
+            - run:
+                name: Install uv
+                command: curl -LsSf https://astral.sh/uv/install.sh | sh
             - restore_cache:
-                key: project-cache
+                keys:
+                    - build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                    - build-cache-v1-
             - run:
-                name: Install dependencies
-                command: rustup component add rustfmt
+                name: Install Python dependencies
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make dev
             - run:
-                name: Stable Build
-                command: cargo build
+                name: Build Rust binaries
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    cargo build --release --all-features
             - run:
-                name: Test
-                command: cargo test
+                name: Build Python bindings
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make build
+            - run:
+                name: Run tests
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make test
             - save_cache:
-                key: project-cache
+                key: build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
                 paths:
-                - "~/.cargo"
-                - "./target"
+                    - "~/.cargo"
+                    - "./target"
+                    - "./.venv"
             - persist_to_workspace:
                 root: .
                 paths:
