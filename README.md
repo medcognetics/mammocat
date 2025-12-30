@@ -9,9 +9,11 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **View Position Parsing**: Identifies view positions (CC, MLO, ML, etc.) with pattern matching
 - **Implant Status**: Detects breast implant presence
 - **Processing Intent**: Identifies "FOR PROCESSING" images
+- **Preferred View Selection**: Automatically selects the best mammogram for each standard view
+- **Python Bindings**: Full Python API via PyO3 for seamless integration
 - **Clean API**: Easy-to-use library and command-line interface
 - **Type Safe**: Leverages Rust's type system for correctness
-- **Well Tested**: Comprehensive test coverage (34+ unit tests)
+- **Well Tested**: Comprehensive test coverage (60+ Rust tests, 48 Python tests)
 
 ## Installation
 
@@ -41,6 +43,24 @@ mammocat --format json path/to/mammogram.dcm
 
 # Verbose logging
 mammocat --verbose path/to/mammogram.dcm
+```
+
+### mammoselect - Preferred View Selection
+
+Select the best mammogram for each standard view (L-CC, R-CC, L-MLO, R-MLO) from a directory:
+
+```bash
+# Select preferred views (default ordering: FFDM > SYNTH > TOMO > SFM)
+mammoselect /path/to/dicom_directory
+
+# Use tomo-first ordering (TOMO > FFDM > SYNTH > SFM)
+mammoselect --preference tomo-first /path/to/directory
+
+# Output as JSON
+mammoselect --format json /path/to/directory
+
+# Output file paths only (useful for scripting)
+mammoselect --format paths /path/to/directory
 ```
 
 Example output:
@@ -131,24 +151,34 @@ Supports standard views (CC, MLO) and specialized views (XCCL, XCCM, ML, LM, LMO
 
 ```
 mammocat/
-├── core/                         # Library and binary
+├── core/                           # Library and binary
 │   ├── src/
-│   │   ├── types/               # Core type system
-│   │   │   ├── enums.rs        # MammogramType, Laterality, ViewPosition
-│   │   │   ├── image_type.rs   # ImageType struct
+│   │   ├── types/                  # Core type system
+│   │   │   ├── enums.rs            # MammogramType, Laterality, ViewPosition
+│   │   │   ├── image_type.rs       # ImageType struct
 │   │   │   ├── pixel_spacing.rs
-│   │   │   └── view.rs         # MammogramView
-│   │   ├── extraction/         # Classification algorithms
-│   │   │   ├── tags.rs         # DICOM tag constants
-│   │   │   ├── mammo_type.rs   # Type classification
-│   │   │   ├── laterality.rs   # Laterality extraction
-│   │   │   └── view_position.rs # View parsing
-│   │   ├── api.rs              # Public API
-│   │   ├── cli/                # Command-line interface
+│   │   │   └── view.rs             # MammogramView
+│   │   ├── extraction/             # Classification algorithms
+│   │   │   ├── tags.rs             # DICOM tag constants and helpers
+│   │   │   ├── mammo_type.rs       # Type classification
+│   │   │   ├── laterality.rs       # Laterality extraction
+│   │   │   ├── view_position.rs    # View parsing
+│   │   │   └── view_modifiers.rs   # Spot/mag/implant displaced
+│   │   ├── selection/              # Preferred view selection
+│   │   │   ├── record.rs           # MammogramRecord with comparison
+│   │   │   └── views.rs            # get_preferred_views functions
+│   │   ├── python/                 # PyO3 bindings
+│   │   │   ├── enums.rs            # Python enum wrappers
+│   │   │   ├── metadata.rs         # PyMammogramMetadata
+│   │   │   ├── record.rs           # PyMammogramRecord
+│   │   │   └── macros.rs           # Boilerplate reduction macros
+│   │   ├── api.rs                  # Public API
+│   │   ├── cli/                    # Command-line interface
 │   │   │   ├── mod.rs
-│   │   │   └── report.rs       # Text formatting
-│   │   ├── error.rs            # Error types
-│   │   └── main.rs             # CLI entry point
+│   │   │   └── report.rs           # Text formatting
+│   │   ├── error.rs                # Error types
+│   │   ├── main.rs                 # mammocat CLI entry point
+│   │   └── bin/mammoselect.rs      # mammoselect CLI entry point
 ```
 
 ## Type System
@@ -213,21 +243,19 @@ Run specific Rust test:
 cargo test test_name
 ```
 
-Current test coverage: 34+ unit tests covering:
+Current test coverage: 60+ Rust unit tests and 48 Python tests covering:
 - Enum behavior and ordering
 - String parsing and pattern matching
 - Classification algorithm logic
 - Data structure operations
-- Python bindings (via pytest)
+- Preferred view selection
+- Python bindings API (via pytest)
 
 ## Future Enhancements
 
-- [ ] Preference selection logic (`get_preferred_views`)
-- [ ] Batch processing of DICOM directories
 - [ ] Additional metadata fields (PatientAge, StudyDate, etc.)
-- [ ] Sequence navigation for nested DICOM tags
-- [ ] Performance optimization with rayon
-- [ ] Python bindings (PyO3)
+- [ ] Sequence navigation for nested DICOM tags (FrameLaterality, ViewCodeSequence)
+- [ ] Performance optimization with rayon for batch processing
 
 ## Python Compatibility
 

@@ -3,8 +3,8 @@ use crate::types::{ImageType, MammogramType};
 use dicom_object::InMemDicomObject;
 
 use super::tags::{
-    get_int_value, get_multi_string_value, get_string_value, IMAGE_TYPE, MANUFACTURER_MODEL_NAME,
-    MODALITY, NUMBER_OF_FRAMES, SERIES_DESCRIPTION,
+    get_int_value, get_lowercase_string, get_multi_string_value, get_string_value, IMAGE_TYPE,
+    MANUFACTURER_MODEL_NAME, MODALITY, NUMBER_OF_FRAMES, SERIES_DESCRIPTION,
 };
 
 /// Extracts mammogram type from DICOM file
@@ -60,12 +60,8 @@ pub fn extract_mammogram_type_impl(
         .unwrap_or_default();
 
     // Get additional metadata
-    let machine = get_string_value(dcm, MANUFACTURER_MODEL_NAME)
-        .unwrap_or_default()
-        .to_lowercase();
-    let series_desc = get_string_value(dcm, SERIES_DESCRIPTION)
-        .unwrap_or_default()
-        .to_lowercase();
+    let machine = get_lowercase_string(dcm, MANUFACTURER_MODEL_NAME);
+    let series_desc = get_lowercase_string(dcm, SERIES_DESCRIPTION);
 
     // If fields 1 and 2 were missing, default to FFDM
     if img_type.pixels.is_empty() || img_type.exam.is_empty() {

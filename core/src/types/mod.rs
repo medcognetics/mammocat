@@ -1,3 +1,13 @@
+//! Core type definitions for mammography metadata
+//!
+//! This module provides the fundamental types used throughout the mammocat library:
+//! - [`MammogramType`]: Classification of mammogram imaging types (FFDM, TOMO, SYNTH, SFM)
+//! - [`Laterality`]: Breast laterality (Left, Right, Bilateral)
+//! - [`ViewPosition`]: View positions (CC, MLO, etc.)
+//! - [`MammogramView`]: Combined laterality and view position
+//! - [`ImageType`]: Decomposed DICOM ImageType field
+//! - [`PreferenceOrder`]: Strategies for selecting preferred mammograms
+
 mod enums;
 mod image_type;
 mod pixel_spacing;

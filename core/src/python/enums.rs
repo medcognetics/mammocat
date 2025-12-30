@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use super::macros::impl_py_from;
 use crate::types::{
     ImageType, Laterality, MammogramType, MammogramView, PhotometricInterpretation,
     PreferenceOrder, ViewPosition,
@@ -16,7 +17,7 @@ use crate::types::{
 #[pyclass(name = "MammogramType", module = "mammocat")]
 #[derive(Clone, Debug)]
 pub struct PyMammogramType {
-    inner: MammogramType,
+    pub(crate) inner: MammogramType,
 }
 
 #[pymethods]
@@ -94,17 +95,7 @@ impl PyMammogramType {
     }
 }
 
-impl From<MammogramType> for PyMammogramType {
-    fn from(inner: MammogramType) -> Self {
-        Self { inner }
-    }
-}
-
-impl From<PyMammogramType> for MammogramType {
-    fn from(py_type: PyMammogramType) -> Self {
-        py_type.inner
-    }
-}
+impl_py_from!(PyMammogramType, MammogramType);
 
 // ============================================================================
 // Laterality
@@ -113,7 +104,7 @@ impl From<PyMammogramType> for MammogramType {
 #[pyclass(name = "Laterality", module = "mammocat")]
 #[derive(Clone, Debug)]
 pub struct PyLaterality {
-    inner: Laterality,
+    pub(crate) inner: Laterality,
 }
 
 #[pymethods]
@@ -189,17 +180,7 @@ impl PyLaterality {
     }
 }
 
-impl From<Laterality> for PyLaterality {
-    fn from(inner: Laterality) -> Self {
-        Self { inner }
-    }
-}
-
-impl From<PyLaterality> for Laterality {
-    fn from(py_lat: PyLaterality) -> Self {
-        py_lat.inner
-    }
-}
+impl_py_from!(PyLaterality, Laterality);
 
 // ============================================================================
 // ViewPosition
@@ -208,7 +189,7 @@ impl From<PyLaterality> for Laterality {
 #[pyclass(name = "ViewPosition", module = "mammocat")]
 #[derive(Clone, Debug)]
 pub struct PyViewPosition {
-    inner: ViewPosition,
+    pub(crate) inner: ViewPosition,
 }
 
 #[pymethods]
@@ -318,17 +299,7 @@ impl PyViewPosition {
     }
 }
 
-impl From<ViewPosition> for PyViewPosition {
-    fn from(inner: ViewPosition) -> Self {
-        Self { inner }
-    }
-}
-
-impl From<PyViewPosition> for ViewPosition {
-    fn from(py_view: PyViewPosition) -> Self {
-        py_view.inner
-    }
-}
+impl_py_from!(PyViewPosition, ViewPosition);
 
 // ============================================================================
 // PreferenceOrder
@@ -391,7 +362,7 @@ impl From<PreferenceOrder> for PyPreferenceOrder {
 #[pyclass(name = "PhotometricInterpretation", module = "mammocat")]
 #[derive(Clone, Debug)]
 pub struct PyPhotometricInterpretation {
-    inner: PhotometricInterpretation,
+    pub(crate) inner: PhotometricInterpretation,
 }
 
 #[pymethods]
@@ -489,11 +460,7 @@ impl PyPhotometricInterpretation {
     }
 }
 
-impl From<PhotometricInterpretation> for PyPhotometricInterpretation {
-    fn from(inner: PhotometricInterpretation) -> Self {
-        Self { inner }
-    }
-}
+impl_py_from!(PyPhotometricInterpretation, PhotometricInterpretation);
 
 // ============================================================================
 // ImageType
@@ -502,7 +469,7 @@ impl From<PhotometricInterpretation> for PyPhotometricInterpretation {
 #[pyclass(name = "ImageType", module = "mammocat")]
 #[derive(Clone, Debug)]
 pub struct PyImageType {
-    inner: ImageType,
+    pub(crate) inner: ImageType,
 }
 
 #[pymethods]
@@ -561,17 +528,7 @@ impl PyImageType {
     }
 }
 
-impl From<ImageType> for PyImageType {
-    fn from(inner: ImageType) -> Self {
-        Self { inner }
-    }
-}
-
-impl From<PyImageType> for ImageType {
-    fn from(py_type: PyImageType) -> Self {
-        py_type.inner
-    }
-}
+impl_py_from!(PyImageType, ImageType);
 
 // ============================================================================
 // MammogramView
@@ -640,14 +597,4 @@ impl PyMammogramView {
     }
 }
 
-impl From<MammogramView> for PyMammogramView {
-    fn from(inner: MammogramView) -> Self {
-        Self { inner }
-    }
-}
-
-impl From<PyMammogramView> for MammogramView {
-    fn from(py_view: PyMammogramView) -> Self {
-        py_view.inner
-    }
-}
+impl_py_from!(PyMammogramView, MammogramView);

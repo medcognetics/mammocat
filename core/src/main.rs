@@ -1,13 +1,10 @@
 use clap::Parser;
-use dicom_core::Tag;
 use dicom_object::OpenFileOptions;
-use log::{error, info};
+use log::info;
 use mammocat_core::cli::{Cli, OutputFormat};
+use mammocat_core::extraction::tags::PIXEL_DATA_TAG;
 use mammocat_core::{MammogramExtractor, TextReport};
 use std::process;
-
-/// DICOM pixel data tag - we stop reading before this to avoid loading pixel data
-const PIXEL_DATA_TAG: Tag = Tag(0x7FE0, 0x0010);
 
 fn main() {
     let cli = Cli::parse();
@@ -32,7 +29,6 @@ fn main() {
     {
         Ok(obj) => obj,
         Err(e) => {
-            error!("Failed to read DICOM file: {}", e);
             eprintln!("Error: Failed to read DICOM file: {}", e);
             process::exit(1);
         }
@@ -42,7 +38,6 @@ fn main() {
     let metadata = match MammogramExtractor::extract(&dcm) {
         Ok(m) => m,
         Err(e) => {
-            error!("Failed to extract metadata: {}", e);
             eprintln!("Error: Failed to extract metadata: {}", e);
             process::exit(1);
         }
@@ -60,7 +55,6 @@ fn main() {
                 match serde_json::to_string_pretty(&metadata) {
                     Ok(json) => println!("{}", json),
                     Err(e) => {
-                        error!("Failed to serialize to JSON: {}", e);
                         eprintln!("Error: Failed to serialize to JSON: {}", e);
                         process::exit(1);
                     }
