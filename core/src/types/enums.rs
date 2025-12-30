@@ -48,7 +48,7 @@ impl PreferenceOrder {
 /// Preference order: TOMO < FFDM < SYNTH < SFM < UNKNOWN
 /// (Lower values are MORE preferred for deduplication/selection)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "json", derive(serde::Serialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "lowercase"))]
 pub enum MammogramType {
     Unknown,

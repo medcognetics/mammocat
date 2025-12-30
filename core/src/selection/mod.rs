@@ -7,4 +7,6 @@ mod record;
 mod views;
 
 pub use record::MammogramRecord;
-pub use views::{get_preferred_views, get_preferred_views_with_order};
+pub use views::{
+    get_preferred_views, get_preferred_views_filtered, get_preferred_views_with_order,
+};

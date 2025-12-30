@@ -87,6 +87,18 @@ impl PyMammogramMetadata {
         self.inner.number_of_frames
     }
 
+    /// Whether this is a secondary capture image
+    #[getter]
+    fn is_secondary_capture(&self) -> bool {
+        self.inner.is_secondary_capture
+    }
+
+    /// DICOM Modality (should be "MG" for mammography)
+    #[getter]
+    fn modality(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.modality.clone())
+    }
+
     /// Returns the mammogram view (laterality + view position)
     fn mammogram_view(&self) -> PyMammogramView {
         self.inner.mammogram_view().into()
@@ -117,6 +129,8 @@ impl PyMammogramMetadata {
         dict.set_item("manufacturer", self.manufacturer(py))?;
         dict.set_item("model", self.model(py))?;
         dict.set_item("number_of_frames", self.number_of_frames())?;
+        dict.set_item("is_secondary_capture", self.is_secondary_capture())?;
+        dict.set_item("modality", self.modality(py))?;
         Ok(dict.unbind())
     }
 
