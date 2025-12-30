@@ -8,46 +8,67 @@ Mammocat is a Rust library and CLI tool for extracting mammography metadata from
 
 ## Common Commands
 
+### Development Setup
+```bash
+# Install Python development dependencies
+make dev
+```
+
 ### Building
 ```bash
-# Development build
-cargo build
+# Build Python bindings (debug)
+make build
 
-# Release build (optimized)
+# Build Python bindings (release, optimized)
+make build-release
+
+# Build Rust CLI binaries (standalone, no Python)
 cargo build --release
-
-# Build with JSON output support
-cargo build --release --features json
 ```
 
 ### Testing
 ```bash
-# Run all tests
-cargo test
+# Run all tests (Rust + Python, rebuilds bindings automatically)
+make test
 
-# Run specific test
+# Run Python tests only (rebuilds bindings first)
+make test-python
+
+# Run Rust tests only
+make test-rust
+
+# Run Python tests with coverage
+make test-cov
+
+# Run specific Rust test
 cargo test test_name
 
-# Run tests with all features enabled
-cargo test --all-features
-
-# Run tests in a specific module
+# Run Rust tests in a specific module
 cargo test laterality
 ```
 
 ### Code Quality
 ```bash
-# Check for common mistakes and style issues
-cargo clippy
+# Format both Rust and Python code
+make format
 
-# Format code
-cargo fmt
+# Check formatting for both languages (CI-friendly)
+make format-check
 
-# Check if code is formatted (CI-friendly)
-cargo fmt --check
+# Lint both Rust and Python
+make lint
 
-# Run clippy with all features
-cargo clippy --all-features
+# Auto-fix linting issues in both languages
+make lint-fix
+
+# Run type checking (cargo check + basedpyright)
+make typecheck
+
+# Run all quality checks (format, lint, typecheck)
+make quality
+
+# Auto-fix all quality issues
+make quality-fix
 ```
 
 ### Running the CLI

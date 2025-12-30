@@ -17,16 +17,43 @@ use dicom_object::InMemDicomObject;
 ///
 /// # Example
 ///
-/// ```ignore
-/// use dicom_object::open_file;
+/// ```
 /// use mammocat_core::MammogramExtractor;
+/// use dicom_object::InMemDicomObject;
+/// use dicom_core::{DataElement, PrimitiveValue, VR, Tag};
 ///
-/// let dcm = open_file("mammogram.dcm")?;
-/// let metadata = MammogramExtractor::extract(&dcm)?;
+/// // Create a minimal mammography DICOM object for testing
+/// let mut dcm = InMemDicomObject::new_empty();
 ///
-/// println!("Type: {}", metadata.mammogram_type);
-/// println!("Laterality: {}", metadata.laterality);
-/// println!("View: {}", metadata.view_position);
+/// // Add required tags
+/// dcm.put(DataElement::new(
+///     Tag(0x0008, 0x0060), // Modality
+///     VR::CS,
+///     PrimitiveValue::from("MG"),
+/// ));
+/// dcm.put(DataElement::new(
+///     Tag(0x0008, 0x0008), // ImageType
+///     VR::CS,
+///     PrimitiveValue::Strs(vec!["ORIGINAL".to_string(), "PRIMARY".to_string()].into()),
+/// ));
+/// dcm.put(DataElement::new(
+///     Tag(0x0020, 0x0062), // ImageLaterality
+///     VR::CS,
+///     PrimitiveValue::from("L"),
+/// ));
+/// dcm.put(DataElement::new(
+///     Tag(0x0018, 0x5101), // ViewPosition
+///     VR::CS,
+///     PrimitiveValue::from("MLO"),
+/// ));
+///
+/// // Extract metadata
+/// let metadata = MammogramExtractor::extract(&dcm).unwrap();
+///
+/// // Verify extracted values
+/// assert_eq!(metadata.mammogram_type.to_string(), "ffdm");
+/// assert_eq!(metadata.laterality.to_string(), "left");
+/// assert_eq!(metadata.view_position.to_string(), "mlo");
 /// ```
 pub struct MammogramExtractor;
 

@@ -183,23 +183,42 @@ mammocat/
 
 ## Testing
 
-Run tests:
+Run all tests (Rust + Python):
 
 ```bash
-cargo test
+make test
 ```
 
-Run with coverage:
+Run Python tests only:
 
 ```bash
-cargo test --all-features
+make test-python
 ```
 
-Current test coverage: 34 unit tests covering:
+Run Rust tests only:
+
+```bash
+make test-rust
+```
+
+Run Python tests with coverage:
+
+```bash
+make test-cov
+```
+
+Run specific Rust test:
+
+```bash
+cargo test test_name
+```
+
+Current test coverage: 34+ unit tests covering:
 - Enum behavior and ordering
 - String parsing and pattern matching
 - Classification algorithm logic
 - Data structure operations
+- Python bindings (via pytest)
 
 ## Future Enhancements
 
@@ -231,7 +250,26 @@ Reference Python files:
 
 Contributions welcome! Please ensure:
 
-1. All tests pass (`cargo test`)
-2. Code is formatted (`cargo fmt`)
-3. No clippy warnings (`cargo clippy`)
+1. All tests pass (`make test`)
+2. Code is formatted (`make format`)
+3. All quality checks pass (`make quality`)
 4. Add tests for new features
+
+### Development Workflow
+
+```bash
+# Install dependencies
+make dev
+
+# Build the project
+make build
+
+# Run all tests
+make test
+
+# Check and fix code quality
+make quality-fix
+
+# Run everything (install, build, test, check quality)
+make all
+```
