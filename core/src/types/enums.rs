@@ -1,10 +1,6 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-/// Sentinel value for unknown enums
-#[allow(dead_code)]
-pub const UNKNOWN: i32 = -1;
-
 /// Preference ordering strategy for selecting preferred mammogram types
 ///
 /// Defines different strategies for ranking mammogram types during view selection.
@@ -79,14 +75,14 @@ impl MammogramType {
         }
     }
 
-    /// Returns numeric value for preference ordering
+    /// Returns numeric value for preference ordering (lower = more preferred)
     fn value(&self) -> i32 {
         match self {
-            MammogramType::Unknown => 0,
             MammogramType::Tomo => 1,
             MammogramType::Ffdm => 2,
             MammogramType::Synth => 3,
             MammogramType::Sfm => 4,
+            MammogramType::Unknown => 5,
         }
     }
 
@@ -95,13 +91,7 @@ impl MammogramType {
     /// Returns `true` if this type should be preferred over `other`
     /// when selecting the best mammogram from a collection.
     pub fn is_preferred_to(&self, other: &MammogramType) -> bool {
-        if self.is_unknown() {
-            false
-        } else if other.is_unknown() {
-            true
-        } else {
-            self.value() < other.value()
-        }
+        self.value() < other.value()
     }
 
     /// Returns the best mammogram type from a list
@@ -141,13 +131,7 @@ impl PartialOrd for MammogramType {
 
 impl Ord for MammogramType {
     fn cmp(&self, other: &Self) -> Ordering {
-        if self.is_preferred_to(other) {
-            Ordering::Less
-        } else if other.is_preferred_to(self) {
-            Ordering::Greater
-        } else {
-            Ordering::Equal
-        }
+        self.value().cmp(&other.value())
     }
 }
 
@@ -334,7 +318,7 @@ impl ViewPosition {
         }
     }
 
-    /// Returns simple name for display
+    /// Returns simple name for display (alias for short_str)
     pub fn simple_name(&self) -> &'static str {
         self.short_str()
     }
@@ -342,7 +326,7 @@ impl ViewPosition {
 
 impl fmt::Display for ViewPosition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.simple_name())
+        write!(f, "{}", self.short_str())
     }
 }
 

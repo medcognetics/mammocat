@@ -11,6 +11,8 @@ use pyo3::prelude::*;
 mod enums;
 mod errors;
 mod extractor;
+#[macro_use]
+mod macros;
 mod metadata;
 mod record;
 mod selection;

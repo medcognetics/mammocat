@@ -29,9 +29,9 @@ pub fn extract_laterality(dcm: &InMemDicomObject) -> Result<Laterality> {
         }
     }
 
-    // TODO: Fall back to FrameLaterality in SharedFunctionalGroupsSequence
-    // This requires navigating nested sequences using dicom-rs
-    // For MVP, we'll implement this in a future iteration
+    // NOTE: FrameLaterality in SharedFunctionalGroupsSequence is not yet implemented.
+    // This requires dicom-rs sequence navigation. Most DICOM files have ImageLaterality
+    // or Laterality tags, so this fallback is rarely needed in practice.
 
     Ok(Laterality::Unknown)
 }
@@ -53,36 +53,6 @@ fn parse_laterality_string(s: &str) -> Laterality {
     }
 }
 
-/// Extracts laterality from patient orientation
-///
-/// Patient orientation can indicate laterality:
-/// - Contains "L" → Right (image shows left side of patient, so breast is on right of image)
-/// - Contains "R" → Left (image shows right side of patient, so breast is on left of image)
-///
-/// This follows the DICOM convention where patient orientation describes
-/// the direction from the first pixel row/column to the last.
-#[allow(dead_code)]
-fn from_patient_orientation(orientation: &[String]) -> Laterality {
-    for item in orientation {
-        let parts: Vec<char> = item.chars().collect();
-        if parts.contains(&'L') {
-            return Laterality::Right;
-        } else if parts.contains(&'R') {
-            return Laterality::Left;
-        }
-    }
-
-    // Fallback: try from_str
-    for item in orientation {
-        let result = Laterality::from_str(item);
-        if !result.is_unknown() {
-            return result;
-        }
-    }
-
-    Laterality::Unknown
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,26 +66,5 @@ mod tests {
         assert_eq!(parse_laterality_string(" L "), Laterality::Left);
         assert_eq!(parse_laterality_string(""), Laterality::Unknown);
         assert_eq!(parse_laterality_string("UNKNOWN"), Laterality::Unknown);
-    }
-
-    #[test]
-    fn test_from_patient_orientation() {
-        // Test the orientation parsing logic
-        assert_eq!(
-            from_patient_orientation(&["FL".to_string()]),
-            Laterality::Right
-        );
-        assert_eq!(
-            from_patient_orientation(&["FR".to_string()]),
-            Laterality::Left
-        );
-        assert_eq!(
-            from_patient_orientation(&["L".to_string()]),
-            Laterality::Right
-        );
-        assert_eq!(
-            from_patient_orientation(&["R".to_string()]),
-            Laterality::Left
-        );
     }
 }

@@ -18,118 +18,136 @@ const CV_STRINGS: &[&str] = &["cleavage view", "valley-view"];
 /// # Algorithm
 ///
 /// 1. Extract from ViewPosition tag with pattern matching
-/// 2. Extract from ViewCodeSequence → CodeMeaning (TODO)
-/// 3. Extract from ViewModifierCodeSequence → CodeMeaning (TODO)
+/// 2. Extract from ViewCodeSequence → CodeMeaning (not yet implemented)
+/// 3. Extract from ViewModifierCodeSequence → CodeMeaning (not yet implemented)
 /// 4. Return highest priority match
+///
+/// Note: Sequence navigation for ViewCodeSequence and ViewModifierCodeSequence
+/// requires dicom-rs sequence traversal. Most DICOM files have the ViewPosition
+/// tag, so this fallback is rarely needed.
 pub fn extract_view_position(dcm: &InMemDicomObject) -> Result<ViewPosition> {
-    // Try ViewPosition tag
     if let Some(vp) = get_string_value(dcm, VIEW_POSITION_TAG) {
         let result = from_str(&vp, false);
         if !result.is_unknown() {
             return Ok(result);
         }
     }
-
-    // TODO: Try ViewCodeSequence and ViewModifierCodeSequence
-    // This requires sequence navigation with dicom-rs
-    // For MVP, we'll implement this in a future iteration
-
     Ok(ViewPosition::Unknown)
 }
 
 /// Parses view position from string
 ///
 /// Supports both strict and loose matching modes:
-/// - Strict: exact match with predefined patterns
-/// - Loose: substring matching
+/// - Strict: exact match with predefined patterns only
+/// - Loose: also tries substring matching
 #[allow(clippy::should_implement_trait)]
 pub fn from_str(s: &str, strict: bool) -> ViewPosition {
     let s_lower = s.trim().to_lowercase();
 
-    // Strict patterns - exact matches
-    if CC_STRINGS.iter().any(|&p| s_lower == p) || s_lower == "cc" {
-        return ViewPosition::Cc;
+    if let Some(pos) = match_strict_patterns(&s_lower) {
+        return pos;
     }
 
-    // Check more specific patterns first (LMO before MLO, LM before ML)
-
-    // LMO patterns - check before MLO since both contain "lateral" and "oblique"
-    if s_lower == "lmo"
-        || s_lower == "latero-medial oblique"
-        || s_lower == "lateral-medial oblique"
-        || (s_lower.contains("oblique") && s_lower.contains("latero"))
-    {
-        return ViewPosition::Lmo;
+    if !strict {
+        if let Some(pos) = match_loose_patterns(&s_lower) {
+            return pos;
+        }
     }
 
-    // MLO patterns
-    if s_lower == "mlo"
-        || s_lower == "medio-lateral oblique"
-        || s_lower == "medial-lateral oblique"
-        || (s_lower.contains("oblique") && s_lower.contains("medio"))
-        || (s_lower.contains("oblique")
-            && s_lower.contains("medial")
-            && !s_lower.contains("latero"))
-    {
-        return ViewPosition::Mlo;
+    ViewPosition::Unknown
+}
+
+/// Matches exact patterns and descriptive names
+fn match_strict_patterns(s: &str) -> Option<ViewPosition> {
+    // CC - Cranio-caudal
+    if CC_STRINGS.contains(&s) || s == "cc" {
+        return Some(ViewPosition::Cc);
     }
 
-    // LM patterns - check before ML
-    if LM_STRINGS.iter().any(|&p| s_lower == p) || s_lower == "lm" {
-        return ViewPosition::Lm;
+    // LMO - check before MLO (both contain "lateral" and "oblique")
+    if matches_lmo(s) {
+        return Some(ViewPosition::Lmo);
     }
 
-    // ML patterns
-    if ML_STRINGS.iter().any(|&p| s_lower == p) || s_lower == "ml" {
-        return ViewPosition::Ml;
+    // MLO - Medio-lateral oblique
+    if matches_mlo(s) {
+        return Some(ViewPosition::Mlo);
+    }
+
+    // LM - check before ML
+    if LM_STRINGS.contains(&s) || s == "lm" {
+        return Some(ViewPosition::Lm);
+    }
+
+    // ML - Medio-lateral
+    if ML_STRINGS.contains(&s) || s == "ml" {
+        return Some(ViewPosition::Ml);
     }
 
     // XCCL - CC exaggerated laterally
-    if s_lower.contains("exaggerated laterally") || s_lower == "xccl" {
-        return ViewPosition::Xccl;
+    if s.contains("exaggerated laterally") || s == "xccl" {
+        return Some(ViewPosition::Xccl);
     }
 
     // XCCM - CC exaggerated medially
-    if s_lower.contains("exaggerated medially") || s_lower == "xccm" {
-        return ViewPosition::Xccm;
+    if s.contains("exaggerated medially") || s == "xccm" {
+        return Some(ViewPosition::Xccm);
     }
 
     // AT - Axillary tail
-    if AT_STRINGS.iter().any(|&p| s_lower.contains(p)) || s_lower == "at" {
-        return ViewPosition::At;
+    if AT_STRINGS.iter().any(|&p| s.contains(p)) || s == "at" {
+        return Some(ViewPosition::At);
     }
 
     // CV - Cleavage view
-    if CV_STRINGS.iter().any(|&p| s_lower.contains(p)) || s_lower == "cv" {
-        return ViewPosition::Cv;
+    if CV_STRINGS.iter().any(|&p| s.contains(p)) || s == "cv" {
+        return Some(ViewPosition::Cv);
     }
 
-    // If strict mode, return unknown if no match
-    if strict {
-        return ViewPosition::Unknown;
-    }
+    None
+}
 
-    // Loose matching - check if any enum name is contained as substring
-    if s_lower.contains("xccl") {
-        ViewPosition::Xccl
-    } else if s_lower.contains("xccm") {
-        ViewPosition::Xccm
-    } else if s_lower.contains("cc") {
-        ViewPosition::Cc
-    } else if s_lower.contains("mlo") {
-        ViewPosition::Mlo
-    } else if s_lower.contains("ml") {
-        ViewPosition::Ml
-    } else if s_lower.contains("lmo") {
-        ViewPosition::Lmo
-    } else if s_lower.contains("lm") {
-        ViewPosition::Lm
-    } else if s_lower.contains("at") {
-        ViewPosition::At
-    } else if s_lower.contains("cv") {
-        ViewPosition::Cv
+/// Checks if string matches LMO patterns
+fn matches_lmo(s: &str) -> bool {
+    s == "lmo"
+        || s == "latero-medial oblique"
+        || s == "lateral-medial oblique"
+        || (s.contains("oblique") && s.contains("latero"))
+}
+
+/// Checks if string matches MLO patterns
+fn matches_mlo(s: &str) -> bool {
+    s == "mlo"
+        || s == "medio-lateral oblique"
+        || s == "medial-lateral oblique"
+        || (s.contains("oblique") && s.contains("medio"))
+        || (s.contains("oblique") && s.contains("medial") && !s.contains("latero"))
+}
+
+/// Matches view position abbreviations as substrings
+fn match_loose_patterns(s: &str) -> Option<ViewPosition> {
+    // Check more specific patterns first to avoid false matches
+    // (e.g., "xccl" before "cc", "mlo" before "ml")
+    if s.contains("xccl") {
+        Some(ViewPosition::Xccl)
+    } else if s.contains("xccm") {
+        Some(ViewPosition::Xccm)
+    } else if s.contains("mlo") {
+        Some(ViewPosition::Mlo)
+    } else if s.contains("lmo") {
+        Some(ViewPosition::Lmo)
+    } else if s.contains("cc") {
+        Some(ViewPosition::Cc)
+    } else if s.contains("ml") {
+        Some(ViewPosition::Ml)
+    } else if s.contains("lm") {
+        Some(ViewPosition::Lm)
+    } else if s.contains("at") {
+        Some(ViewPosition::At)
+    } else if s.contains("cv") {
+        Some(ViewPosition::Cv)
     } else {
-        ViewPosition::Unknown
+        None
     }
 }
 

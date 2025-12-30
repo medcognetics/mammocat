@@ -121,10 +121,14 @@ The codebase follows a clear separation of concerns:
 - `pixel_spacing.rs`: PixelSpacing parsing
 
 **`extraction/`** - Classification algorithms (mirrors Python dicom-utils behavior)
-- `tags.rs`: DICOM tag constants and helper functions for reading tag values
+- `tags.rs`: DICOM tag constants and helper functions:
+  - `get_string_value()`, `get_int_value()`: Read tag values from DICOM
+  - `get_lowercase_string()`: Get normalized lowercase string (reduces boilerplate)
+  - `PIXEL_DATA_TAG`, `DICOM_MAGIC_BYTES`: Shared constants
 - `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection)
 - `laterality.rs`: Laterality extraction with fallback hierarchy
-- `view_position.rs`: View position parsing from multiple DICOM fields
+- `view_position.rs`: View position parsing with helper functions (`match_strict_patterns`, `match_loose_patterns`)
+- `view_modifiers.rs`: Spot compression, magnification, implant displaced detection
 
 **`selection/`** - Preferred view selection logic
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
@@ -133,6 +137,12 @@ The codebase follows a clear separation of concerns:
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
 - `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames)
+
+**`python/`** - PyO3 bindings (enabled with `--features python`)
+- `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)
+- `metadata.rs`: PyMammogramMetadata wrapper
+- `record.rs`: PyMammogramRecord wrapper
+- `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap
@@ -175,13 +185,15 @@ This implementation maintains behavioral compatibility with the Python `dicom-ut
 
 ## Testing Strategy
 
-Tests are embedded in module files using `#[cfg(test)]`. Current coverage: 34+ unit tests.
+Tests are embedded in module files using `#[cfg(test)]`. Current coverage: 60+ Rust unit tests + 48 Python tests.
 
 Test categories:
 - Enum behavior and ordering (types/enums.rs)
 - String parsing (ViewPosition, Laterality from strings)
 - Data structure operations (Laterality::reduce, ImageType decomposition)
 - Classification algorithm logic
+- Preferred view selection (selection/record.rs, selection/views.rs)
+- Python bindings API (tests/test_enums.py, tests/test_api.py)
 
 When adding features that affect metadata extraction, add corresponding unit tests in the relevant module file.
 

@@ -1,17 +1,14 @@
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::error::Result;
 use crate::extraction::tags::{
-    get_string_value, get_u16_value, COLUMNS, ROWS, SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
+    get_string_value, get_u16_value, COLUMNS, PIXEL_DATA_TAG, ROWS, SOP_INSTANCE_UID,
+    STUDY_INSTANCE_UID,
 };
 use crate::extraction::{is_implant_displaced, is_magnified, is_spot_compression};
 use crate::types::PreferenceOrder;
-use dicom_core::Tag;
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::cmp::Ordering;
 use std::path::PathBuf;
-
-/// DICOM pixel data tag - we stop reading before this to avoid loading pixel data
-const PIXEL_DATA_TAG: Tag = Tag(0x7FE0, 0x0010);
 
 /// Mammogram record combining file path and extracted metadata
 ///
