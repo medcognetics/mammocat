@@ -5,6 +5,48 @@ use std::fmt;
 #[allow(dead_code)]
 pub const UNKNOWN: i32 = -1;
 
+/// Preference ordering strategy for selecting preferred mammogram types
+///
+/// Defines different strategies for ranking mammogram types during view selection.
+/// Lower preference values indicate MORE preferred types (will be selected by .min()).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", serde(rename_all = "kebab-case"))]
+pub enum PreferenceOrder {
+    /// Default ordering: FFDM > SYNTH > TOMO > SFM
+    /// Prefers 2D images over tomosynthesis for general inference
+    #[default]
+    Default,
+
+    /// Tomosynthesis first: TOMO > FFDM > SYNTH > SFM
+    /// Maximizes use of 3D imaging when available
+    TomoFirst,
+}
+
+impl PreferenceOrder {
+    /// Returns the preference value for a given mammogram type under this ordering
+    ///
+    /// Lower values are MORE preferred (will be selected by .min())
+    pub fn preference_value(&self, mammo_type: &MammogramType) -> i32 {
+        match self {
+            PreferenceOrder::Default => match mammo_type {
+                MammogramType::Unknown => 5,
+                MammogramType::Ffdm => 1,
+                MammogramType::Synth => 2,
+                MammogramType::Tomo => 3,
+                MammogramType::Sfm => 4,
+            },
+            PreferenceOrder::TomoFirst => match mammo_type {
+                MammogramType::Unknown => 5,
+                MammogramType::Tomo => 1,
+                MammogramType::Ffdm => 2,
+                MammogramType::Synth => 3,
+                MammogramType::Sfm => 4,
+            },
+        }
+    }
+}
+
 /// Mammogram type classification with preference ordering
 ///
 /// Preference order: TOMO < FFDM < SYNTH < SFM < UNKNOWN

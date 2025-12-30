@@ -47,6 +47,13 @@ impl<'a> fmt::Display for TextReport<'a> {
         writeln!(f, "Frames:         {}", self.metadata.number_of_frames)?;
         writeln!(f, "For Processing: {}", self.metadata.is_for_processing)?;
         writeln!(f, "Has Implant:    {}", self.metadata.has_implant)?;
+        writeln!(
+            f,
+            "Implant Displaced: {}",
+            self.metadata.is_implant_displaced
+        )?;
+        writeln!(f, "Spot Compression: {}", self.metadata.is_spot_compression)?;
+        writeln!(f, "Magnification:  {}", self.metadata.is_magnified)?;
         writeln!(f)?;
 
         // Additional derived information
@@ -73,6 +80,9 @@ mod tests {
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
+            is_spot_compression: false,
+            is_magnified: false,
+            is_implant_displaced: false,
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,

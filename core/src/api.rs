@@ -5,6 +5,7 @@ use crate::extraction::tags::{
 };
 use crate::extraction::{
     extract_image_type, extract_laterality, extract_mammogram_type, extract_view_position,
+    is_implant_displaced, is_magnified, is_spot_compression,
 };
 use crate::types::{ImageType, Laterality, MammogramType, MammogramView, ViewPosition};
 use dicom_object::InMemDicomObject;
@@ -53,6 +54,9 @@ impl MammogramExtractor {
             image_type: extract_image_type(dcm),
             is_for_processing: Self::extract_for_processing(dcm),
             has_implant: Self::extract_implant_status(dcm),
+            is_spot_compression: is_spot_compression(dcm),
+            is_magnified: is_magnified(dcm),
+            is_implant_displaced: is_implant_displaced(dcm),
             manufacturer: get_string_value(dcm, MANUFACTURER),
             model: get_string_value(dcm, MANUFACTURER_MODEL_NAME),
             number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
@@ -98,6 +102,15 @@ pub struct MammogramMetadata {
     /// Whether breast implant is present
     pub has_implant: bool,
 
+    /// Whether this is a spot compression view
+    pub is_spot_compression: bool,
+
+    /// Whether this is a magnification view
+    pub is_magnified: bool,
+
+    /// Whether this is an implant displaced view
+    pub is_implant_displaced: bool,
+
     /// Manufacturer name
     pub manufacturer: Option<String>,
 
@@ -138,6 +151,9 @@ mod tests {
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
+            is_spot_compression: false,
+            is_magnified: false,
+            is_implant_displaced: false,
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
@@ -159,6 +175,9 @@ mod tests {
             image_type: ImageType::new("DERIVED".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
+            is_spot_compression: false,
+            is_magnified: false,
+            is_implant_displaced: false,
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 50,

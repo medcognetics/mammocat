@@ -51,6 +51,8 @@ cargo clippy --all-features
 ```
 
 ### Running the CLI
+
+#### mammocat - Metadata Extraction
 ```bash
 # After building
 ./target/release/mammocat path/to/mammogram.dcm
@@ -60,6 +62,25 @@ cargo clippy --all-features
 
 # JSON output (requires json feature)
 ./target/release/mammocat --format json path/to/file.dcm
+```
+
+#### mammoselect - Preferred View Selection
+```bash
+# Select preferred views from a directory (uses default ordering)
+./target/release/mammoselect /path/to/dicom_directory
+
+# Use different preference ordering
+./target/release/mammoselect --preference default /path/to/directory
+./target/release/mammoselect --preference tomo-first /path/to/directory
+
+# Output as JSON (requires json feature)
+./target/release/mammoselect --format json /path/to/directory
+
+# Output file paths only
+./target/release/mammoselect --format paths /path/to/directory
+
+# Verbose logging
+./target/release/mammoselect --verbose /path/to/directory
 ```
 
 ## Architecture
@@ -73,7 +94,7 @@ cargo clippy --all-features
 The codebase follows a clear separation of concerns:
 
 **`types/`** - Core type system and domain models
-- `enums.rs`: MammogramType, Laterality, ViewPosition, PhotometricInterpretation
+- `enums.rs`: MammogramType, Laterality, ViewPosition, PhotometricInterpretation, PreferenceOrder
 - `image_type.rs`: ImageType struct for decomposed DICOM ImageType field
 - `view.rs`: MammogramView combining laterality + view position
 - `pixel_spacing.rs`: PixelSpacing parsing
@@ -83,6 +104,10 @@ The codebase follows a clear separation of concerns:
 - `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection)
 - `laterality.rs`: Laterality extraction with fallback hierarchy
 - `view_position.rs`: View position parsing from multiple DICOM fields
+
+**`selection/`** - Preferred view selection logic
+- `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
+- `views.rs`: get_preferred_views and get_preferred_views_with_order for selecting best views
 
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
@@ -96,7 +121,11 @@ The codebase follows a clear separation of concerns:
 
 ### Key Design Patterns
 
-**Preference Ordering**: MammogramType implements Ord/PartialOrd based on preference (TOMO < FFDM < SYNTH < SFM). This allows using `.min()` to select the best type from a collection.
+**Configurable Preference Ordering**: The `PreferenceOrder` enum defines different strategies for ranking mammogram types during view selection. Two strategies are available:
+- `Default`: FFDM > SYNTH > TOMO > SFM - Prefers 2D images for general inference
+- `TomoFirst`: TOMO > FFDM > SYNTH > SFM - Maximizes use of 3D imaging when available
+
+MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) uses this to pick the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC).
 
 **Fallback Hierarchy**: Laterality extraction attempts multiple DICOM tags in order:
 1. ImageLaterality
@@ -135,13 +164,24 @@ Test categories:
 
 When adding features that affect metadata extraction, add corresponding unit tests in the relevant module file.
 
-## Binary Location
+## Binary Locations
 
-The CLI binary is defined in core/Cargo.toml:
+Two CLI binaries are defined in core/Cargo.toml:
+
+**mammocat** - Metadata extraction from individual DICOM files
 ```toml
 [[bin]]
 name = "mammocat"
 path = "src/main.rs"
 ```
 
-After building, the binary is at `./target/release/mammocat` (release) or `./target/debug/mammocat` (debug).
+**mammoselect** - Preferred view selection from directories
+```toml
+[[bin]]
+name = "mammoselect"
+path = "src/bin/mammoselect.rs"
+```
+
+After building, binaries are at:
+- `./target/release/mammocat` and `./target/release/mammoselect` (release)
+- `./target/debug/mammocat` and `./target/debug/mammoselect` (debug)

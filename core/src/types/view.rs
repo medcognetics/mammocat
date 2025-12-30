@@ -37,9 +37,9 @@ impl fmt::Display for MammogramView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} {}",
-            self.laterality.simple_name(),
-            self.view.simple_name()
+            "{}{}",
+            self.laterality.short_str(),
+            self.view.short_str()
         )
     }
 }

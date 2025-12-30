@@ -1,5 +1,5 @@
 use crate::selection::record::MammogramRecord;
-use crate::types::{MammogramView, STANDARD_MAMMO_VIEWS};
+use crate::types::{MammogramView, PreferenceOrder, STANDARD_MAMMO_VIEWS};
 use std::collections::HashMap;
 
 /// Selects preferred inference views from a collection of mammogram records
@@ -19,6 +19,26 @@ use std::collections::HashMap;
 pub fn get_preferred_views(
     records: &[MammogramRecord],
 ) -> HashMap<MammogramView, Option<MammogramRecord>> {
+    get_preferred_views_with_order(records, PreferenceOrder::default())
+}
+
+/// Selects preferred inference views using a specific preference order
+///
+/// For each of the 4 standard views (L-MLO, R-MLO, L-CC, R-CC), selects the
+/// most preferred mammogram based on comparison logic using the specified preference order.
+///
+/// # Arguments
+///
+/// * `records` - Slice of MammogramRecord to select from
+/// * `preference_order` - The preference ordering strategy to use
+///
+/// # Returns
+///
+/// HashMap mapping each standard view to the selected record (or None if not found)
+pub fn get_preferred_views_with_order(
+    records: &[MammogramRecord],
+    preference_order: PreferenceOrder,
+) -> HashMap<MammogramView, Option<MammogramRecord>> {
     let mut result = HashMap::new();
 
     // Try each standard view
@@ -28,8 +48,19 @@ pub fn get_preferred_views(
             .filter(|record| is_candidate_for_view(record, standard_view))
             .collect();
 
-        // Select minimum (most preferred) from candidates
-        let selection = candidates.into_iter().min().cloned();
+        // Select most preferred from candidates using the specified preference order
+        let selection = candidates
+            .into_iter()
+            .min_by(|a, b| {
+                if a.is_preferred_to_with_order(b, preference_order) {
+                    std::cmp::Ordering::Less
+                } else if b.is_preferred_to_with_order(a, preference_order) {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .cloned();
         result.insert(*standard_view, selection);
     }
 
@@ -71,7 +102,7 @@ fn is_candidate_for_view(record: &MammogramRecord, target: &MammogramView) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImageType, Laterality, MammogramType, ViewPosition};
+    use crate::types::{ImageType, Laterality, MammogramType, PreferenceOrder, ViewPosition};
     use std::path::PathBuf;
 
     fn make_test_record(
@@ -93,6 +124,9 @@ mod tests {
                 ),
                 is_for_processing: false,
                 has_implant: false,
+                is_spot_compression: false,
+                is_magnified: false,
+                is_implant_displaced: false,
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
@@ -100,6 +134,8 @@ mod tests {
             rows: Some(2560),
             columns: Some(3328),
             is_implant_displaced: false,
+            is_spot_compression: false,
+            is_magnified: false,
             study_instance_uid: None,
             sop_instance_uid: None,
         }
@@ -221,7 +257,45 @@ mod tests {
 
         let selections = get_preferred_views(&records);
 
-        // Should select TOMO (most preferred)
+        // Should select FFDM (most preferred with default ordering)
+        let selected = selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)]
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Ffdm);
+    }
+
+    #[test]
+    fn test_get_preferred_views_default_order() {
+        // Create multiple of same view with different types
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Synth),
+        ];
+
+        let selections = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+
+        // Should select FFDM (most preferred with Default ordering)
+        let selected = selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)]
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Ffdm);
+    }
+
+    #[test]
+    fn test_get_preferred_views_tomo_first_order() {
+        // Create multiple of same view with different types
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Synth),
+        ];
+
+        let selections = get_preferred_views_with_order(&records, PreferenceOrder::TomoFirst);
+
+        // Should select TOMO (most preferred with TomoFirst ordering)
         let selected = selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)]
             .as_ref()
             .unwrap();
