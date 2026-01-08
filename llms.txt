@@ -1,0 +1,171 @@
+# Mammocat
+
+> Rust library and CLI for extracting mammography metadata from DICOM files
+
+## Overview
+
+Mammocat extracts and classifies mammography metadata from DICOM files. It's a Rust port of the Python `dicom-utils` library, maintaining behavioral compatibility while providing better performance and type safety.
+
+## Key Concepts
+
+### Mammogram Types (preference order: FFDM > SYNTH > TOMO > SFM)
+- TOMO: Tomosynthesis (3D imaging), detected by NumberOfFrames > 1
+- FFDM: Full Field Digital Mammography, default for "ORIGINAL" images
+- SYNTH: Synthetic 2D from tomosynthesis, detected by series description or GENERATED_2D flag
+- SFM: Screen Film Mammography
+
+### Laterality
+Breast side: Left, Right, Bilateral, None, Unknown
+Extracted via fallback hierarchy: ImageLaterality -> Laterality -> FrameLaterality in SharedFunctionalGroupsSequence
+
+### View Positions
+Standard views: CC (cranio-caudal), MLO (mediolateral oblique)
+Other views: XCCL, XCCM, ML, LM, LMO, AT, CV
+
+### Preferred View Selection
+Selects the best mammogram for each of the 4 standard views (L-CC, R-CC, L-MLO, R-MLO) from a directory.
+Two preference orderings available:
+- Default: FFDM > SYNTH > TOMO > SFM (prefers 2D images)
+- TomoFirst: TOMO > FFDM > SYNTH > SFM (maximizes 3D imaging)
+
+## Project Structure
+
+```
+mammocat/
+├── core/                           # Library and binaries
+│   ├── src/
+│   │   ├── types/                  # Core type system
+│   │   │   ├── enums.rs            # MammogramType, Laterality, ViewPosition, PreferenceOrder
+│   │   │   ├── filter.rs           # FilterConfig for record filtering
+│   │   │   ├── image_type.rs       # ImageType struct
+│   │   │   ├── pixel_spacing.rs    # PixelSpacing parsing
+│   │   │   └── view.rs             # MammogramView (laterality + view position)
+│   │   ├── extraction/             # Classification algorithms
+│   │   │   ├── tags.rs             # DICOM tag constants and helpers
+│   │   │   ├── mammo_type.rs       # Type classification logic
+│   │   │   ├── laterality.rs       # Laterality extraction
+│   │   │   ├── view_position.rs    # View position parsing
+│   │   │   └── view_modifiers.rs   # Spot compression, magnification, implant displaced
+│   │   ├── selection/              # Preferred view selection
+│   │   │   ├── record.rs           # MammogramRecord with comparison logic
+│   │   │   └── views.rs            # get_preferred_views functions
+│   │   ├── python/                 # PyO3 bindings (--features python)
+│   │   ├── cli/                    # Command-line interface
+│   │   ├── api.rs                  # Public API: MammogramExtractor, MammogramMetadata
+│   │   ├── error.rs                # Error types
+│   │   ├── main.rs                 # mammocat CLI entry point
+│   │   └── bin/mammoselect.rs      # mammoselect CLI entry point
+```
+
+## Public API
+
+### MammogramExtractor (core/src/api.rs)
+Main entry point for metadata extraction from DICOM files.
+
+```rust
+use mammocat_core::{MammogramExtractor, MammogramType, Laterality, ViewPosition};
+use dicom_object::open_file;
+
+let dcm = open_file("mammogram.dcm")?;
+let metadata = MammogramExtractor::extract(&dcm)?;
+
+println!("Type: {}", metadata.mammogram_type.simple_name());
+println!("Laterality: {}", metadata.laterality);
+println!("View: {}", metadata.view_position);
+println!("Is standard view: {}", metadata.is_standard_view());
+```
+
+### MammogramMetadata
+Contains: mammogram_type, laterality, view_position, image_type, pixel_spacing, for_processing, manufacturer, model, number_of_frames, is_secondary_capture, modality, and view modifier flags.
+
+### MammogramRecord (core/src/selection/record.rs)
+Combines file path with metadata for view selection. Implements comparison logic via `is_preferred_to_with_order()`.
+
+### FilterConfig (core/src/types/filter.rs)
+Configures filtering during view selection:
+- allowed_types: Whitelist of mammogram types (None = allow all)
+- exclude_implants: Exclude implant-displaced views
+- exclude_non_standard_views: Only keep CC and MLO views
+- Default behavior excludes FOR PROCESSING, secondary capture, and non-MG modality
+
+### View Selection Functions (core/src/selection/views.rs)
+- get_preferred_views(records): Default ordering
+- get_preferred_views_with_order(records, order): Custom preference order
+- get_preferred_views_filtered(records, order, filter): With filtering
+
+## CLI Tools
+
+### mammocat - Metadata Extraction
+```bash
+./target/release/mammocat path/to/mammogram.dcm
+./target/release/mammocat --format json path/to/file.dcm
+./target/release/mammocat --verbose path/to/file.dcm
+```
+
+### mammoselect - Preferred View Selection
+```bash
+./target/release/mammoselect /path/to/dicom_directory
+./target/release/mammoselect --preference tomo-first /path/to/directory
+./target/release/mammoselect --format json /path/to/directory
+./target/release/mammoselect --format paths /path/to/directory
+./target/release/mammoselect --allowed-types ffdm,tomo --exclude-implants /path/to/directory
+./target/release/mammoselect --only-standard-views --include-for-processing /path/to/directory
+```
+
+## Development Commands
+
+```bash
+# Build
+make build              # Python bindings (debug)
+make build-release      # Python bindings (release)
+cargo build --release   # Rust CLI only
+
+# Test
+make test               # All tests (Rust + Python)
+make test-rust          # Rust tests only
+make test-python        # Python tests only
+cargo test test_name    # Specific test
+
+# Code Quality
+make format             # Format Rust and Python
+make lint               # Lint both languages
+make typecheck          # Type checking (cargo check + basedpyright)
+make quality            # All quality checks
+make quality-fix        # Auto-fix issues
+```
+
+## Dependencies
+
+- dicom-rs (0.7): DICOM parsing
+- clap (4.5): CLI argument parsing
+- thiserror (1.0): Error handling
+- regex (1.10): Pattern matching
+- serde/serde_json (optional): JSON serialization (json feature)
+- pyo3 (optional): Python bindings (python feature)
+
+## Key Design Patterns
+
+1. **Fallback Hierarchy**: Laterality tries multiple DICOM tags in order
+2. **Rule-Based Classification**: Mammogram type uses strict rule ordering (see mammo_type.rs:26-50)
+3. **Configurable Preference**: PreferenceOrder enum controls view selection strategy
+4. **Hard Filtering**: FilterConfig removes records before selection runs
+5. **Enum Combinators**: Laterality.reduce() combines lateralities; ViewPosition has helper methods
+
+## Python Bindings
+
+Enable with `--features python`. Provides PyO3 wrappers for all types:
+- PyMammogramType, PyLaterality, PyViewPosition
+- PyMammogramMetadata, PyMammogramRecord
+- PyFilterConfig
+- get_preferred_views_filtered()
+
+## Testing
+
+60+ Rust unit tests embedded in module files with #[cfg(test)]
+48 Python tests in tests/ directory
+
+Test categories: enum behavior, string parsing, classification logic, view selection, Python bindings
+
+## License
+
+Apache License 2.0
