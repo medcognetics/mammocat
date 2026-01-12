@@ -1,5 +1,7 @@
 """Tests for mammocat main API (requires DICOM fixtures)."""
 
+from pathlib import Path
+
 import pytest
 
 from mammocat import (
@@ -114,6 +116,80 @@ class TestMammogramRecord:
         assert isinstance(d, dict)
         assert "file_path" in d
         assert "metadata" in d
+
+
+class TestMammogramRecordFromBytes:
+    """Tests for MammogramRecord.from_bytes method."""
+
+    def test_from_bytes_basic(self, sample_dicom):
+        """Test basic from_bytes functionality."""
+        with Path(sample_dicom).open("rb") as f:
+            data = f.read()
+        record = MammogramRecord.from_bytes(data, id="test_upload")
+
+        assert record is not None
+        assert record.file_path == "test_upload"
+        assert record.metadata is not None
+        assert record.metadata.mammogram_type is not None
+        assert record.metadata.laterality is not None
+        assert record.metadata.view_position is not None
+
+    def test_from_bytes_no_id(self, sample_dicom):
+        """Test from_bytes with no id (empty path)."""
+        with Path(sample_dicom).open("rb") as f:
+            data = f.read()
+        record = MammogramRecord.from_bytes(data)
+
+        assert record is not None
+        assert record.file_path == ""
+        assert record.metadata is not None
+
+    def test_from_bytes_matches_from_file(self, sample_dicom):
+        """Test that from_bytes produces same metadata as from_file."""
+        record_file = MammogramRecord.from_file(sample_dicom)
+
+        with Path(sample_dicom).open("rb") as f:
+            data = f.read()
+        record_bytes = MammogramRecord.from_bytes(data, id=str(sample_dicom))
+
+        # Metadata should match exactly
+        assert record_bytes.metadata.mammogram_type == record_file.metadata.mammogram_type
+        assert record_bytes.metadata.laterality == record_file.metadata.laterality
+        assert record_bytes.metadata.view_position == record_file.metadata.view_position
+        assert record_bytes.metadata.is_for_processing == record_file.metadata.is_for_processing
+        assert record_bytes.metadata.has_implant == record_file.metadata.has_implant
+
+        # Other properties should also match
+        assert record_bytes.rows == record_file.rows
+        assert record_bytes.columns == record_file.columns
+        assert record_bytes.is_implant_displaced == record_file.is_implant_displaced
+        assert record_bytes.is_spot_compression == record_file.is_spot_compression
+        assert record_bytes.is_magnified == record_file.is_magnified
+
+    def test_from_bytes_invalid_data(self):
+        """Test from_bytes with invalid DICOM data."""
+        with pytest.raises(DicomError):
+            MammogramRecord.from_bytes(b"not valid dicom data")
+
+    def test_from_bytes_empty_data(self):
+        """Test from_bytes with empty bytes."""
+        with pytest.raises(DicomError):
+            MammogramRecord.from_bytes(b"")
+
+    def test_from_bytes_in_view_selection(self, sample_dicom_set):
+        """Test that records from from_bytes work in view selection."""
+        # Load files as bytes and create records
+        records = []
+        for i, filepath in enumerate(sample_dicom_set):
+            with Path(filepath).open("rb") as f:
+                data = f.read()
+            record = MammogramRecord.from_bytes(data, id=f"upload_{i}")
+            records.append(record)
+
+        # Should work with view selection
+        result = get_preferred_views(records)
+        assert isinstance(result, dict)
+        assert len(result) == 4
 
 
 class TestPreferredViews:
