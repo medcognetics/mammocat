@@ -46,6 +46,35 @@ impl PyMammogramRecord {
         Ok(PyMammogramRecord { inner: record })
     }
 
+    /// Create a record from in-memory DICOM bytes
+    ///
+    /// Parses the DICOM object from bytes and extracts mammogram metadata.
+    ///
+    /// Args:
+    ///     data: Raw DICOM file bytes
+    ///     id: Optional identifier for this record (for debugging/logging)
+    ///
+    /// Returns:
+    ///     MammogramRecord: Record with extracted metadata
+    ///
+    /// Raises:
+    ///     DicomError: If the bytes cannot be parsed as DICOM
+    ///     ExtractionError: If metadata extraction fails
+    ///
+    /// Example:
+    ///     >>> from mammocat import MammogramRecord
+    ///     >>> with open("mammogram.dcm", "rb") as f:
+    ///     ...     data = f.read()
+    ///     >>> record = MammogramRecord.from_bytes(data, id="upload_0")
+    ///     >>> print(record.metadata.mammogram_type)
+    #[staticmethod]
+    #[pyo3(signature = (data, id=None))]
+    fn from_bytes(data: &[u8], id: Option<&str>) -> PyResult<PyMammogramRecord> {
+        let record =
+            crate::selection::MammogramRecord::from_bytes(data, id).map_err(convert_error)?;
+        Ok(PyMammogramRecord { inner: record })
+    }
+
     /// Path to the DICOM file
     #[getter]
     fn file_path(&self) -> String {
