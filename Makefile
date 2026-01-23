@@ -1,4 +1,4 @@
-.PHONY: help dev build build-release test test-python test-rust test-cov
+.PHONY: help dev build build-release install test test-python test-rust test-cov
 .PHONY: format format-check lint lint-fix typecheck quality quality-fix clean all
 
 help:  ## Show this help message
@@ -15,6 +15,9 @@ build:  ## Build Python bindings with maturin (debug)
 
 build-release:  ## Build Python bindings (release, optimized)
 	uv run maturin develop --features python --release
+
+install:  ## Install CLI binaries to ~/.cargo/bin
+	cargo install --path core
 
 # Testing commands
 test: build test-rust test-python  ## Run all tests (rebuilds Python bindings first)
