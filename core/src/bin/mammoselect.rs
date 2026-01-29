@@ -1,7 +1,6 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
-use dicom_object::OpenFileOptions;
-use mammocat_core::extraction::tags::{DICOM_MAGIC_BYTES, PIXEL_DATA_TAG};
+use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
     get_preferred_views_filtered, FilterConfig, MammogramRecord, MammogramType, MammogramView,
     PreferenceOrder, STANDARD_MAMMO_VIEWS,
@@ -235,24 +234,13 @@ fn is_dicom_file(path: &PathBuf) -> bool {
 
     // Read first 132 bytes (128-byte preamble + 4-byte "DICM" magic)
     let mut buffer = [0u8; 132];
-    let has_magic = match file.read(&mut buffer) {
+    match file.read(&mut buffer) {
         Ok(n) if n >= 132 => {
             // Check for "DICM" magic bytes at offset 128
             &buffer[128..132] == DICOM_MAGIC_BYTES
         }
         _ => false,
-    };
-
-    if has_magic {
-        return true;
     }
-
-    // Fallback: try parsing without the standard preamble.
-    // Some valid DICOM files omit the 128-byte preamble and "DICM" magic.
-    OpenFileOptions::new()
-        .read_until(PIXEL_DATA_TAG)
-        .open_file(path)
-        .is_ok()
 }
 
 /// Builds FilterConfig from CLI arguments
