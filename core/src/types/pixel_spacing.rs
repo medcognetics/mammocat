@@ -32,25 +32,23 @@ impl PixelSpacing {
     pub fn parse(s: &str) -> Result<Self, String> {
         static REGEX: OnceLock<Regex> = OnceLock::new();
         let re = REGEX.get_or_init(|| {
-            Regex::new(r"(\d+\.?\d*(?:[e\-\d]+)?)[^\d.]+(\d+\.?\d*(?:[e\-\d]+)?)")
+            Regex::new(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
                 .expect("Failed to compile regex")
         });
 
-        let caps = re
-            .captures(s)
+        let mut numbers = re.find_iter(s).map(|m| m.as_str());
+        let row_str = numbers
+            .next()
+            .ok_or_else(|| format!("Failed to parse PixelSpacing from '{}'", s))?;
+        let col_str = numbers
+            .next()
             .ok_or_else(|| format!("Failed to parse PixelSpacing from '{}'", s))?;
 
-        let row: f64 = caps
-            .get(1)
-            .unwrap()
-            .as_str()
+        let row: f64 = row_str
             .parse()
             .map_err(|e| format!("Failed to parse row value: {}", e))?;
 
-        let col: f64 = caps
-            .get(2)
-            .unwrap()
-            .as_str()
+        let col: f64 = col_str
             .parse()
             .map_err(|e| format!("Failed to parse col value: {}", e))?;
 
@@ -94,6 +92,13 @@ mod tests {
         let ps = PixelSpacing::parse("1.5e-1\\1.5e-1").unwrap();
         assert_eq!(ps.row, 0.15);
         assert_eq!(ps.col, 0.15);
+    }
+
+    #[test]
+    fn test_parse_exponential_plus_notation() {
+        let ps = PixelSpacing::parse("1.5e+1\\1.5e+1").unwrap();
+        assert_eq!(ps.row, 15.0);
+        assert_eq!(ps.col, 15.0);
     }
 
     #[test]
