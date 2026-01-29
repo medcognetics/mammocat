@@ -227,19 +227,25 @@ fn match_loose_patterns(s: &str) -> Option<ViewPosition> {
         Some(ViewPosition::Mlo)
     } else if s.contains("lmo") {
         Some(ViewPosition::Lmo)
-    } else if s.contains("cc") {
+    } else if contains_token(s, "cc") {
         Some(ViewPosition::Cc)
-    } else if s.contains("ml") {
+    } else if contains_token(s, "ml") {
         Some(ViewPosition::Ml)
-    } else if s.contains("lm") {
+    } else if contains_token(s, "lm") {
         Some(ViewPosition::Lm)
-    } else if s.contains("at") {
+    } else if contains_token(s, "at") {
         Some(ViewPosition::At)
-    } else if s.contains("cv") {
+    } else if contains_token(s, "cv") {
         Some(ViewPosition::Cv)
     } else {
         None
     }
+}
+
+fn contains_token(s: &str, token: &str) -> bool {
+    s.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .any(|part| part == token)
 }
 
 #[cfg(test)]
@@ -303,6 +309,12 @@ mod tests {
     fn test_from_str_loose_mode() {
         assert_eq!(from_str("left cc view", false), ViewPosition::Cc);
         assert_eq!(from_str("right mlo projection", false), ViewPosition::Mlo);
+    }
+
+    #[test]
+    fn test_from_str_loose_mode_avoids_false_positives() {
+        assert_eq!(from_str("lateral", false), ViewPosition::Unknown);
+        assert_eq!(from_str("accession", false), ViewPosition::Unknown);
     }
 
     #[test]
