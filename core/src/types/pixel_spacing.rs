@@ -32,8 +32,7 @@ impl PixelSpacing {
     pub fn parse(s: &str) -> Result<Self, String> {
         static REGEX: OnceLock<Regex> = OnceLock::new();
         let re = REGEX.get_or_init(|| {
-            Regex::new(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
-                .expect("Failed to compile regex")
+            Regex::new(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?").expect("Failed to compile regex")
         });
 
         let mut numbers = re.find_iter(s).map(|m| m.as_str());
