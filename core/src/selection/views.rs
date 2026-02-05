@@ -109,8 +109,15 @@ pub fn get_preferred_views_filtered(
     // Apply filters first
     let filtered_records = apply_filters(records, filter_config);
 
-    // Then select preferred views from filtered set
-    get_preferred_views_with_order(&filtered_records, preference_order)
+    // Run initial selection
+    let selection = get_preferred_views_with_order(&filtered_records, preference_order);
+
+    // Optionally enforce common modality
+    if filter_config.require_common_modality {
+        enforce_common_modality(&filtered_records, selection, preference_order)
+    } else {
+        selection
+    }
 }
 
 /// Applies filters to a collection of records
@@ -172,6 +179,97 @@ fn apply_filters(records: &[MammogramRecord], config: &FilterConfig) -> Vec<Mamm
         })
         .cloned()
         .collect()
+}
+
+/// Enforces that all selected views come from a single modality group (2D or DBT)
+///
+/// If the initial selection is already single-modality, returns it as-is.
+/// Otherwise, re-runs selection on 2D-only and DBT-only record pools separately,
+/// then picks the candidate with higher coverage, breaking ties by preference score
+/// and defaulting to 2D.
+fn enforce_common_modality(
+    filtered_records: &[MammogramRecord],
+    initial_selection: HashMap<MammogramView, Option<MammogramRecord>>,
+    preference_order: PreferenceOrder,
+) -> HashMap<MammogramView, Option<MammogramRecord>> {
+    // If already single-modality, return as-is
+    if is_single_modality(&initial_selection) {
+        return initial_selection;
+    }
+
+    // Split records into 2D and DBT pools (Unknown excluded from both)
+    let records_2d: Vec<MammogramRecord> = filtered_records
+        .iter()
+        .filter(|r| r.metadata.mammogram_type.is_2d_group())
+        .cloned()
+        .collect();
+
+    let records_dbt: Vec<MammogramRecord> = filtered_records
+        .iter()
+        .filter(|r| r.metadata.mammogram_type.is_dbt_group())
+        .cloned()
+        .collect();
+
+    let selection_2d = get_preferred_views_with_order(&records_2d, preference_order);
+    let selection_dbt = get_preferred_views_with_order(&records_dbt, preference_order);
+
+    let coverage_2d = count_coverage(&selection_2d);
+    let coverage_dbt = count_coverage(&selection_dbt);
+
+    if coverage_2d > coverage_dbt {
+        selection_2d
+    } else if coverage_dbt > coverage_2d {
+        selection_dbt
+    } else {
+        // Equal coverage: tie-break by total preference score (lower wins)
+        let score_2d = total_preference_score(&selection_2d, preference_order);
+        let score_dbt = total_preference_score(&selection_dbt, preference_order);
+
+        if score_dbt < score_2d {
+            selection_dbt
+        } else {
+            // Equal score or 2D better: default to 2D for determinism
+            selection_2d
+        }
+    }
+}
+
+/// Checks if all present views in a selection belong to a single modality group
+fn is_single_modality(selection: &HashMap<MammogramView, Option<MammogramRecord>>) -> bool {
+    let mut has_2d = false;
+    let mut has_dbt = false;
+
+    for record in selection.values().flatten() {
+        let mt = &record.metadata.mammogram_type;
+        if mt.is_2d_group() {
+            has_2d = true;
+        } else if mt.is_dbt_group() {
+            has_dbt = true;
+        } else {
+            // Unknown type — not in either group, triggers re-computation
+            return false;
+        }
+    }
+
+    // Single-modality if we don't have both groups
+    !(has_2d && has_dbt)
+}
+
+/// Counts the number of non-None entries in a selection
+fn count_coverage(selection: &HashMap<MammogramView, Option<MammogramRecord>>) -> usize {
+    selection.values().filter(|v| v.is_some()).count()
+}
+
+/// Sums preference values for all present views in a selection
+fn total_preference_score(
+    selection: &HashMap<MammogramView, Option<MammogramRecord>>,
+    preference_order: PreferenceOrder,
+) -> i32 {
+    selection
+        .values()
+        .flatten()
+        .map(|r| preference_order.preference_value(&r.metadata.mammogram_type))
+        .sum()
 }
 
 /// Checks if a record is a candidate for a standard view
@@ -562,5 +660,310 @@ mod tests {
                 .mammogram_type,
             MammogramType::Ffdm
         );
+    }
+
+    // --- Common modality enforcement tests ---
+
+    #[test]
+    fn test_is_single_modality_all_2d() {
+        let mut selection = HashMap::new();
+        selection.insert(
+            MammogramView::new(Laterality::Left, ViewPosition::Mlo),
+            Some(make_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+            )),
+        );
+        selection.insert(
+            MammogramView::new(Laterality::Right, ViewPosition::Cc),
+            Some(make_test_record(
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Synth,
+            )),
+        );
+        assert!(is_single_modality(&selection));
+    }
+
+    #[test]
+    fn test_is_single_modality_all_dbt() {
+        let mut selection = HashMap::new();
+        selection.insert(
+            MammogramView::new(Laterality::Left, ViewPosition::Mlo),
+            Some(make_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Tomo,
+            )),
+        );
+        selection.insert(
+            MammogramView::new(Laterality::Right, ViewPosition::Cc),
+            Some(make_test_record(
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+            )),
+        );
+        assert!(is_single_modality(&selection));
+    }
+
+    #[test]
+    fn test_is_single_modality_mixed() {
+        let mut selection = HashMap::new();
+        selection.insert(
+            MammogramView::new(Laterality::Left, ViewPosition::Mlo),
+            Some(make_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+            )),
+        );
+        selection.insert(
+            MammogramView::new(Laterality::Right, ViewPosition::Cc),
+            Some(make_test_record(
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+            )),
+        );
+        assert!(!is_single_modality(&selection));
+    }
+
+    #[test]
+    fn test_is_single_modality_empty() {
+        let mut selection = HashMap::new();
+        for view in STANDARD_MAMMO_VIEWS.iter() {
+            selection.insert(*view, None);
+        }
+        // Vacuously single-modality
+        assert!(is_single_modality(&selection));
+    }
+
+    #[test]
+    fn test_is_single_modality_unknown_triggers_recomputation() {
+        let mut selection = HashMap::new();
+        selection.insert(
+            MammogramView::new(Laterality::Left, ViewPosition::Mlo),
+            Some(make_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Unknown,
+            )),
+        );
+        assert!(!is_single_modality(&selection));
+    }
+
+    #[test]
+    fn test_enforce_common_modality_already_single_2d() {
+        // All 2D → returns early
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Synth),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Ffdm),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial.clone(), PreferenceOrder::Default);
+
+        for view in STANDARD_MAMMO_VIEWS.iter() {
+            assert!(result[view].is_some());
+            assert!(result[view]
+                .as_ref()
+                .unwrap()
+                .metadata
+                .mammogram_type
+                .is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_already_single_dbt() {
+        // All TOMO → returns early
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Tomo),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial.clone(), PreferenceOrder::Default);
+
+        for view in STANDARD_MAMMO_VIEWS.iter() {
+            assert!(result[view].is_some());
+            assert_eq!(
+                result[view].as_ref().unwrap().metadata.mammogram_type,
+                MammogramType::Tomo
+            );
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_mixed_higher_2d_coverage() {
+        // 3 FFDM views + 1 TOMO view → 2D has 3, DBT has 1 → picks 2D
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::Default);
+
+        // Should pick 2D: 3 views vs 1
+        assert_eq!(count_coverage(&result), 3);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_mixed_higher_dbt_coverage() {
+        // 1 FFDM view + 3 TOMO views → DBT has 3, 2D has 1 → picks DBT
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Tomo),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::Default);
+
+        assert_eq!(count_coverage(&result), 3);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_dbt_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_equal_coverage_tiebreak_by_score() {
+        // 2 FFDM + 2 TOMO (equal coverage), Default order prefers FFDM (score 1) over TOMO (score 3)
+        // 2D total score: 2, DBT total score: 6 → 2D wins by score
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::Default);
+
+        assert_eq!(count_coverage(&result), 2);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_equal_coverage_tomo_first_prefers_dbt() {
+        // With TomoFirst: TOMO score=1, FFDM score=2
+        // 2 TOMO + 2 FFDM → DBT total=2, 2D total=4 → DBT wins by score
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Tomo),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::TomoFirst);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::TomoFirst);
+
+        assert_eq!(count_coverage(&result), 2);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_dbt_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_equal_score_defaults_to_2d() {
+        // Edge case: equal coverage AND equal score → defaults to 2D
+        // This is hard to construct with real preference values, but let's test the logic
+        // by using SFM (score 4 in Default) vs TOMO (score 3 in Default)
+        // We can't get exact equal scores easily, so test with 0 coverage on both
+        // Use unknown type that triggers re-computation
+        let records_unknown = vec![make_test_record(
+            Laterality::Left,
+            ViewPosition::Mlo,
+            MammogramType::Unknown,
+        )];
+        let initial = get_preferred_views_with_order(&records_unknown, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records_unknown, initial, PreferenceOrder::Default);
+
+        // Unknown is excluded from both pools → both empty → 0 coverage each → 0 score → 2D wins
+        assert_eq!(count_coverage(&result), 0);
+    }
+
+    #[test]
+    fn test_enforce_common_modality_incomplete_single_modality() {
+        // 2 FFDM views, no TOMO → single modality, returns early even if incomplete
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Ffdm),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::Default);
+
+        assert_eq!(count_coverage(&result), 2);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_unknown_excluded_from_pools() {
+        // Mix of FFDM + Unknown → not single-modality due to Unknown
+        // Re-run: 2D pool has FFDM, DBT pool is empty → 2D wins
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Unknown),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Ffdm),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::Default);
+
+        // 2D pool: 3 FFDM views, DBT pool: 0 → 2D wins with 3 coverage
+        assert_eq!(count_coverage(&result), 3);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_get_preferred_views_filtered_with_common_modality() {
+        // Integration test via get_preferred_views_filtered
+        let config = FilterConfig::permissive().require_common_modality(true);
+
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+
+        // Should enforce common modality: 2D has 3 views, DBT has 1 → picks 2D
+        assert_eq!(count_coverage(&selections), 3);
+        for record in selections.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_get_preferred_views_filtered_without_common_modality() {
+        // Without flag, mixed results are kept
+        let config = FilterConfig::permissive().require_common_modality(false);
+
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm),
+            make_test_record(Laterality::Right, ViewPosition::Cc, MammogramType::Tomo),
+        ];
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+
+        // All 4 views present (mixed is fine without the flag)
+        assert_eq!(count_coverage(&selections), 4);
     }
 }

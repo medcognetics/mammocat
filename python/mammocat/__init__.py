@@ -23,6 +23,8 @@ Example:
 from ._mammocat import (
     DicomError,
     ExtractionError,
+    # Filter configuration
+    FilterConfig,
     # Data structures
     ImageType,
     InvalidValueError,
@@ -43,12 +45,14 @@ from ._mammocat import (
     __version__,
     # Selection functions
     get_preferred_views,
+    get_preferred_views_filtered,
     get_preferred_views_with_order,
 )
 
 __all__ = [
     "DicomError",
     "ExtractionError",
+    "FilterConfig",
     "ImageType",
     "InvalidValueError",
     "Laterality",
@@ -64,5 +68,6 @@ __all__ = [
     "ViewPosition",
     "__version__",
     "get_preferred_views",
+    "get_preferred_views_filtered",
     "get_preferred_views_with_order",
 ]

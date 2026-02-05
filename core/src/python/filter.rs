@@ -21,7 +21,8 @@ impl PyFilterConfig {
         exclude_non_standard_views=false,
         exclude_for_processing=true,
         exclude_secondary_capture=true,
-        exclude_non_mg_modality=true
+        exclude_non_mg_modality=true,
+        require_common_modality=false
     ))]
     fn new(
         allowed_types: Option<Vec<PyMammogramType>>,
@@ -30,6 +31,7 @@ impl PyFilterConfig {
         exclude_for_processing: bool,
         exclude_secondary_capture: bool,
         exclude_non_mg_modality: bool,
+        require_common_modality: bool,
     ) -> Self {
         let rust_allowed =
             allowed_types.map(|types| types.into_iter().map(|t| t.inner).collect::<HashSet<_>>());
@@ -42,6 +44,7 @@ impl PyFilterConfig {
                 exclude_for_processing,
                 exclude_secondary_capture,
                 exclude_non_mg_modality,
+                require_common_modality,
             },
         }
     }
@@ -91,6 +94,11 @@ impl PyFilterConfig {
     #[getter]
     fn exclude_non_mg_modality(&self) -> bool {
         self.inner.exclude_non_mg_modality
+    }
+
+    #[getter]
+    fn require_common_modality(&self) -> bool {
+        self.inner.require_common_modality
     }
 
     fn __repr__(&self) -> String {

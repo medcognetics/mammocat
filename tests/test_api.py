@@ -6,10 +6,12 @@ import pytest
 
 from mammocat import (
     DicomError,
+    FilterConfig,
     MammogramExtractor,
     MammogramRecord,
     PreferenceOrder,
     get_preferred_views,
+    get_preferred_views_filtered,
     get_preferred_views_with_order,
 )
 
@@ -237,3 +239,53 @@ class TestPreferredViews:
         assert isinstance(result_tomo, dict)
         assert len(result_default) == 4
         assert len(result_tomo) == 4
+
+
+class TestFilterConfig:
+    def test_default_require_common_modality_false(self):
+        """Test that FilterConfig default has require_common_modality == False."""
+        config = FilterConfig()
+        assert config.require_common_modality is False
+
+    def test_require_common_modality_true(self):
+        """Test FilterConfig with require_common_modality=True."""
+        config = FilterConfig(require_common_modality=True)
+        assert config.require_common_modality is True
+
+    def test_default_static_method(self):
+        """Test FilterConfig.default() has require_common_modality == False."""
+        config = FilterConfig.default()
+        assert config.require_common_modality is False
+
+    def test_permissive_static_method(self):
+        """Test FilterConfig.permissive() has require_common_modality == False."""
+        config = FilterConfig.permissive()
+        assert config.require_common_modality is False
+
+    def test_all_default_properties(self):
+        """Test all default FilterConfig properties."""
+        config = FilterConfig()
+        assert config.allowed_types is None
+        assert config.exclude_implants is False
+        assert config.exclude_non_standard_views is False
+        assert config.exclude_for_processing is True
+        assert config.exclude_secondary_capture is True
+        assert config.exclude_non_mg_modality is True
+        assert config.require_common_modality is False
+
+    def test_get_preferred_views_filtered_empty(self):
+        """Test get_preferred_views_filtered with empty list."""
+        config = FilterConfig(require_common_modality=True)
+        result = get_preferred_views_filtered([], config, PreferenceOrder.DEFAULT)
+        assert isinstance(result, dict)
+        assert len(result) == 4
+        assert all(v is None for v in result.values())
+
+    def test_get_preferred_views_filtered_with_records(self, sample_dicom_set):
+        """Test get_preferred_views_filtered with actual DICOM files."""
+        records = [MammogramRecord.from_file(str(f)) for f in sample_dicom_set]
+        config = FilterConfig(require_common_modality=True)
+        result = get_preferred_views_filtered(records, config, PreferenceOrder.DEFAULT)
+
+        assert isinstance(result, dict)
+        assert len(result) == 4

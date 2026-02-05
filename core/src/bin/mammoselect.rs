@@ -55,6 +55,10 @@ struct Cli {
     /// Include non-MG modality (excluded by default)
     #[arg(long)]
     include_non_mg: bool,
+
+    /// Require all selected views to come from a common modality group (2D or DBT)
+    #[arg(long)]
+    require_common_modality: bool,
 }
 
 /// Output format options
@@ -264,6 +268,7 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
     config = config.exclude_for_processing(!cli.include_for_processing);
     config = config.exclude_secondary_capture(!cli.include_secondary_capture);
     config = config.exclude_non_mg_modality(!cli.include_non_mg);
+    config = config.require_common_modality(cli.require_common_modality);
 
     config
 }

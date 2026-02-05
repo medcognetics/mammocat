@@ -255,6 +255,39 @@ class MammogramExtractor:
         path: str | Path, is_sfm: bool = False
     ) -> MammogramMetadata: ...
 
+# Filter configuration
+class FilterConfig:
+    """Configuration for filtering mammogram records during selection."""
+    def __init__(
+        self,
+        allowed_types: list[MammogramType] | None = None,
+        exclude_implants: bool = False,
+        exclude_non_standard_views: bool = False,
+        exclude_for_processing: bool = True,
+        exclude_secondary_capture: bool = True,
+        exclude_non_mg_modality: bool = True,
+        require_common_modality: bool = False,
+    ) -> None: ...
+    @staticmethod
+    def default() -> FilterConfig: ...
+    @staticmethod
+    def permissive() -> FilterConfig: ...
+    @property
+    def allowed_types(self) -> list[MammogramType] | None: ...
+    @property
+    def exclude_implants(self) -> bool: ...
+    @property
+    def exclude_non_standard_views(self) -> bool: ...
+    @property
+    def exclude_for_processing(self) -> bool: ...
+    @property
+    def exclude_secondary_capture(self) -> bool: ...
+    @property
+    def exclude_non_mg_modality(self) -> bool: ...
+    @property
+    def require_common_modality(self) -> bool: ...
+    def __repr__(self) -> str: ...
+
 # Selection functions
 def get_preferred_views(
     records: list[MammogramRecord],
@@ -284,6 +317,26 @@ def get_preferred_views_with_order(
 
     Args:
         records: List of MammogramRecord objects to select from
+        preference_order: The preference ordering strategy to use
+
+    Returns:
+        Dictionary mapping MammogramView to MammogramRecord (or None if not found)
+    """
+
+def get_preferred_views_filtered(
+    records: list[MammogramRecord],
+    filter_config: FilterConfig,
+    preference_order: PreferenceOrder,
+) -> dict[MammogramView, MammogramRecord | None]:
+    """Select preferred views with filtering.
+
+    Applies filters before selecting preferred views. For each of the 4 standard
+    views (L-MLO, R-MLO, L-CC, R-CC), selects the most preferred mammogram from
+    filtered candidates.
+
+    Args:
+        records: List of MammogramRecord objects to select from
+        filter_config: FilterConfig specifying which records to include
         preference_order: The preference ordering strategy to use
 
     Returns:
