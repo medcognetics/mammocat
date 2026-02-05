@@ -45,6 +45,9 @@ pub struct FilterConfig {
 
     /// Exclude non-MG modality
     pub exclude_non_mg_modality: bool,
+
+    /// Require all selected views to come from a common modality group (2D or DBT)
+    pub require_common_modality: bool,
 }
 
 impl Default for FilterConfig {
@@ -56,6 +59,7 @@ impl Default for FilterConfig {
             exclude_for_processing: true, // Default: exclude FOR PROCESSING
             exclude_secondary_capture: true, // Default: exclude secondary capture
             exclude_non_mg_modality: true, // Default: exclude non-MG
+            require_common_modality: false,
         }
     }
 }
@@ -83,6 +87,7 @@ impl FilterConfig {
             exclude_for_processing: false,
             exclude_secondary_capture: false,
             exclude_non_mg_modality: false,
+            require_common_modality: false,
         }
     }
 
@@ -179,6 +184,24 @@ impl FilterConfig {
         self.exclude_non_mg_modality = exclude;
         self
     }
+
+    /// Builder: Require common modality across all selected views
+    ///
+    /// When enabled, enforces that all selected views come from the same
+    /// modality group: 2D (FFDM, SYNTH, SFM) or DBT (TOMO).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mammocat_core::FilterConfig;
+    ///
+    /// let filter = FilterConfig::default().require_common_modality(true);
+    /// assert!(filter.require_common_modality);
+    /// ```
+    pub fn require_common_modality(mut self, require: bool) -> Self {
+        self.require_common_modality = require;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +217,7 @@ mod tests {
         assert!(config.exclude_for_processing);
         assert!(config.exclude_secondary_capture);
         assert!(config.exclude_non_mg_modality);
+        assert!(!config.require_common_modality);
     }
 
     #[test]
@@ -205,6 +229,7 @@ mod tests {
         assert!(!config.exclude_for_processing);
         assert!(!config.exclude_secondary_capture);
         assert!(!config.exclude_non_mg_modality);
+        assert!(!config.require_common_modality);
     }
 
     #[test]

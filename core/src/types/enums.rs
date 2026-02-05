@@ -64,6 +64,19 @@ impl MammogramType {
         matches!(self, MammogramType::Unknown)
     }
 
+    /// Returns whether this type belongs to the 2D modality group (FFDM, SYNTH, SFM)
+    pub fn is_2d_group(&self) -> bool {
+        matches!(
+            self,
+            MammogramType::Ffdm | MammogramType::Synth | MammogramType::Sfm
+        )
+    }
+
+    /// Returns whether this type belongs to the DBT modality group (TOMO)
+    pub fn is_dbt_group(&self) -> bool {
+        matches!(self, MammogramType::Tomo)
+    }
+
     /// Returns simple name for display
     pub fn simple_name(&self) -> &'static str {
         match self {
@@ -448,6 +461,24 @@ mod tests {
             Laterality::Left
         );
         assert_eq!(Laterality::None.reduce(Laterality::None), Laterality::None);
+    }
+
+    #[test]
+    fn test_mammogram_type_2d_group() {
+        assert!(MammogramType::Ffdm.is_2d_group());
+        assert!(MammogramType::Synth.is_2d_group());
+        assert!(MammogramType::Sfm.is_2d_group());
+        assert!(!MammogramType::Tomo.is_2d_group());
+        assert!(!MammogramType::Unknown.is_2d_group());
+    }
+
+    #[test]
+    fn test_mammogram_type_dbt_group() {
+        assert!(MammogramType::Tomo.is_dbt_group());
+        assert!(!MammogramType::Ffdm.is_dbt_group());
+        assert!(!MammogramType::Synth.is_dbt_group());
+        assert!(!MammogramType::Sfm.is_dbt_group());
+        assert!(!MammogramType::Unknown.is_dbt_group());
     }
 
     #[test]
