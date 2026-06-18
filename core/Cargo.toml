@@ -5,10 +5,10 @@ edition = "2021"
 
 [dependencies]
 # DICOM handling
-dicom = "0.7.0"
-dicom-core = "0.7.0"
-dicom-dictionary-std = "0.7.0"
-dicom-object = "0.7.0"
+dicom = "0.9"
+dicom-core = "0.9"
+dicom-dictionary-std = "0.9"
+dicom-object = "0.9"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
