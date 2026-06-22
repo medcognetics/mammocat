@@ -46,6 +46,8 @@ mammocat --format json path/to/mammogram.dcm
 mammocat --verbose path/to/mammogram.dcm
 ```
 
+`mammocat` reports mammography classification fields plus file-meta transfer syntax details, including `transfer_syntax_uid`, `transfer_syntax_name`, and `compression_type` in JSON output.
+
 ### mammoselect - Preferred View Selection
 
 Select the best mammogram for each standard view (L-CC, R-CC, L-MLO, R-MLO) from a directory:
@@ -125,12 +127,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dcm = open_file("mammogram.dcm")?;
 
     // Extract metadata
-    let metadata = MammogramExtractor::extract(&dcm)?;
+    let metadata = MammogramExtractor::extract_file(&dcm)?;
 
     // Access extracted information
     println!("Type: {}", metadata.mammogram_type.simple_name());
     println!("Laterality: {}", metadata.laterality);
     println!("View: {}", metadata.view_position);
+    println!("Transfer syntax: {:?}", metadata.transfer_syntax_uid);
+    println!("Compression: {:?}", metadata.compression_type);
     println!("Is standard view: {}", metadata.is_standard_view());
 
     Ok(())

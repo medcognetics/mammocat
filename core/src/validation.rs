@@ -951,7 +951,7 @@ where
     validate_pixel_fields(&mut report, &dcm, options.profile);
     let metadata = validate_extraction(&mut report, &dcm, options.profile);
     let record = if metadata.is_some() {
-        MammogramRecord::from_dicom(source_path, &dcm).ok()
+        MammogramRecord::from_file_dicom(source_path, &dcm).ok()
     } else {
         None
     };

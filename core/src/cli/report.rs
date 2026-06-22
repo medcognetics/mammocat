@@ -64,6 +64,30 @@ impl<'a> fmt::Display for TextReport<'a> {
             "Modality:       {}",
             self.metadata.modality.as_deref().unwrap_or("unknown")
         )?;
+        writeln!(
+            f,
+            "Transfer Syntax UID: {}",
+            self.metadata
+                .transfer_syntax_uid
+                .as_deref()
+                .unwrap_or("unknown")
+        )?;
+        writeln!(
+            f,
+            "Transfer Syntax: {}",
+            self.metadata
+                .transfer_syntax_name
+                .as_deref()
+                .unwrap_or("unknown")
+        )?;
+        writeln!(
+            f,
+            "Compression:    {}",
+            self.metadata
+                .compression_type
+                .as_deref()
+                .unwrap_or("unknown")
+        )?;
         writeln!(f)?;
 
         // Additional derived information
@@ -98,6 +122,9 @@ mod tests {
             number_of_frames: 1,
             is_secondary_capture: false,
             modality: Some("MG".to_string()),
+            transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
+            transfer_syntax_name: Some("Explicit VR Little Endian".to_string()),
+            compression_type: Some("uncompressed".to_string()),
         };
 
         let report = TextReport::new(&metadata);
@@ -110,5 +137,8 @@ mod tests {
         assert!(output.contains("Manufacturer:   Test Manufacturer"));
         assert!(output.contains("Model:          Test Model"));
         assert!(output.contains("Frames:         1"));
+        assert!(output.contains("Transfer Syntax UID: 1.2.840.10008.1.2.1"));
+        assert!(output.contains("Transfer Syntax: Explicit VR Little Endian"));
+        assert!(output.contains("Compression:    uncompressed"));
     }
 }

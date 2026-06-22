@@ -8,7 +8,10 @@ use crate::extraction::{
     is_implant_displaced, is_magnified, is_spot_compression,
 };
 use crate::types::{ImageType, Laterality, MammogramType, MammogramView, ViewPosition};
-use dicom_object::InMemDicomObject;
+use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
+use dicom_object::{FileDicomObject, InMemDicomObject};
+
+const UNKNOWN_TRANSFER_SYNTAX: &str = "unknown transfer syntax";
 
 /// Main extractor for mammography metadata
 ///
@@ -69,6 +72,14 @@ impl MammogramExtractor {
         Self::extract_with_options(dcm, false)
     }
 
+    /// Extracts metadata from a full DICOM file object, including file meta.
+    ///
+    /// This is the preferred path when the source is an on-disk DICOM file
+    /// because it preserves transfer syntax and compression information.
+    pub fn extract_file(dcm: &FileDicomObject<InMemDicomObject>) -> Result<MammogramMetadata> {
+        Self::extract_file_with_options(dcm, false)
+    }
+
     /// Extracts metadata with optional SFM flag
     ///
     /// The `is_sfm` flag manually indicates if the mammogram is SFM
@@ -89,7 +100,25 @@ impl MammogramExtractor {
             number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
             is_secondary_capture: Self::extract_secondary_capture(dcm),
             modality: Self::extract_modality(dcm),
+            transfer_syntax_uid: None,
+            transfer_syntax_name: None,
+            compression_type: None,
         })
+    }
+
+    /// Extracts metadata from a full DICOM file object with optional SFM flag.
+    pub fn extract_file_with_options(
+        dcm: &FileDicomObject<InMemDicomObject>,
+        is_sfm: bool,
+    ) -> Result<MammogramMetadata> {
+        let mut metadata = Self::extract_with_options(dcm, is_sfm)?;
+        if let Some(transfer_syntax) = resolve_transfer_syntax_metadata(&dcm.meta().transfer_syntax)
+        {
+            metadata.transfer_syntax_uid = Some(transfer_syntax.uid);
+            metadata.transfer_syntax_name = Some(transfer_syntax.name);
+            metadata.compression_type = Some(transfer_syntax.compression_type);
+        }
+        Ok(metadata)
     }
 
     /// Extracts "FOR PROCESSING" status
@@ -122,6 +151,111 @@ impl MammogramExtractor {
     /// Returns the DICOM Modality tag value (should be "MG" for mammography)
     fn extract_modality(dcm: &InMemDicomObject) -> Option<String> {
         get_string_value(dcm, MODALITY)
+    }
+}
+
+/// Resolved transfer syntax metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferSyntaxMetadata {
+    pub uid: String,
+    pub name: String,
+    pub compression_type: String,
+}
+
+/// Resolve transfer syntax UID, display name, and compression category.
+pub fn resolve_transfer_syntax_metadata(uid: &str) -> Option<TransferSyntaxMetadata> {
+    let uid = normalize_transfer_syntax_uid(uid)?;
+    let name = TransferSyntaxRegistry
+        .get(&uid)
+        .map(|syntax| syntax.name().to_string())
+        .unwrap_or_else(|| UNKNOWN_TRANSFER_SYNTAX.to_string());
+    let compression_type = compression_type_for_transfer_syntax(&uid, &name).to_string();
+    Some(TransferSyntaxMetadata {
+        uid,
+        name,
+        compression_type,
+    })
+}
+
+fn normalize_transfer_syntax_uid(uid: &str) -> Option<String> {
+    let uid = uid.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    if uid.is_empty() {
+        None
+    } else {
+        Some(uid.to_string())
+    }
+}
+
+fn compression_type_for_transfer_syntax(uid: &str, name: &str) -> &'static str {
+    match uid {
+        "1.2.840.10008.1.2"
+        | "1.2.840.10008.1.2.1"
+        | "1.2.840.10008.1.2.2"
+        | "1.2.840.10008.1.2.7.1"
+        | "1.2.840.10008.1.2.7.2"
+        | "1.2.840.10008.1.2.7.3" => "uncompressed",
+        "1.2.840.10008.1.2.1.98" => "encapsulated_uncompressed",
+        "1.2.840.10008.1.2.1.99"
+        | "1.2.840.10008.1.2.4.95"
+        | "1.2.840.10008.1.2.4.205"
+        | "1.2.840.10008.1.2.8.1" => "deflate",
+        "1.2.840.10008.1.2.5" => "rle_lossless",
+        "1.2.840.10008.1.2.4.50"
+        | "1.2.840.10008.1.2.4.51"
+        | "1.2.840.10008.1.2.4.52"
+        | "1.2.840.10008.1.2.4.53"
+        | "1.2.840.10008.1.2.4.54"
+        | "1.2.840.10008.1.2.4.55"
+        | "1.2.840.10008.1.2.4.56" => "jpeg_lossy",
+        "1.2.840.10008.1.2.4.57" | "1.2.840.10008.1.2.4.70" => "jpeg_lossless",
+        "1.2.840.10008.1.2.4.80" => "jpeg_ls_lossless",
+        "1.2.840.10008.1.2.4.81" => "jpeg_ls_lossy",
+        "1.2.840.10008.1.2.4.90"
+        | "1.2.840.10008.1.2.4.92"
+        | "1.2.840.10008.1.2.4.201"
+        | "1.2.840.10008.1.2.4.202" => "jpeg2000_lossless",
+        "1.2.840.10008.1.2.4.91" | "1.2.840.10008.1.2.4.93" | "1.2.840.10008.1.2.4.203" => {
+            "jpeg2000"
+        }
+        "1.2.840.10008.1.2.4.110" => "jpeg_xl_lossless",
+        "1.2.840.10008.1.2.4.111" => "jpeg_xl_recompression",
+        "1.2.840.10008.1.2.4.112" => "jpeg_xl",
+        _ => compression_type_from_name(name),
+    }
+}
+
+fn compression_type_from_name(name: &str) -> &'static str {
+    let name = name.to_ascii_lowercase();
+    if name.contains("jpeg-ls") && name.contains("lossless") && !name.contains("near-lossless") {
+        "jpeg_ls_lossless"
+    } else if name.contains("jpeg-ls") {
+        "jpeg_ls"
+    } else if name.contains("jpeg 2000") && name.contains("lossless only") {
+        "jpeg2000_lossless"
+    } else if name.contains("jpeg 2000") {
+        "jpeg2000"
+    } else if name.contains("jpeg xl") && name.contains("lossless") {
+        "jpeg_xl_lossless"
+    } else if name.contains("jpeg xl") {
+        "jpeg_xl"
+    } else if name.contains("jpeg") && name.contains("lossless") {
+        "jpeg_lossless"
+    } else if name.contains("jpeg") {
+        "jpeg"
+    } else if name.contains("rle") {
+        "rle_lossless"
+    } else if name.contains("deflat") {
+        "deflate"
+    } else if name.contains("mpeg2") {
+        "mpeg2"
+    } else if name.contains("mpeg-4") || name.contains("h.264") {
+        "mpeg4_avc"
+    } else if name.contains("hevc") || name.contains("h.265") {
+        "hevc"
+    } else if name.contains("uncompressed") {
+        "uncompressed"
+    } else {
+        "unknown"
     }
 }
 
@@ -172,6 +306,15 @@ pub struct MammogramMetadata {
 
     /// DICOM Modality (should be "MG" for mammography)
     pub modality: Option<String>,
+
+    /// DICOM Transfer Syntax UID from file meta information
+    pub transfer_syntax_uid: Option<String>,
+
+    /// Human-readable DICOM transfer syntax name
+    pub transfer_syntax_name: Option<String>,
+
+    /// Derived compression category from the transfer syntax
+    pub compression_type: Option<String>,
 }
 
 impl MammogramMetadata {
@@ -212,6 +355,9 @@ mod tests {
             number_of_frames: 1,
             is_secondary_capture: false,
             modality: Some("MG".to_string()),
+            transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
+            transfer_syntax_name: Some("Explicit VR Little Endian".to_string()),
+            compression_type: Some("uncompressed".to_string()),
         };
 
         let view = metadata.mammogram_view();
@@ -238,8 +384,20 @@ mod tests {
             number_of_frames: 50,
             is_secondary_capture: false,
             modality: Some("MG".to_string()),
+            transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
+            transfer_syntax_name: Some("Explicit VR Little Endian".to_string()),
+            compression_type: Some("uncompressed".to_string()),
         };
 
         assert!(!metadata.is_2d());
+    }
+
+    #[test]
+    fn transfer_syntax_metadata_resolves_compression_type() {
+        let metadata = resolve_transfer_syntax_metadata("1.2.840.10008.1.2.4.90").unwrap();
+
+        assert_eq!(metadata.uid, "1.2.840.10008.1.2.4.90");
+        assert_eq!(metadata.name, "JPEG 2000 Image Compression (Lossless Only)");
+        assert_eq!(metadata.compression_type, "jpeg2000_lossless");
     }
 }

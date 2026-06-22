@@ -173,7 +173,7 @@ The codebase follows a clear separation of concerns:
 
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
-- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames, is_secondary_capture, modality)
+- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
 
 **`python/`** - PyO3 bindings (enabled with `--features python`)
 - `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)

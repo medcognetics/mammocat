@@ -35,7 +35,7 @@ fn main() {
     };
 
     // Extract metadata
-    let metadata = match MammogramExtractor::extract(&dcm) {
+    let metadata = match MammogramExtractor::extract_file(&dcm) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Error: Failed to extract metadata: {}", e);

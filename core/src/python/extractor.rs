@@ -45,7 +45,7 @@ impl PyMammogramExtractor {
         })?;
 
         // Extract metadata
-        let metadata = crate::api::MammogramExtractor::extract(&dcm).map_err(convert_error)?;
+        let metadata = crate::api::MammogramExtractor::extract_file(&dcm).map_err(convert_error)?;
 
         Ok(metadata.into())
     }
@@ -85,7 +85,7 @@ impl PyMammogramExtractor {
         })?;
 
         // Extract metadata with options
-        let metadata = crate::api::MammogramExtractor::extract_with_options(&dcm, is_sfm)
+        let metadata = crate::api::MammogramExtractor::extract_file_with_options(&dcm, is_sfm)
             .map_err(convert_error)?;
 
         Ok(metadata.into())

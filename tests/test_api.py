@@ -35,6 +35,9 @@ class TestMammogramExtractor:
         assert isinstance(metadata.is_magnified, bool)
         assert isinstance(metadata.is_implant_displaced, bool)
         assert isinstance(metadata.number_of_frames, int)
+        assert metadata.transfer_syntax_uid == "1.2.840.10008.1.2.1"
+        assert metadata.transfer_syntax_name == "Explicit VR Little Endian"
+        assert metadata.compression_type == "uncompressed"
 
     def test_extract_from_nonexistent_file(self):
         """Test that extracting from nonexistent file raises error."""
@@ -73,6 +76,9 @@ class TestMammogramExtractor:
         assert "laterality" in d
         assert "view_position" in d
         assert "number_of_frames" in d
+        assert d["transfer_syntax_uid"] == "1.2.840.10008.1.2.1"
+        assert d["transfer_syntax_name"] == "Explicit VR Little Endian"
+        assert d["compression_type"] == "uncompressed"
 
 
 class TestMammogramRecord:
