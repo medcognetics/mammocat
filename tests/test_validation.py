@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any, cast
+from zipfile import ZipFile
 
 import pytest
 
@@ -138,6 +139,31 @@ def test_validate_directory_reports_standard_view_coverage(tmp_path: Path) -> No
     assert report["summary"]["file_count"] == 4
     assert report["directory"]["missing_views"] == []
     assert all(view["selected"] for view in report["directory"]["selected_views"].values())
+
+
+def test_validate_directory_accepts_zip_archive(tmp_path: Path) -> None:
+    dicom_paths = []
+    for laterality, view_position in [("L", "MLO"), ("R", "MLO"), ("L", "CC"), ("R", "CC")]:
+        dicom_paths.append(
+            create_validation_dicom(
+                tmp_path / f"{laterality.lower()}_{view_position.lower()}.dcm",
+                laterality=laterality,
+                view_position=view_position,
+            )
+        )
+    zip_path = tmp_path / "dicoms.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for dicom_path in dicom_paths:
+            archive.write(dicom_path, arcname=f"nested/{dicom_path.name}")
+        archive.writestr("notes.txt", "not a dicom")
+
+    report = validate_directory(zip_path)
+
+    assert report["status"] == "pass"
+    assert report["summary"]["source_type"] == "zip"
+    assert report["summary"]["file_count"] == 4
+    assert report["directory"]["missing_views"] == []
+    assert all("dicoms.zip::nested/" in file["file"]["path"] for file in report["files"])
 
 
 def test_validate_directory_accepts_filter_and_preference(tmp_path: Path) -> None:

@@ -1,6 +1,8 @@
 //! Validation reports for mammocat and mammoselect readiness.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
@@ -11,11 +13,11 @@ use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::dicom_files::collect_dicom_files;
 use crate::extraction::tags::{
-    get_string_value, BITS_ALLOCATED, BITS_STORED, COLUMNS, HIGH_BIT, IMAGE_LATERALITY, IMAGE_TYPE,
-    LOSSY_IMAGE_COMPRESSION, LOSSY_IMAGE_COMPRESSION_METHOD, MODALITY, NUMBER_OF_FRAMES,
-    PHOTOMETRIC_INTERPRETATION, PIXEL_DATA_TAG, PIXEL_REPRESENTATION, PIXEL_SPACING, ROWS,
-    SAMPLES_PER_PIXEL, SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
-    VIEW_POSITION,
+    get_string_value, BITS_ALLOCATED, BITS_STORED, COLUMNS, DICOM_MAGIC_BYTES, HIGH_BIT,
+    IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION, LOSSY_IMAGE_COMPRESSION_METHOD,
+    MODALITY, NUMBER_OF_FRAMES, PHOTOMETRIC_INTERPRETATION, PIXEL_DATA_TAG, PIXEL_REPRESENTATION,
+    PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL, SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID,
+    STUDY_INSTANCE_UID, VIEW_POSITION,
 };
 use crate::selection::{get_preferred_views_filtered, MammogramRecord};
 use crate::types::{
@@ -151,6 +153,25 @@ pub enum ValidationRuntimeError {
     #[error("failed to read directory {path}: {source}")]
     ReadDirectory {
         path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to open zip archive {path}: {source}")]
+    OpenZip {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to read zip archive {path}: {source}")]
+    ReadZip {
+        path: PathBuf,
+        source: zip::result::ZipError,
+    },
+
+    #[error("failed to read zip entry {entry} in {path}: {source}")]
+    ReadZipEntry {
+        path: PathBuf,
+        entry: String,
         source: std::io::Error,
     },
 }
@@ -629,7 +650,9 @@ pub fn validate_path(
     path: &Path,
     options: &ValidationOptions,
 ) -> Result<ValidationReport, ValidationRuntimeError> {
-    if path.is_file() {
+    if path.is_file() && is_zip_file(path) {
+        validate_zip_path(path, options)
+    } else if path.is_file() {
         Ok(validate_file_source(path, options))
     } else if path.is_dir() {
         validate_directory_path(path, options)
@@ -644,23 +667,132 @@ pub fn validate_dicom_file(path: &Path, options: &ValidationOptions) -> FileVali
     validate_file_with_record(path, options).report
 }
 
+/// Validate a filesystem directory or `.zip` archive as a DICOM collection.
 pub fn validate_directory_path(
     path: &Path,
     options: &ValidationOptions,
 ) -> Result<ValidationReport, ValidationRuntimeError> {
+    if path.is_file() && is_zip_file(path) {
+        return validate_zip_path(path, options);
+    }
+
     let dicom_files =
         collect_dicom_files(path).map_err(|source| ValidationRuntimeError::ReadDirectory {
             path: path.to_path_buf(),
             source,
         })?;
-    let mut report = ValidationReport::new(path, "directory", options.profile, dicom_files.len());
+    let outcomes = dicom_files
+        .into_iter()
+        .map(|file_path| validate_file_with_record(&file_path, options))
+        .collect();
 
-    if dicom_files.is_empty() {
+    Ok(validate_file_collection(
+        path,
+        "directory",
+        options,
+        outcomes,
+    ))
+}
+
+fn validate_zip_path(
+    path: &Path,
+    options: &ValidationOptions,
+) -> Result<ValidationReport, ValidationRuntimeError> {
+    let file = File::open(path).map_err(|source| ValidationRuntimeError::OpenZip {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|source| ValidationRuntimeError::ReadZip {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut entries = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry =
+            archive
+                .by_index(index)
+                .map_err(|source| ValidationRuntimeError::ReadZip {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if entry.is_dir() {
+            continue;
+        }
+
+        let entry_name = entry.name().to_string();
+        let has_dicom_extension = has_dicom_extension(Path::new(&entry_name));
+        if has_dicom_extension {
+            entries.push(ZipDicomEntry { index, entry_name });
+            continue;
+        }
+        if Path::new(&entry_name).extension().is_some() {
+            continue;
+        }
+
+        let mut header = [0_u8; 132];
+        match entry.read_exact(&mut header) {
+            Ok(()) if has_dicom_magic(&header) => entries.push(ZipDicomEntry { index, entry_name }),
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Err(source) => {
+                return Err(ValidationRuntimeError::ReadZipEntry {
+                    path: path.to_path_buf(),
+                    entry: entry_name,
+                    source,
+                });
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.entry_name.cmp(&right.entry_name));
+
+    let mut outcomes = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let mut zip_entry =
+            archive
+                .by_index(entry.index)
+                .map_err(|source| ValidationRuntimeError::ReadZip {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        let mut bytes = Vec::new();
+        zip_entry.read_to_end(&mut bytes).map_err(|source| {
+            ValidationRuntimeError::ReadZipEntry {
+                path: path.to_path_buf(),
+                entry: entry.entry_name.clone(),
+                source,
+            }
+        })?;
+        let source_path = zip_entry_path(path, &entry.entry_name);
+        outcomes.push(validate_dicom_bytes_with_record(
+            source_path,
+            &bytes,
+            options,
+        ));
+    }
+
+    Ok(validate_file_collection(path, "zip", options, outcomes))
+}
+
+struct ZipDicomEntry {
+    index: usize,
+    entry_name: String,
+}
+
+fn validate_file_collection(
+    path: &Path,
+    source_type: &str,
+    options: &ValidationOptions,
+    outcomes: Vec<FileValidationOutcome>,
+) -> ValidationReport {
+    let mut report = ValidationReport::new(path, source_type, options.profile, outcomes.len());
+
+    if outcomes.is_empty() {
         report.record(
             MessageKind::Error,
             "no_dicom_files",
             "DICOM file discovery",
-            "no DICOM files were found in the directory".to_string(),
+            format!("no DICOM files were found in the {source_type}"),
             None,
         );
         report.directory = Some(DirectoryValidationReport {
@@ -669,12 +801,11 @@ pub fn validate_directory_path(
             missing_views: standard_view_names(),
         });
         report.finalize();
-        return Ok(report);
+        return report;
     }
 
     let mut valid_records = Vec::new();
-    for file_path in dicom_files {
-        let outcome = validate_file_with_record(&file_path, options);
+    for outcome in outcomes {
         if outcome.report.is_valid() {
             if let Some(record) = outcome.record {
                 valid_records.push(record);
@@ -749,7 +880,7 @@ pub fn validate_directory_path(
         missing_views,
     });
     report.finalize();
-    Ok(report)
+    report
 }
 
 fn validate_file_source(path: &Path, options: &ValidationOptions) -> ValidationReport {
@@ -761,8 +892,8 @@ fn validate_file_source(path: &Path, options: &ValidationOptions) -> ValidationR
 }
 
 fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileValidationOutcome {
-    let mut report = FileValidationReport::new(path, options.profile);
     if !path.is_file() {
+        let mut report = FileValidationReport::new(path, options.profile);
         report.record_plain(
             MessageKind::Error,
             "invalid_source_path",
@@ -776,7 +907,28 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
         };
     }
 
-    let dcm = match open_file(path) {
+    validate_open_result_with_record(path.to_path_buf(), open_file(path), options)
+}
+
+fn validate_dicom_bytes_with_record(
+    source_path: PathBuf,
+    bytes: &[u8],
+    options: &ValidationOptions,
+) -> FileValidationOutcome {
+    let cursor = Cursor::new(bytes);
+    validate_open_result_with_record(source_path, FileDicomObject::from_reader(cursor), options)
+}
+
+fn validate_open_result_with_record<E>(
+    source_path: PathBuf,
+    dcm: Result<FileDicomObject<InMemDicomObject>, E>,
+    options: &ValidationOptions,
+) -> FileValidationOutcome
+where
+    E: std::fmt::Display,
+{
+    let mut report = FileValidationReport::new(&source_path, options.profile);
+    let dcm = match dcm {
         Ok(dcm) => dcm,
         Err(source) => {
             report.record_plain(
@@ -799,7 +951,7 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
     validate_pixel_fields(&mut report, &dcm, options.profile);
     let metadata = validate_extraction(&mut report, &dcm, options.profile);
     let record = if metadata.is_some() {
-        MammogramRecord::from_dicom(path.to_path_buf(), &dcm).ok()
+        MammogramRecord::from_dicom(source_path, &dcm).ok()
     } else {
         None
     };
@@ -807,6 +959,25 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
 
     report.finalize();
     FileValidationOutcome { report, record }
+}
+
+fn is_zip_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+}
+
+fn has_dicom_extension(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("dcm") || extension.eq_ignore_ascii_case("dicom")
+    })
+}
+
+fn has_dicom_magic(bytes: &[u8]) -> bool {
+    bytes.len() >= 132 && &bytes[128..132] == DICOM_MAGIC_BYTES
+}
+
+fn zip_entry_path(zip_path: &Path, entry_name: &str) -> PathBuf {
+    PathBuf::from(format!("{}::{entry_name}", zip_path.display()))
 }
 
 fn collect_file_meta(report: &mut FileValidationReport, dcm: &FileDicomObject<InMemDicomObject>) {
@@ -1754,6 +1925,8 @@ mod tests {
     use super::*;
 
     use std::collections::HashSet;
+    use std::fs::File;
+    use std::io::Write;
 
     use crate::extraction::tags::{
         LATERALITY, PRESENTATION_INTENT_TYPE, VIEW_CODE_SEQUENCE, VIEW_MODIFIER_CODE_SEQUENCE,
@@ -1980,5 +2153,52 @@ mod tests {
             .expect("directory report")
             .missing_views
             .is_empty());
+    }
+
+    #[test]
+    fn zip_validation_passes_with_all_standard_views() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let zip_path = temp_dir.path().join("dicoms.zip");
+        let zip_file = File::create(&zip_path).unwrap();
+        let mut zip_writer = zip::ZipWriter::new(zip_file);
+        let options = zip::write::SimpleFileOptions::default();
+
+        for (laterality, view) in [("L", "MLO"), ("R", "MLO"), ("L", "CC"), ("R", "CC")] {
+            let dicom_path = temp_dir.path().join(format!(
+                "{}_{}.dcm",
+                laterality.to_lowercase(),
+                view.to_lowercase()
+            ));
+            valid_metadata_object_with(laterality, view)
+                .write_to_file(&dicom_path)
+                .unwrap();
+            let bytes = std::fs::read(&dicom_path).unwrap();
+            zip_writer
+                .start_file(
+                    format!("nested/{}", dicom_path.file_name().unwrap().display()),
+                    options,
+                )
+                .unwrap();
+            zip_writer.write_all(&bytes).unwrap();
+        }
+        zip_writer.start_file("notes.txt", options).unwrap();
+        zip_writer.write_all(b"not a dicom").unwrap();
+        zip_writer.finish().unwrap();
+
+        let report = validate_path(&zip_path, &ValidationOptions::default()).unwrap();
+
+        assert!(report.is_valid(), "{:?}", report.errors);
+        assert_eq!(report.summary.source_type, "zip");
+        assert_eq!(report.summary.file_count, 4);
+        assert!(report
+            .directory
+            .as_ref()
+            .expect("zip directory report")
+            .missing_views
+            .is_empty());
+        assert!(report
+            .files
+            .iter()
+            .all(|file| file.file.path.contains("dicoms.zip::nested/")));
     }
 }

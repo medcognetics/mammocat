@@ -35,7 +35,7 @@ enum Error {
 #[command(about = "Validate DICOM mammography metadata for mammocat and mammoselect")]
 #[command(version)]
 struct Args {
-    /// DICOM file or directory to validate
+    /// DICOM file, directory, or ZIP archive to validate
     #[arg(value_name = "SOURCE")]
     source: PathBuf,
 

@@ -267,7 +267,7 @@ def validate_directory(
     filter_config: FilterConfig | None = None,
     preference_order: PreferenceOrder | None = None,
 ) -> dict[str, Any]:
-    """Validate a directory of DICOM files and report preferred-view coverage."""
+    """Validate a DICOM directory or ZIP archive and report preferred-view coverage."""
 
 # Filter configuration
 class FilterConfig:

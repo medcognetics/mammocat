@@ -119,11 +119,14 @@ make quality-fix
 # Validate a directory using the same non-recursive discovery behavior as mammoselect
 ./target/release/mammovalidate /path/to/dicom_directory
 
+# Validate a ZIP archive as a pseudo-directory
+./target/release/mammovalidate /path/to/dicom_archive.zip
+
 # Use the looser extraction profile
 ./target/release/mammovalidate --profile extraction /path/to/file.dcm
 
 # Machine-readable output
-./target/release/mammovalidate --format json /path/to/directory
+./target/release/mammovalidate --format json /path/to/dicom_archive.zip
 
 # Directory readiness with mammoselect-compatible filters
 ./target/release/mammovalidate --allowed-types ffdm,tomo --include-for-processing /path/to/directory
@@ -162,10 +165,10 @@ The codebase follows a clear separation of concerns:
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
 - `views.rs`: get_preferred_views, get_preferred_views_with_order, and get_preferred_views_filtered for selecting best views
 
-**`validation.rs`** - File and directory validation reports
-- `validate_path()`: Validates a single DICOM file or non-recursive directory.
+**`validation.rs`** - File and collection validation reports
+- `validate_path()`: Validates a single DICOM file, non-recursive directory, or ZIP archive.
 - `validate_dicom_file()`: File-only validation helper used by Python bindings.
-- `validate_directory_path()`: Directory validation with mammoselect-compatible filter and preference options.
+- `validate_directory_path()`: Directory or ZIP validation with mammoselect-compatible filter and preference options.
 - `ValidationProfile`: `Selection` is strict and checks preferred-view readiness; `Extraction` only fails when mammocat extraction cannot run.
 
 **`api.rs`** - Public API surface
@@ -222,7 +225,7 @@ Filtering flow:
 
 ### Validation Architecture
 
-`mammovalidate` and the Python validation functions use the same Rust report model. File validation records critical errors, warnings, info messages, and check details. Directory validation aggregates per-file reports and runs `get_preferred_views_filtered()` on valid records to verify standard-view coverage.
+`mammovalidate` and the Python validation functions use the same Rust report model. File validation records critical errors, warnings, info messages, and check details. Directory and ZIP validation aggregate per-file reports and run `get_preferred_views_filtered()` on valid records to verify standard-view coverage.
 
 The default `Selection` profile is strict: it fails files with missing/invalid selection-critical tags such as `Modality`, `SOPInstanceUID`, `StudyInstanceUID`, `SeriesInstanceUID`, laterality, view position, dimensions, bit-depth fields, or `PixelData`. It warns about metadata that can cause default filtering or deprioritization, including `FOR PROCESSING`, secondary capture, non-standard views, spot/magnification views, implants, and optional manufacturer/model/spacing gaps.
 
@@ -280,7 +283,7 @@ name = "mammoselect"
 path = "src/bin/mammoselect.rs"
 ```
 
-**mammovalidate** - Validation for files or directories
+**mammovalidate** - Validation for files, directories, or ZIP archives
 ```toml
 [[bin]]
 name = "mammovalidate"
