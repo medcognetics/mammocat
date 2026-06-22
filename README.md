@@ -94,17 +94,17 @@ Example output:
 Mammogram Metadata
 ==================
 
-Type:           ffdm
-Laterality:     left
-View Position:  cc
-Image Type:     ORIGINAL|PRIMARY
-For Processing: false
-Has Implant:    false
+Type               : ffdm
+Laterality         : left
+View Position      : cc
+Image Type         : ORIGINAL|PRIMARY
+For Processing     : false
+Has Implant        : false
 
 Derived Properties
 ------------------
-Standard View:  true
-Is 2D:          true
+Standard View      : true
+Is 2D              : true
 ```
 
 ### As a Library
