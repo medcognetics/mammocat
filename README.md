@@ -10,6 +10,7 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **Implant Status**: Detects breast implant presence
 - **Processing Intent**: Identifies "FOR PROCESSING" images
 - **Preferred View Selection**: Automatically selects the best mammogram for each standard view
+- **Validation Reports**: Checks whether files or directories are ready for metadata extraction or preferred-view selection
 - **Python Bindings**: Full Python API via PyO3 for seamless integration
 - **Clean API**: Easy-to-use library and command-line interface
 - **Type Safe**: Leverages Rust's type system for correctness
@@ -25,7 +26,7 @@ cd mammocat
 cargo build --release
 ```
 
-The binary will be available at `target/release/mammocat`.
+The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, and `target/release/mammovalidate`.
 
 ## Usage
 
@@ -62,6 +63,27 @@ mammoselect --format json /path/to/directory
 # Output file paths only (useful for scripting)
 mammoselect --format paths /path/to/directory
 ```
+
+### mammovalidate - DICOM Validation
+
+Validate one DICOM file or a non-recursive directory before running `mammocat` or `mammoselect`:
+
+```bash
+# Selection-readiness profile (default)
+mammovalidate /path/to/mammogram.dcm
+mammovalidate /path/to/dicom_directory
+
+# Looser profile: only require mammocat metadata extraction readiness
+mammovalidate --profile extraction /path/to/mammogram.dcm
+
+# JSON report
+cargo build --release --features json
+mammovalidate --format json /path/to/dicom_directory
+```
+
+The selection profile treats missing selection-critical fields as validation failures, including non-`MG` or missing modality, unknown laterality or view, missing key UIDs, invalid dimensions/frames, invalid bit-depth relationships, and missing `PixelData`. It reports likely filtering or ranking issues, such as `FOR PROCESSING`, secondary capture, non-standard views, spot/magnification views, implants, and optional metadata gaps, as warnings. Directory validation also checks four-view coverage after applying the same filter options used by `mammoselect`.
+
+Exit code `0` means validation passed, `1` means validation completed and found problems, and `2` means the tool hit a runtime or output error.
 
 Example output:
 
@@ -112,6 +134,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+```
+
+### Python Validation API
+
+The validation bindings return the same dictionary schema as `mammovalidate --format json`.
+
+```python
+from pathlib import Path
+
+from mammocat import validate_dicom, validate_directory
+
+file_report = validate_dicom("mammogram.dcm")
+directory_report = validate_directory(Path("dicoms"), profile="selection")
+
+if not file_report["summary"]["valid"]:
+    print(file_report["files"][0]["errors"])
 ```
 
 ## Classification Algorithms
@@ -176,9 +214,12 @@ mammocat/
 │   │   ├── cli/                    # Command-line interface
 │   │   │   ├── mod.rs
 │   │   │   └── report.rs           # Text formatting
+│   │   ├── validation.rs           # File/directory validation reports
 │   │   ├── error.rs                # Error types
 │   │   ├── main.rs                 # mammocat CLI entry point
-│   │   └── bin/mammoselect.rs      # mammoselect CLI entry point
+│   │   └── bin/
+│   │       ├── mammoselect.rs      # mammoselect CLI entry point
+│   │       └── mammovalidate.rs    # validation CLI entry point
 ```
 
 ## Type System
@@ -205,7 +246,7 @@ mammocat/
 
 ## Dependencies
 
-- **dicom-rs** (0.7): DICOM reading and parsing
+- **dicom-rs** (0.9): DICOM reading and parsing
 - **clap** (4.5): Command-line argument parsing
 - **thiserror** (1.0): Error handling
 - **regex** (1.10): Pattern matching

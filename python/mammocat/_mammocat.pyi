@@ -1,7 +1,7 @@
 """Type stubs for the mammocat Rust extension module."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 __version__: str
 
@@ -254,6 +254,20 @@ class MammogramExtractor:
     def extract_from_file_with_options(
         path: str | Path, is_sfm: bool = False
     ) -> MammogramMetadata: ...
+
+def validate_dicom(
+    path: str | Path,
+    profile: Literal["selection", "extraction"] = "selection",
+) -> dict[str, Any]:
+    """Validate one DICOM file for mammocat extraction or mammoselect readiness."""
+
+def validate_directory(
+    path: str | Path,
+    profile: Literal["selection", "extraction"] = "selection",
+    filter_config: FilterConfig | None = None,
+    preference_order: PreferenceOrder | None = None,
+) -> dict[str, Any]:
+    """Validate a directory of DICOM files and report preferred-view coverage."""
 
 # Filter configuration
 class FilterConfig:

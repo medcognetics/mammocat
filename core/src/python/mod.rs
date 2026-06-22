@@ -18,6 +18,7 @@ mod metadata;
 mod record;
 mod selection;
 mod utils;
+mod validation;
 
 pub use enums::*;
 pub use errors::*;
@@ -70,6 +71,7 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_get_preferred_views, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views_with_order, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views_filtered, m)?)?;
+    validation::register(m)?;
 
     // Add version
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

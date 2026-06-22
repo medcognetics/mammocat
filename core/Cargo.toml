@@ -47,3 +47,7 @@ path = "src/main.rs"
 [[bin]]
 name = "mammoselect"
 path = "src/bin/mammoselect.rs"
+
+[[bin]]
+name = "mammovalidate"
+path = "src/bin/mammovalidate.rs"
