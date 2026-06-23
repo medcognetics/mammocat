@@ -110,7 +110,7 @@ impl MammogramRecord {
         Self::from_dicom_with_metadata(path, dcm, metadata)
     }
 
-    fn from_dicom_with_metadata(
+    pub(crate) fn from_dicom_with_metadata(
         path: PathBuf,
         dcm: &InMemDicomObject,
         metadata: MammogramMetadata,

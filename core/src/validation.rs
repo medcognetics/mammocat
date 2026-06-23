@@ -945,16 +945,15 @@ where
         }
     };
 
+    let allow_non_mg_modality = !options.filter_config.exclude_non_mg_modality;
     collect_file_meta(&mut report, &dcm);
-    validate_identity(&mut report, &dcm, options.profile);
+    validate_identity(&mut report, &dcm, options.profile, allow_non_mg_modality);
     validate_image_fields(&mut report, &dcm, options.profile);
     validate_pixel_fields(&mut report, &dcm, options.profile);
-    let metadata = validate_extraction(&mut report, &dcm, options.profile);
-    let record = if metadata.is_some() {
-        MammogramRecord::from_file_dicom(source_path, &dcm).ok()
-    } else {
-        None
-    };
+    let metadata = validate_extraction(&mut report, &dcm, options.profile, allow_non_mg_modality);
+    let record = metadata.as_ref().and_then(|metadata| {
+        MammogramRecord::from_dicom_with_metadata(source_path, &dcm, metadata.clone()).ok()
+    });
     validate_selection_eligibility(&mut report, metadata.as_ref(), &options.filter_config);
 
     report.finalize();
@@ -1062,6 +1061,7 @@ fn validate_identity(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
+    allow_non_mg_modality: bool,
 ) {
     report.file.sop_class_uid = validate_optional_string(
         report,
@@ -1104,11 +1104,21 @@ fn validate_identity(
             Some(MODALITY),
             Some(modality),
         ),
+        Some(modality) if profile == ValidationProfile::Selection && !allow_non_mg_modality => {
+            report.record_tag(
+                MessageKind::Error,
+                "non_mg_modality",
+                "Modality",
+                "Modality must be MG for mammography selection".to_string(),
+                (MODALITY, "Modality"),
+                Some(modality),
+            )
+        }
         Some(modality) if profile == ValidationProfile::Selection => report.record_tag(
-            MessageKind::Error,
+            MessageKind::Warning,
             "non_mg_modality",
             "Modality",
-            "Modality must be MG for mammography selection".to_string(),
+            "Modality is not MG, but this filter configuration allows non-MG files".to_string(),
             (MODALITY, "Modality"),
             Some(modality),
         ),
@@ -1120,11 +1130,20 @@ fn validate_identity(
             (MODALITY, "Modality"),
             Some(modality),
         ),
+        None if profile == ValidationProfile::Selection && !allow_non_mg_modality => report
+            .record_tag(
+                MessageKind::Error,
+                "missing_modality",
+                "Modality",
+                "Modality is required for mammography selection".to_string(),
+                (MODALITY, "Modality"),
+                None,
+            ),
         None if profile == ValidationProfile::Selection => report.record_tag(
-            MessageKind::Error,
+            MessageKind::Warning,
             "missing_modality",
             "Modality",
-            "Modality is required for mammography selection".to_string(),
+            "Modality is absent, but this filter configuration allows non-MG files".to_string(),
             (MODALITY, "Modality"),
             None,
         ),
@@ -1266,8 +1285,13 @@ fn validate_extraction(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
+    allow_non_mg_modality: bool,
 ) -> Option<MammogramMetadata> {
-    match MammogramExtractor::extract(dcm) {
+    match MammogramExtractor::extract_file_with_options_and_modality_policy(
+        dcm,
+        false,
+        allow_non_mg_modality,
+    ) {
         Ok(metadata) => {
             report.pass(
                 "MammogramExtractor",
@@ -1999,10 +2023,10 @@ mod tests {
     ) -> FileValidationReport {
         let mut report = FileValidationReport::new(Path::new("test.dcm"), profile);
         collect_file_meta(&mut report, dcm);
-        validate_identity(&mut report, dcm, profile);
+        validate_identity(&mut report, dcm, profile, false);
         validate_image_fields(&mut report, dcm, profile);
         validate_pixel_fields(&mut report, dcm, profile);
-        let metadata = validate_extraction(&mut report, dcm, profile);
+        let metadata = validate_extraction(&mut report, dcm, profile, false);
         validate_selection_eligibility(&mut report, metadata.as_ref(), &FilterConfig::default());
         report.finalize();
         report
@@ -2153,6 +2177,44 @@ mod tests {
             .expect("directory report")
             .missing_views
             .is_empty());
+    }
+
+    #[test]
+    fn directory_validation_allows_non_mg_when_filter_allows() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        for (laterality, view) in [("L", "MLO"), ("R", "MLO"), ("L", "CC"), ("R", "CC")] {
+            let path = temp_dir.path().join(format!(
+                "{}_{}.dcm",
+                laterality.to_lowercase(),
+                view.to_lowercase()
+            ));
+            let mut dcm = valid_metadata_object_with(laterality, view);
+            put_str(&mut dcm, MODALITY, "CT");
+            dcm.write_to_file(path).unwrap();
+        }
+        let options = ValidationOptions {
+            filter_config: FilterConfig::default().exclude_non_mg_modality(false),
+            ..ValidationOptions::default()
+        };
+
+        let report = validate_directory_path(temp_dir.path(), &options).unwrap();
+
+        assert!(report.is_valid(), "{:?}", report.errors);
+        assert_eq!(report.summary.file_count, 4);
+        assert!(report
+            .directory
+            .as_ref()
+            .expect("directory report")
+            .missing_views
+            .is_empty());
+        assert!(report
+            .files
+            .iter()
+            .all(|file| error_codes(file).get("non_mg_modality").is_none()));
+        assert!(report
+            .files
+            .iter()
+            .all(|file| warning_codes(file).contains("non_mg_modality")));
     }
 
     #[test]

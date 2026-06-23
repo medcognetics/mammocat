@@ -1,11 +1,12 @@
 use crate::error::Result;
+use crate::extraction::mammo_type::extract_mammogram_type_impl;
 use crate::extraction::tags::{
     get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, MANUFACTURER, MANUFACTURER_MODEL_NAME,
     MODALITY, NUMBER_OF_FRAMES, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
 };
 use crate::extraction::{
-    extract_image_type, extract_laterality, extract_mammogram_type, extract_view_position,
-    is_implant_displaced, is_magnified, is_spot_compression,
+    extract_image_type, extract_laterality, extract_view_position, is_implant_displaced,
+    is_magnified, is_spot_compression,
 };
 use crate::types::{ImageType, Laterality, MammogramType, MammogramView, ViewPosition};
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
@@ -85,8 +86,17 @@ impl MammogramExtractor {
     /// The `is_sfm` flag manually indicates if the mammogram is SFM
     /// instead of FFDM, which affects type classification.
     pub fn extract_with_options(dcm: &InMemDicomObject, is_sfm: bool) -> Result<MammogramMetadata> {
+        Self::extract_with_options_and_modality_policy(dcm, is_sfm, false)
+    }
+
+    /// Extracts metadata with optional SFM flag and configurable modality strictness.
+    pub(crate) fn extract_with_options_and_modality_policy(
+        dcm: &InMemDicomObject,
+        is_sfm: bool,
+        ignore_modality: bool,
+    ) -> Result<MammogramMetadata> {
         Ok(MammogramMetadata {
-            mammogram_type: extract_mammogram_type(dcm, is_sfm)?,
+            mammogram_type: extract_mammogram_type_impl(dcm, is_sfm, ignore_modality)?,
             laterality: extract_laterality(dcm)?,
             view_position: extract_view_position(dcm)?,
             image_type: extract_image_type(dcm),
@@ -111,7 +121,17 @@ impl MammogramExtractor {
         dcm: &FileDicomObject<InMemDicomObject>,
         is_sfm: bool,
     ) -> Result<MammogramMetadata> {
-        let mut metadata = Self::extract_with_options(dcm, is_sfm)?;
+        Self::extract_file_with_options_and_modality_policy(dcm, is_sfm, false)
+    }
+
+    /// Extracts metadata from a full DICOM file object with configurable modality strictness.
+    pub(crate) fn extract_file_with_options_and_modality_policy(
+        dcm: &FileDicomObject<InMemDicomObject>,
+        is_sfm: bool,
+        ignore_modality: bool,
+    ) -> Result<MammogramMetadata> {
+        let mut metadata =
+            Self::extract_with_options_and_modality_policy(dcm, is_sfm, ignore_modality)?;
         if let Some(transfer_syntax) = resolve_transfer_syntax_metadata(&dcm.meta().transfer_syntax)
         {
             metadata.transfer_syntax_uid = Some(transfer_syntax.uid);

@@ -24,6 +24,7 @@ def create_validation_dicom(
     samples_per_pixel: int = 1,
     photometric_interpretation: str = "MONOCHROME2",
     lossy_compression: bool = False,
+    modality: str = "MG",
 ) -> Path:
     """Create a small mammography DICOM for validation tests."""
     ds = create_mammogram_dicom(
@@ -33,6 +34,7 @@ def create_validation_dicom(
         rows=VALIDATION_ROWS,
         columns=VALIDATION_COLUMNS,
     )
+    ds.Modality = modality
     ds.PresentationIntentType = "FOR PRESENTATION"
     ds.SamplesPerPixel = samples_per_pixel
     ds.PhotometricInterpretation = photometric_interpretation
@@ -178,3 +180,29 @@ def test_validate_directory_accepts_filter_and_preference(tmp_path: Path) -> Non
 
     assert report["summary"]["profile"] == "extraction"
     assert report["summary"]["file_count"] == 1
+
+
+def test_validate_directory_allows_non_mg_when_filter_allows(tmp_path: Path) -> None:
+    for laterality, view_position in [("L", "MLO"), ("R", "MLO"), ("L", "CC"), ("R", "CC")]:
+        create_validation_dicom(
+            tmp_path / f"{laterality.lower()}_{view_position.lower()}.dcm",
+            laterality=laterality,
+            view_position=view_position,
+            modality="CT",
+        )
+
+    report = validate_directory(
+        tmp_path,
+        filter_config=FilterConfig(exclude_non_mg_modality=False),
+    )
+
+    assert report["status"] == "pass"
+    assert report["directory"]["missing_views"] == []
+    assert all(
+        "non_mg_modality" not in {error["code"] for error in file["errors"]}
+        for file in report["files"]
+    )
+    assert all(
+        "non_mg_modality" in {warning["code"] for warning in file["warnings"]}
+        for file in report["files"]
+    )
