@@ -21,6 +21,9 @@ class InvalidValueError(MammocatError):
 class ExtractionError(MammocatError):
     """Generic metadata extraction error."""
 
+class SelectionError(MammocatError):
+    """Preferred-view selection error."""
+
 # Enums
 class MammogramType:
     """Mammogram type classification."""
@@ -291,6 +294,7 @@ class FilterConfig:
 # Selection functions
 def get_preferred_views(
     records: list[MammogramRecord],
+    strict: bool = False,
 ) -> dict[MammogramView, MammogramRecord | None]:
     """Select preferred views from records using default preference order.
 
@@ -308,6 +312,7 @@ def get_preferred_views(
 def get_preferred_views_with_order(
     records: list[MammogramRecord],
     preference_order: PreferenceOrder,
+    strict: bool = False,
 ) -> dict[MammogramView, MammogramRecord | None]:
     """Select preferred views using a specific preference order.
 
@@ -327,6 +332,7 @@ def get_preferred_views_filtered(
     records: list[MammogramRecord],
     filter_config: FilterConfig,
     preference_order: PreferenceOrder,
+    strict: bool = False,
 ) -> dict[MammogramView, MammogramRecord | None]:
     """Select preferred views with filtering.
 

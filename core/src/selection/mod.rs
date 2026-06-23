@@ -8,5 +8,7 @@ mod views;
 
 pub use record::MammogramRecord;
 pub use views::{
-    get_preferred_views, get_preferred_views_filtered, get_preferred_views_with_order,
+    get_preferred_views, get_preferred_views_filtered,
+    get_preferred_views_filtered_with_study_mode, get_preferred_views_with_order,
+    StudySelectionMode,
 };

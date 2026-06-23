@@ -13,7 +13,8 @@ pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
 pub use error::{MammocatError, Result};
 pub use selection::{
-    get_preferred_views, get_preferred_views_filtered, get_preferred_views_with_order,
-    MammogramRecord,
+    get_preferred_views, get_preferred_views_filtered,
+    get_preferred_views_filtered_with_study_mode, get_preferred_views_with_order, MammogramRecord,
+    StudySelectionMode,
 };
 pub use types::*;

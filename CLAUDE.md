@@ -100,6 +100,9 @@ make quality-fix
 # Output file paths only
 ./target/release/mammoselect --format paths /path/to/directory
 
+# Error if usable candidates contain multiple studies or missing StudyInstanceUID
+./target/release/mammoselect --strict /path/to/directory
+
 # Verbose logging
 ./target/release/mammoselect --verbose /path/to/directory
 
@@ -166,7 +169,9 @@ The codebase follows a clear separation of concerns:
 - `Default`: FFDM > SYNTH > TOMO > SFM - Prefers 2D images for general inference
 - `TomoFirst`: TOMO > FFDM > SYNTH > SFM - Maximizes use of 3D imaging when available
 
-MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) uses this to pick the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC).
+MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) first chooses one study, then picks the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC) within that study.
+
+**Single-Study Selection**: Preferred-view selection never mixes studies. After filters are applied, usable candidate records are grouped by `StudyInstanceUID`. Default selection chooses the most complete known study by true standard-view coverage first, MLO-like/CC-like candidate coverage second, and lowest `StudyInstanceUID` as the deterministic tie-break. Records missing `StudyInstanceUID` are singleton fallback groups in default mode and sort after known studies on equal completeness. `StudySelectionMode::StrictSingleStudy`, Python `strict=True`, and CLI `--strict` fail if usable candidates contain multiple studies or any missing `StudyInstanceUID`.
 
 **Fallback Hierarchy**: Laterality extraction attempts multiple DICOM tags in order:
 1. ImageLaterality
@@ -188,8 +193,9 @@ Hard filtering is used - records that don't pass filters are completely excluded
 Filtering flow:
 1. Load all DICOM files into MammogramRecord collection
 2. Apply FilterConfig to remove unwanted records via `apply_filters()`
-3. Run view selection algorithm (`get_preferred_views_with_order`) on filtered set
-4. Return best views from remaining candidates
+3. Choose one study from filtered usable candidates, or fail in strict study mode
+4. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
+5. Return best views from remaining candidates
 
 New metadata fields for filtering:
 - `is_secondary_capture`: Detected via SOP Class UID (checks if starts with "1.2.840.10008.5.1.4.1.1.7")

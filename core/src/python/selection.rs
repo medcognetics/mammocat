@@ -4,8 +4,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::enums::{PyMammogramView, PyPreferenceOrder};
+use super::errors::convert_error;
 use super::filter::PyFilterConfig;
 use super::record::PyMammogramRecord;
+use crate::selection::{self as core_selection, MammogramRecord, StudySelectionMode};
+use crate::types::{FilterConfig, MammogramView, PreferenceOrder};
+use std::collections::HashMap;
+
+type PreferredViewSelection = HashMap<MammogramView, Option<MammogramRecord>>;
 
 /// Select preferred views from a collection of mammogram records (using default preference order)
 ///
@@ -15,6 +21,7 @@ use super::record::PyMammogramRecord;
 ///
 /// Args:
 ///     records: List of MammogramRecord objects to select from
+///     strict: If true, raise SelectionError when usable records span studies
 ///
 /// Returns:
 ///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -29,14 +36,14 @@ use super::record::PyMammogramRecord;
 ///     ...         print(f"{view}: {record.file_path}")
 #[pyfunction]
 #[pyo3(name = "get_preferred_views")]
-pub fn py_get_preferred_views(py: Python, records: Vec<PyMammogramRecord>) -> PyResult<Py<PyDict>> {
-    // Convert Python records to Rust records
+#[pyo3(signature = (records, strict=false))]
+pub fn py_get_preferred_views(
+    py: Python,
+    records: Vec<PyMammogramRecord>,
+    strict: bool,
+) -> PyResult<Py<PyDict>> {
     let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
-
-    // Call Rust function
-    let result = crate::selection::get_preferred_views(&rust_records);
-
-    // Convert HashMap to Python dict
+    let result = select_unfiltered_views(&rust_records, PreferenceOrder::Default, strict)?;
     hashmap_to_py_dict(py, result)
 }
 
@@ -49,6 +56,7 @@ pub fn py_get_preferred_views(py: Python, records: Vec<PyMammogramRecord>) -> Py
 /// Args:
 ///     records: List of MammogramRecord objects to select from
 ///     preference_order: The preference ordering strategy to use
+///     strict: If true, raise SelectionError when usable records span studies
 ///
 /// Returns:
 ///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -70,19 +78,15 @@ pub fn py_get_preferred_views(py: Python, records: Vec<PyMammogramRecord>) -> Py
 ///     ...         print(f"{view}: {record.file_path}")
 #[pyfunction]
 #[pyo3(name = "get_preferred_views_with_order")]
+#[pyo3(signature = (records, preference_order, strict=false))]
 pub fn py_get_preferred_views_with_order(
     py: Python,
     records: Vec<PyMammogramRecord>,
     preference_order: PyPreferenceOrder,
+    strict: bool,
 ) -> PyResult<Py<PyDict>> {
-    // Convert Python records to Rust records
     let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
-
-    // Call Rust function
-    let result =
-        crate::selection::get_preferred_views_with_order(&rust_records, preference_order.inner);
-
-    // Convert HashMap to Python dict
+    let result = select_unfiltered_views(&rust_records, preference_order.inner, strict)?;
     hashmap_to_py_dict(py, result)
 }
 
@@ -95,6 +99,7 @@ pub fn py_get_preferred_views_with_order(
 ///     records: List of MammogramRecord objects to select from
 ///     filter_config: FilterConfig specifying which records to include
 ///     preference_order: The preference ordering strategy to use
+///     strict: If true, raise SelectionError when usable records span studies
 ///
 /// Returns:
 ///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -120,34 +125,49 @@ pub fn py_get_preferred_views_with_order(
 ///     ... )
 #[pyfunction]
 #[pyo3(name = "get_preferred_views_filtered")]
+#[pyo3(signature = (records, filter_config, preference_order, strict=false))]
 pub fn py_get_preferred_views_filtered(
     py: Python,
     records: Vec<PyMammogramRecord>,
     filter_config: PyFilterConfig,
     preference_order: PyPreferenceOrder,
+    strict: bool,
 ) -> PyResult<Py<PyDict>> {
-    // Convert Python records to Rust records
     let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
-
-    // Call Rust function
-    let result = crate::selection::get_preferred_views_filtered(
+    let result = core_selection::get_preferred_views_filtered_with_study_mode(
         &rust_records,
         &filter_config.inner,
         preference_order.inner,
-    );
+        StudySelectionMode::from_strict(strict),
+    )
+    .map_err(convert_error)?;
 
-    // Convert HashMap to Python dict
     hashmap_to_py_dict(py, result)
 }
 
+fn select_unfiltered_views(
+    records: &[MammogramRecord],
+    preference_order: PreferenceOrder,
+    strict: bool,
+) -> PyResult<PreferredViewSelection> {
+    if strict {
+        core_selection::get_preferred_views_filtered_with_study_mode(
+            records,
+            &FilterConfig::permissive(),
+            preference_order,
+            StudySelectionMode::StrictSingleStudy,
+        )
+        .map_err(convert_error)
+    } else {
+        Ok(core_selection::get_preferred_views_with_order(
+            records,
+            preference_order,
+        ))
+    }
+}
+
 /// Convert HashMap<MammogramView, Option<MammogramRecord>> to Python dict
-fn hashmap_to_py_dict(
-    py: Python,
-    map: std::collections::HashMap<
-        crate::types::MammogramView,
-        Option<crate::selection::MammogramRecord>,
-    >,
-) -> PyResult<Py<PyDict>> {
+fn hashmap_to_py_dict(py: Python, map: PreferredViewSelection) -> PyResult<Py<PyDict>> {
     let dict = PyDict::new_bound(py);
 
     for (view, record) in map.into_iter() {
