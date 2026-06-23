@@ -72,7 +72,8 @@ standard-view slots, then uses MLO-like/CC-like candidate coverage as a
 tie-break. If multiple known studies are still tied, the lowest
 `StudyInstanceUID` is selected. Records without `StudyInstanceUID` are treated
 as singleton fallback groups in default mode and sort after known studies on
-equal completeness.
+equal completeness. When `--require-common-modality` is used, completeness is
+scored within the best single modality group for each study.
 
 Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any

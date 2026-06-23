@@ -70,7 +70,7 @@ pub fn get_preferred_views_with_order(
     records: &[MammogramRecord],
     preference_order: PreferenceOrder,
 ) -> HashMap<MammogramView, Option<MammogramRecord>> {
-    let study_records = select_study_records(records, StudySelectionMode::MostComplete)
+    let study_records = select_study_records(records, StudySelectionMode::MostComplete, false)
         .expect("most-complete study selection should not fail");
     select_preferred_views_for_records(&study_records, preference_order)
 }
@@ -168,7 +168,11 @@ pub fn get_preferred_views_filtered_with_study_mode(
     study_selection_mode: StudySelectionMode,
 ) -> Result<HashMap<MammogramView, Option<MammogramRecord>>> {
     let filtered_records = apply_filters(records, filter_config);
-    let study_records = select_study_records(&filtered_records, study_selection_mode)?;
+    let study_records = select_study_records(
+        &filtered_records,
+        study_selection_mode,
+        filter_config.require_common_modality,
+    )?;
 
     // Run initial selection
     let selection = select_preferred_views_for_records(&study_records, preference_order);
@@ -247,6 +251,7 @@ fn apply_filters(records: &[MammogramRecord], config: &FilterConfig) -> Vec<Mamm
 fn select_study_records(
     records: &[MammogramRecord],
     study_selection_mode: StudySelectionMode,
+    require_common_modality: bool,
 ) -> Result<Vec<MammogramRecord>> {
     let candidate_records: Vec<MammogramRecord> = records
         .iter()
@@ -260,7 +265,7 @@ fn select_study_records(
 
     match study_selection_mode {
         StudySelectionMode::MostComplete => {
-            let mut groups = build_study_groups(&candidate_records);
+            let mut groups = build_study_groups(&candidate_records, require_common_modality);
             groups.sort_by(compare_study_groups);
             Ok(groups
                 .into_iter()
@@ -320,7 +325,10 @@ fn group_records_by_study_uid(
     records_by_uid
 }
 
-fn build_study_groups(records: &[MammogramRecord]) -> Vec<StudyGroup> {
+fn build_study_groups(
+    records: &[MammogramRecord],
+    require_common_modality: bool,
+) -> Vec<StudyGroup> {
     let mut records_by_uid: BTreeMap<String, Vec<MammogramRecord>> = BTreeMap::new();
     let mut unknown_groups = Vec::new();
 
@@ -337,13 +345,15 @@ fn build_study_groups(records: &[MammogramRecord]) -> Vec<StudyGroup> {
 
     let mut groups: Vec<StudyGroup> = records_by_uid
         .into_iter()
-        .map(|(study_uid, records)| make_study_group(Some(study_uid), records))
+        .map(|(study_uid, records)| {
+            make_study_group(Some(study_uid), records, require_common_modality)
+        })
         .collect();
 
     groups.extend(
         unknown_groups
             .into_iter()
-            .map(|records| make_study_group(None, records)),
+            .map(|records| make_study_group(None, records, require_common_modality)),
     );
 
     groups
@@ -352,9 +362,10 @@ fn build_study_groups(records: &[MammogramRecord]) -> Vec<StudyGroup> {
 fn make_study_group(
     study_instance_uid: Option<String>,
     records: Vec<MammogramRecord>,
+    require_common_modality: bool,
 ) -> StudyGroup {
-    let standard_slot_count = count_standard_slots(&records);
-    let candidate_slot_count = count_candidate_slots(&records);
+    let (standard_slot_count, candidate_slot_count) =
+        count_study_slots(&records, require_common_modality);
     let unknown_sort_key = study_instance_uid.is_none().then(|| {
         records
             .iter()
@@ -397,6 +408,44 @@ fn is_missing_study_uid(record: &MammogramRecord) -> bool {
         Some(uid) => uid.trim().is_empty(),
         None => true,
     }
+}
+
+fn count_study_slots(records: &[MammogramRecord], require_common_modality: bool) -> (usize, usize) {
+    if require_common_modality {
+        return count_common_modality_study_slots(records);
+    }
+
+    (
+        count_standard_slots(records),
+        count_candidate_slots(records),
+    )
+}
+
+fn count_common_modality_study_slots(records: &[MammogramRecord]) -> (usize, usize) {
+    let records_2d: Vec<MammogramRecord> = records
+        .iter()
+        .filter(|record| record.metadata.mammogram_type.is_2d_group())
+        .cloned()
+        .collect();
+    let records_dbt: Vec<MammogramRecord> = records
+        .iter()
+        .filter(|record| record.metadata.mammogram_type.is_dbt_group())
+        .cloned()
+        .collect();
+
+    [
+        (
+            count_standard_slots(&records_2d),
+            count_candidate_slots(&records_2d),
+        ),
+        (
+            count_standard_slots(&records_dbt),
+            count_candidate_slots(&records_dbt),
+        ),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or_default()
 }
 
 fn count_standard_slots(records: &[MammogramRecord]) -> usize {
@@ -952,6 +1001,73 @@ mod tests {
         assert_eq!(count_coverage(&selections), 3);
         for record in selections.values().flatten() {
             assert_eq!(record.study_instance_uid.as_deref(), Some(standard_study));
+        }
+    }
+
+    #[test]
+    fn test_common_modality_study_selection_uses_common_modality_coverage() {
+        let mixed_modality_study = "1.2.826.0.10";
+        let single_modality_study = "1.2.826.0.20";
+        let records = vec![
+            make_test_record_with_study(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                Some(mixed_modality_study),
+            ),
+            make_test_record_with_study(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                Some(mixed_modality_study),
+            ),
+            make_test_record_with_study(
+                Laterality::Left,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+                Some(mixed_modality_study),
+            ),
+            make_test_record_with_study(
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+                Some(mixed_modality_study),
+            ),
+            make_test_record_with_study(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                Some(single_modality_study),
+            ),
+            make_test_record_with_study(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                Some(single_modality_study),
+            ),
+            make_test_record_with_study(
+                Laterality::Left,
+                ViewPosition::Cc,
+                MammogramType::Ffdm,
+                Some(single_modality_study),
+            ),
+        ];
+        let config = FilterConfig::permissive().require_common_modality(true);
+
+        let selections = get_preferred_views_filtered_with_study_mode(
+            &records,
+            &config,
+            PreferenceOrder::Default,
+            StudySelectionMode::MostComplete,
+        )
+        .unwrap();
+
+        assert_eq!(count_coverage(&selections), 3);
+        for record in selections.values().flatten() {
+            assert_eq!(
+                record.study_instance_uid.as_deref(),
+                Some(single_modality_study)
+            );
         }
     }
 
