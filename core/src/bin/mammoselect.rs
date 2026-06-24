@@ -184,6 +184,7 @@ fn main() {
 
     // Select preferred views with filtering
     let selections = get_preferred_views_filtered(&records, &filter_config, preference_order);
+    output_selected_lossy_warnings(&selections, &filter_config);
 
     // Output results
     output_selections(&selections, cli.format);
@@ -281,6 +282,41 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
     config = config.require_common_modality(cli.require_common_modality);
 
     config
+}
+
+fn output_selected_lossy_warnings(
+    selections: &HashMap<MammogramView, Option<MammogramRecord>>,
+    filter_config: &FilterConfig,
+) {
+    for warning in selected_lossy_warning_messages(selections, filter_config) {
+        warn!("{}", warning);
+    }
+}
+
+fn selected_lossy_warning_messages(
+    selections: &HashMap<MammogramView, Option<MammogramRecord>>,
+    filter_config: &FilterConfig,
+) -> Vec<String> {
+    if filter_config.exclude_lossy_compressed {
+        return Vec::new();
+    }
+
+    STANDARD_MAMMO_VIEWS
+        .iter()
+        .filter_map(|view| {
+            let record = selections.get(view).and_then(Option::as_ref)?;
+            if !record.is_lossy_compressed {
+                return None;
+            }
+
+            let transfer_syntax_uid = record.transfer_syntax_uid.as_deref().unwrap_or("unknown");
+            Some(format!(
+                "lossy compressed image selected for {view}: {} \
+                 (transfer syntax UID: {transfer_syntax_uid}; use --exclude-lossy to remove lossy images)",
+                record.file_path.display()
+            ))
+        })
+        .collect()
 }
 
 fn output_selections(
@@ -442,9 +478,50 @@ impl<'a> fmt::Display for TextReport<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mammocat_core::{ImageType, Laterality, MammogramMetadata, ViewPosition};
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
+
+    fn make_cli_test_record(
+        view: MammogramView,
+        file_name: &str,
+        is_lossy_compressed: bool,
+    ) -> MammogramRecord {
+        MammogramRecord {
+            file_path: PathBuf::from(file_name),
+            metadata: MammogramMetadata {
+                mammogram_type: MammogramType::Ffdm,
+                laterality: view.laterality,
+                view_position: view.view,
+                image_type: ImageType::new(
+                    "ORIGINAL".to_string(),
+                    "PRIMARY".to_string(),
+                    None,
+                    None,
+                ),
+                is_for_processing: false,
+                has_implant: false,
+                is_spot_compression: false,
+                is_magnified: false,
+                is_implant_displaced: false,
+                manufacturer: None,
+                model: None,
+                number_of_frames: 1,
+                is_secondary_capture: false,
+                modality: Some("MG".to_string()),
+            },
+            study_instance_uid: None,
+            sop_instance_uid: None,
+            rows: Some(2560),
+            columns: Some(3328),
+            transfer_syntax_uid: Some("1.2.840.10008.1.2.4.50".to_string()),
+            is_lossy_compressed,
+            is_implant_displaced: false,
+            is_spot_compression: false,
+            is_magnified: false,
+        }
+    }
 
     #[test]
     fn test_is_dicom_file_with_valid_header() {
@@ -569,5 +646,52 @@ mod tests {
 
         assert!(!config.exclude_lossy_compressed);
         assert!(!config.deprioritize_lossy_compressed);
+    }
+
+    #[test]
+    fn test_selected_lossy_warning_messages_warns_when_lossy_selected() {
+        let view = MammogramView::new(Laterality::Left, ViewPosition::Mlo);
+        let mut selections = HashMap::new();
+        selections.insert(
+            view,
+            Some(make_cli_test_record(view, "/tmp/lossy.dcm", true)),
+        );
+
+        let warnings = selected_lossy_warning_messages(&selections, &FilterConfig::default());
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("lossy compressed image selected"));
+        assert!(warnings[0].contains(&view.to_string()));
+        assert!(warnings[0].contains("/tmp/lossy.dcm"));
+        assert!(warnings[0].contains("--exclude-lossy"));
+    }
+
+    #[test]
+    fn test_selected_lossy_warning_messages_suppressed_when_lossy_excluded() {
+        let view = MammogramView::new(Laterality::Left, ViewPosition::Mlo);
+        let mut selections = HashMap::new();
+        selections.insert(
+            view,
+            Some(make_cli_test_record(view, "/tmp/lossy.dcm", true)),
+        );
+        let config = FilterConfig::default().exclude_lossy_compressed(true);
+
+        let warnings = selected_lossy_warning_messages(&selections, &config);
+
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_selected_lossy_warning_messages_ignores_lossless_selected() {
+        let view = MammogramView::new(Laterality::Left, ViewPosition::Mlo);
+        let mut selections = HashMap::new();
+        selections.insert(
+            view,
+            Some(make_cli_test_record(view, "/tmp/lossless.dcm", false)),
+        );
+
+        let warnings = selected_lossy_warning_messages(&selections, &FilterConfig::default());
+
+        assert!(warnings.is_empty());
     }
 }
