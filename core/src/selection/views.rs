@@ -4,6 +4,8 @@ use crate::types::{FilterConfig, MammogramView, PreferenceOrder, STANDARD_MAMMO_
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
+const MIXED_STUDY_WARNING_PREFIX: &str = "mixed study input detected";
+
 /// Study handling policy for preferred-view selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StudySelectionMode {
@@ -24,6 +26,25 @@ impl StudySelectionMode {
     }
 }
 
+/// Non-fatal warning produced during preferred-view selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionWarning {
+    message: String,
+}
+
+impl SelectionWarning {
+    /// User-facing warning message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Preferred-view selection result map.
+pub type PreferredViewSelection = HashMap<MammogramView, Option<MammogramRecord>>;
+
+/// Preferred-view selection result with non-fatal warnings.
+pub type PreferredViewSelectionWithWarnings = (PreferredViewSelection, Vec<SelectionWarning>);
+
 #[derive(Debug, Clone)]
 struct StudyGroup {
     study_instance_uid: Option<String>,
@@ -31,6 +52,12 @@ struct StudyGroup {
     standard_slot_count: usize,
     candidate_slot_count: usize,
     unknown_sort_key: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+struct SelectedStudyRecords {
+    records: Vec<MammogramRecord>,
+    warnings: Vec<SelectionWarning>,
 }
 
 /// Selects preferred inference views from a collection of mammogram records
@@ -47,9 +74,7 @@ struct StudyGroup {
 /// # Returns
 ///
 /// HashMap mapping each standard view to the selected record (or None if not found)
-pub fn get_preferred_views(
-    records: &[MammogramRecord],
-) -> HashMap<MammogramView, Option<MammogramRecord>> {
+pub fn get_preferred_views(records: &[MammogramRecord]) -> PreferredViewSelection {
     get_preferred_views_with_order(records, PreferenceOrder::default())
 }
 
@@ -69,16 +94,28 @@ pub fn get_preferred_views(
 pub fn get_preferred_views_with_order(
     records: &[MammogramRecord],
     preference_order: PreferenceOrder,
-) -> HashMap<MammogramView, Option<MammogramRecord>> {
-    let study_records = select_study_records(records, StudySelectionMode::MostComplete, false)
+) -> PreferredViewSelection {
+    let (selection, warnings) =
+        get_preferred_views_with_order_and_warnings(records, preference_order);
+    log_selection_warnings(&warnings);
+    selection
+}
+
+/// Selects preferred inference views and returns non-fatal selection warnings.
+pub fn get_preferred_views_with_order_and_warnings(
+    records: &[MammogramRecord],
+    preference_order: PreferenceOrder,
+) -> PreferredViewSelectionWithWarnings {
+    let selected_study = select_study_records(records, StudySelectionMode::MostComplete, false)
         .expect("most-complete study selection should not fail");
-    select_preferred_views_for_records(&study_records, preference_order)
+    let selection = select_preferred_views_for_records(&selected_study.records, preference_order);
+    (selection, selected_study.warnings)
 }
 
 fn select_preferred_views_for_records(
     records: &[MammogramRecord],
     preference_order: PreferenceOrder,
-) -> HashMap<MammogramView, Option<MammogramRecord>> {
+) -> PreferredViewSelection {
     let mut result = HashMap::new();
 
     // Try each standard view
@@ -145,7 +182,7 @@ pub fn get_preferred_views_filtered(
     records: &[MammogramRecord],
     filter_config: &FilterConfig,
     preference_order: PreferenceOrder,
-) -> HashMap<MammogramView, Option<MammogramRecord>> {
+) -> PreferredViewSelection {
     get_preferred_views_filtered_with_study_mode(
         records,
         filter_config,
@@ -166,25 +203,42 @@ pub fn get_preferred_views_filtered_with_study_mode(
     filter_config: &FilterConfig,
     preference_order: PreferenceOrder,
     study_selection_mode: StudySelectionMode,
-) -> Result<HashMap<MammogramView, Option<MammogramRecord>>> {
+) -> Result<PreferredViewSelection> {
+    let (selection, warnings) = get_preferred_views_filtered_with_study_mode_and_warnings(
+        records,
+        filter_config,
+        preference_order,
+        study_selection_mode,
+    )?;
+    log_selection_warnings(&warnings);
+    Ok(selection)
+}
+
+/// Selects preferred inference views with filtering and returns non-fatal warnings.
+pub fn get_preferred_views_filtered_with_study_mode_and_warnings(
+    records: &[MammogramRecord],
+    filter_config: &FilterConfig,
+    preference_order: PreferenceOrder,
+    study_selection_mode: StudySelectionMode,
+) -> Result<PreferredViewSelectionWithWarnings> {
     let filtered_records = apply_filters(records, filter_config);
-    let study_records = select_study_records(
+    let selected_study = select_study_records(
         &filtered_records,
         study_selection_mode,
         filter_config.require_common_modality,
     )?;
 
     // Run initial selection
-    let selection = select_preferred_views_for_records(&study_records, preference_order);
+    let selection = select_preferred_views_for_records(&selected_study.records, preference_order);
 
     // Optionally enforce common modality
     let selection = if filter_config.require_common_modality {
-        enforce_common_modality(&study_records, selection, preference_order)
+        enforce_common_modality(&selected_study.records, selection, preference_order)
     } else {
         selection
     };
 
-    Ok(selection)
+    Ok((selection, selected_study.warnings))
 }
 
 /// Applies filters to a collection of records
@@ -252,7 +306,7 @@ fn select_study_records(
     records: &[MammogramRecord],
     study_selection_mode: StudySelectionMode,
     require_common_modality: bool,
-) -> Result<Vec<MammogramRecord>> {
+) -> Result<SelectedStudyRecords> {
     let candidate_records: Vec<MammogramRecord> = records
         .iter()
         .filter(|record| is_candidate_for_any_standard_view(record))
@@ -260,20 +314,31 @@ fn select_study_records(
         .collect();
 
     if candidate_records.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SelectedStudyRecords {
+            records: Vec::new(),
+            warnings: Vec::new(),
+        });
     }
 
     match study_selection_mode {
         StudySelectionMode::MostComplete => {
             let mut groups = build_study_groups(&candidate_records, require_common_modality);
             groups.sort_by(compare_study_groups);
-            Ok(groups
-                .into_iter()
-                .next()
-                .expect("candidate records always form at least one study group")
-                .records)
+            let selected_group = groups
+                .first()
+                .expect("candidate records always form at least one study group");
+            Ok(SelectedStudyRecords {
+                records: selected_group.records.clone(),
+                warnings: mixed_study_warnings(&groups, selected_group),
+            })
         }
-        StudySelectionMode::StrictSingleStudy => select_strict_study_records(candidate_records),
+        StudySelectionMode::StrictSingleStudy => {
+            let records = select_strict_study_records(candidate_records)?;
+            Ok(SelectedStudyRecords {
+                records,
+                warnings: Vec::new(),
+            })
+        }
     }
 }
 
@@ -323,6 +388,42 @@ fn group_records_by_study_uid(
     }
 
     records_by_uid
+}
+
+fn mixed_study_warnings(
+    groups: &[StudyGroup],
+    selected_group: &StudyGroup,
+) -> Vec<SelectionWarning> {
+    if groups.len() <= 1 {
+        return Vec::new();
+    }
+
+    let study_labels = groups
+        .iter()
+        .map(study_group_label)
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![SelectionWarning {
+        message: format!(
+            "{MIXED_STUDY_WARNING_PREFIX}: usable candidates span multiple study groups ({study_labels}); selecting only the most complete study {}",
+            study_group_label(selected_group)
+        ),
+    }]
+}
+
+fn study_group_label(group: &StudyGroup) -> String {
+    group
+        .study_instance_uid
+        .as_ref()
+        .map(|study_uid| format!("StudyInstanceUID {study_uid}"))
+        .unwrap_or_else(|| {
+            let file_path = group
+                .unknown_sort_key
+                .as_ref()
+                .map(|(_, file_path)| file_path.as_str())
+                .unwrap_or("unknown file");
+            format!("missing StudyInstanceUID at {file_path}")
+        })
 }
 
 fn build_study_groups(
@@ -471,6 +572,12 @@ fn count_candidate_slots(records: &[MammogramRecord]) -> usize {
                 .any(|record| is_candidate_for_view(record, standard_view))
         })
         .count()
+}
+
+fn log_selection_warnings(warnings: &[SelectionWarning]) {
+    for warning in warnings {
+        log::warn!("{}", warning.message());
+    }
 }
 
 /// Enforces that all selected views come from a single modality group (2D or DBT)
@@ -888,9 +995,17 @@ mod tests {
             ),
         ];
 
-        let selections = get_preferred_views(&records);
+        let (selections, warnings) =
+            get_preferred_views_with_order_and_warnings(&records, PreferenceOrder::Default);
 
         assert_eq!(count_coverage(&selections), 4);
+        assert_eq!(warnings.len(), 1);
+        let warning = warnings[0].message();
+        assert!(warning.contains(MIXED_STUDY_WARNING_PREFIX));
+        assert!(warning.contains("1.2.826.0.10"));
+        assert!(warning.contains("1.2.826.0.20"));
+        assert!(warning.contains("selecting only the most complete study"));
+        assert!(warning.contains(complete_study));
         for record in selections.values().flatten() {
             assert_eq!(record.study_instance_uid.as_deref(), Some(complete_study));
         }

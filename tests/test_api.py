@@ -321,7 +321,11 @@ class TestPreferredViews:
         ]
         records = [MammogramRecord.from_file(str(path)) for path in paths]
 
-        result = get_preferred_views(records)
+        with pytest.warns(
+            UserWarning,
+            match="mixed study input detected.*selecting only the most complete study",
+        ):
+            result = get_preferred_views(records)
 
         selected = [record for record in result.values() if record is not None]
         assert len(selected) == 3

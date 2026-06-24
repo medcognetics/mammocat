@@ -1,5 +1,6 @@
 //! Python wrappers for preferred view selection functions
 
+use pyo3::exceptions::PyUserWarning;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -7,11 +8,14 @@ use super::enums::{PyMammogramView, PyPreferenceOrder};
 use super::errors::convert_error;
 use super::filter::PyFilterConfig;
 use super::record::PyMammogramRecord;
-use crate::selection::{self as core_selection, MammogramRecord, StudySelectionMode};
+use crate::selection::{
+    self as core_selection, MammogramRecord, SelectionWarning, StudySelectionMode,
+};
 use crate::types::{FilterConfig, MammogramView, PreferenceOrder};
 use std::collections::HashMap;
 
 type PreferredViewSelection = HashMap<MammogramView, Option<MammogramRecord>>;
+type PreferredViewSelectionWithWarnings = (PreferredViewSelection, Vec<SelectionWarning>);
 
 /// Select preferred views from a collection of mammogram records (using default preference order)
 ///
@@ -21,7 +25,8 @@ type PreferredViewSelection = HashMap<MammogramView, Option<MammogramRecord>>;
 ///
 /// Args:
 ///     records: List of MammogramRecord objects to select from
-///     strict: If true, raise SelectionError when usable records span studies
+///     strict: If false, warn when usable records span studies and select the
+///         most complete study; if true, raise SelectionError instead
 ///
 /// Returns:
 ///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -43,7 +48,9 @@ pub fn py_get_preferred_views(
     strict: bool,
 ) -> PyResult<Py<PyDict>> {
     let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
-    let result = select_unfiltered_views(&rust_records, PreferenceOrder::Default, strict)?;
+    let (result, warnings) =
+        select_unfiltered_views(&rust_records, PreferenceOrder::Default, strict)?;
+    emit_selection_warnings(py, &warnings)?;
     hashmap_to_py_dict(py, result)
 }
 
@@ -56,7 +63,8 @@ pub fn py_get_preferred_views(
 /// Args:
 ///     records: List of MammogramRecord objects to select from
 ///     preference_order: The preference ordering strategy to use
-///     strict: If true, raise SelectionError when usable records span studies
+///     strict: If false, warn when usable records span studies and select the
+///         most complete study; if true, raise SelectionError instead
 ///
 /// Returns:
 ///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -86,7 +94,9 @@ pub fn py_get_preferred_views_with_order(
     strict: bool,
 ) -> PyResult<Py<PyDict>> {
     let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
-    let result = select_unfiltered_views(&rust_records, preference_order.inner, strict)?;
+    let (result, warnings) =
+        select_unfiltered_views(&rust_records, preference_order.inner, strict)?;
+    emit_selection_warnings(py, &warnings)?;
     hashmap_to_py_dict(py, result)
 }
 
@@ -99,7 +109,8 @@ pub fn py_get_preferred_views_with_order(
 ///     records: List of MammogramRecord objects to select from
 ///     filter_config: FilterConfig specifying which records to include
 ///     preference_order: The preference ordering strategy to use
-///     strict: If true, raise SelectionError when usable records span studies
+///     strict: If false, warn when usable records span studies and select the
+///         most complete study; if true, raise SelectionError instead
 ///
 /// Returns:
 ///     dict: Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -134,14 +145,16 @@ pub fn py_get_preferred_views_filtered(
     strict: bool,
 ) -> PyResult<Py<PyDict>> {
     let rust_records: Vec<_> = records.into_iter().map(|r| r.inner).collect();
-    let result = core_selection::get_preferred_views_filtered_with_study_mode(
-        &rust_records,
-        &filter_config.inner,
-        preference_order.inner,
-        StudySelectionMode::from_strict(strict),
-    )
-    .map_err(convert_error)?;
+    let (result, warnings) =
+        core_selection::get_preferred_views_filtered_with_study_mode_and_warnings(
+            &rust_records,
+            &filter_config.inner,
+            preference_order.inner,
+            StudySelectionMode::from_strict(strict),
+        )
+        .map_err(convert_error)?;
 
+    emit_selection_warnings(py, &warnings)?;
     hashmap_to_py_dict(py, result)
 }
 
@@ -149,9 +162,9 @@ fn select_unfiltered_views(
     records: &[MammogramRecord],
     preference_order: PreferenceOrder,
     strict: bool,
-) -> PyResult<PreferredViewSelection> {
+) -> PyResult<PreferredViewSelectionWithWarnings> {
     if strict {
-        core_selection::get_preferred_views_filtered_with_study_mode(
+        core_selection::get_preferred_views_filtered_with_study_mode_and_warnings(
             records,
             &FilterConfig::permissive(),
             preference_order,
@@ -159,11 +172,19 @@ fn select_unfiltered_views(
         )
         .map_err(convert_error)
     } else {
-        Ok(core_selection::get_preferred_views_with_order(
+        Ok(core_selection::get_preferred_views_with_order_and_warnings(
             records,
             preference_order,
         ))
     }
+}
+
+fn emit_selection_warnings(py: Python, warnings: &[SelectionWarning]) -> PyResult<()> {
+    let category = py.get_type_bound::<PyUserWarning>();
+    for warning in warnings {
+        PyErr::warn_bound(py, &category, warning.message(), 2)?;
+    }
+    Ok(())
 }
 
 /// Convert HashMap<MammogramView, Option<MammogramRecord>> to Python dict

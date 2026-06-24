@@ -73,7 +73,9 @@ tie-break. If multiple known studies are still tied, the lowest
 `StudyInstanceUID` is selected. Records without `StudyInstanceUID` are treated
 as singleton fallback groups in default mode and sort after known studies on
 equal completeness. When `--require-common-modality` is used, completeness is
-scored within the best single modality group for each study.
+scored within the best single modality group for each study. Default mode emits
+a warning when usable candidates span multiple study groups so callers know only
+the most complete study was selected.
 
 Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any

@@ -2,8 +2,9 @@ use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
-    get_preferred_views_filtered_with_study_mode, FilterConfig, MammogramRecord, MammogramType,
-    MammogramView, PreferenceOrder, StudySelectionMode, STANDARD_MAMMO_VIEWS,
+    get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig, MammogramRecord,
+    MammogramType, MammogramView, PreferenceOrder, PreferredViewSelectionWithWarnings,
+    SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -179,15 +180,16 @@ fn main() {
     info!("Using preference order: {:?}", preference_order);
 
     // Select preferred views with filtering
-    let selections =
+    let (selections, warnings) =
         match select_preferred_views(&records, &filter_config, preference_order, cli.strict) {
-            Ok(selections) => selections,
+            Ok(selection_result) => selection_result,
             Err(e) => {
                 error!("Selection failed: {}", e);
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
         };
+    output_selection_warnings(&warnings);
 
     // Output results
     output_selections(&selections, cli.format);
@@ -290,13 +292,19 @@ fn select_preferred_views(
     filter_config: &FilterConfig,
     preference_order: PreferenceOrder,
     strict: bool,
-) -> mammocat_core::Result<HashMap<MammogramView, Option<MammogramRecord>>> {
-    get_preferred_views_filtered_with_study_mode(
+) -> mammocat_core::Result<PreferredViewSelectionWithWarnings> {
+    get_preferred_views_filtered_with_study_mode_and_warnings(
         records,
         filter_config,
         preference_order,
         StudySelectionMode::from_strict(strict),
     )
+}
+
+fn output_selection_warnings(warnings: &[SelectionWarning]) {
+    for warning in warnings {
+        warn!("{}", warning.message());
+    }
 }
 
 fn output_selections(
@@ -632,7 +640,7 @@ mod tests {
             ),
         ];
 
-        let selections = select_preferred_views(
+        let (selections, warnings) = select_preferred_views(
             &records,
             &FilterConfig::permissive(),
             PreferenceOrder::Default,
@@ -640,6 +648,11 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message().contains("mixed study input detected"));
+        assert!(warnings[0]
+            .message()
+            .contains("selecting only the most complete study"));
         for record in selections.values().flatten() {
             assert_eq!(record.study_instance_uid.as_deref(), Some(complete_study));
         }
