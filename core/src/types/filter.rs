@@ -3,8 +3,9 @@ use std::collections::HashSet;
 
 /// Configuration for filtering mammogram records during selection
 ///
-/// All filters use hard exclusion - records that don't match are completely removed
-/// from consideration, not just deprioritized.
+/// Hard-exclusion filters remove records from consideration. Ranking options,
+/// such as lossy-compression deprioritization, keep records available as
+/// fallbacks while changing their selection priority.
 ///
 /// # Example
 ///
@@ -46,6 +47,12 @@ pub struct FilterConfig {
     /// Exclude non-MG modality
     pub exclude_non_mg_modality: bool,
 
+    /// Exclude records marked as lossy compressed
+    pub exclude_lossy_compressed: bool,
+
+    /// Prefer lossless records over lossy compressed records during selection
+    pub deprioritize_lossy_compressed: bool,
+
     /// Require all selected views to come from a common modality group (2D or DBT)
     pub require_common_modality: bool,
 }
@@ -59,6 +66,8 @@ impl Default for FilterConfig {
             exclude_for_processing: true, // Default: exclude FOR PROCESSING
             exclude_secondary_capture: true, // Default: exclude secondary capture
             exclude_non_mg_modality: true, // Default: exclude non-MG
+            exclude_lossy_compressed: false,
+            deprioritize_lossy_compressed: true,
             require_common_modality: false,
         }
     }
@@ -87,6 +96,8 @@ impl FilterConfig {
             exclude_for_processing: false,
             exclude_secondary_capture: false,
             exclude_non_mg_modality: false,
+            exclude_lossy_compressed: false,
+            deprioritize_lossy_compressed: true,
             require_common_modality: false,
         }
     }
@@ -185,6 +196,36 @@ impl FilterConfig {
         self
     }
 
+    /// Builder: Exclude lossy compressed images
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mammocat_core::FilterConfig;
+    ///
+    /// let filter = FilterConfig::default().exclude_lossy_compressed(true);
+    /// assert!(filter.exclude_lossy_compressed);
+    /// ```
+    pub fn exclude_lossy_compressed(mut self, exclude: bool) -> Self {
+        self.exclude_lossy_compressed = exclude;
+        self
+    }
+
+    /// Builder: Prefer lossless images over lossy compressed images
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mammocat_core::FilterConfig;
+    ///
+    /// let filter = FilterConfig::default().deprioritize_lossy_compressed(false);
+    /// assert!(!filter.deprioritize_lossy_compressed);
+    /// ```
+    pub fn deprioritize_lossy_compressed(mut self, deprioritize: bool) -> Self {
+        self.deprioritize_lossy_compressed = deprioritize;
+        self
+    }
+
     /// Builder: Require common modality across all selected views
     ///
     /// When enabled, enforces that all selected views come from the same
@@ -217,6 +258,8 @@ mod tests {
         assert!(config.exclude_for_processing);
         assert!(config.exclude_secondary_capture);
         assert!(config.exclude_non_mg_modality);
+        assert!(!config.exclude_lossy_compressed);
+        assert!(config.deprioritize_lossy_compressed);
         assert!(!config.require_common_modality);
     }
 
@@ -229,6 +272,8 @@ mod tests {
         assert!(!config.exclude_for_processing);
         assert!(!config.exclude_secondary_capture);
         assert!(!config.exclude_non_mg_modality);
+        assert!(!config.exclude_lossy_compressed);
+        assert!(config.deprioritize_lossy_compressed);
         assert!(!config.require_common_modality);
     }
 
@@ -251,11 +296,15 @@ mod tests {
         let config = FilterConfig::permissive()
             .exclude_for_processing(true)
             .exclude_secondary_capture(true)
-            .exclude_non_mg_modality(true);
+            .exclude_non_mg_modality(true)
+            .exclude_lossy_compressed(true)
+            .deprioritize_lossy_compressed(false);
 
         assert!(config.exclude_for_processing);
         assert!(config.exclude_secondary_capture);
         assert!(config.exclude_non_mg_modality);
+        assert!(config.exclude_lossy_compressed);
+        assert!(!config.deprioritize_lossy_compressed);
         assert!(!config.exclude_implants);
     }
 

@@ -113,6 +113,18 @@ impl PyMammogramRecord {
         option_u16_to_py(py, self.inner.columns)
     }
 
+    /// Transfer Syntax UID from file metadata, if available
+    #[getter]
+    fn transfer_syntax_uid(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.transfer_syntax_uid.clone())
+    }
+
+    /// Whether metadata indicates current or historical lossy compression
+    #[getter]
+    fn is_lossy_compressed(&self) -> bool {
+        self.inner.is_lossy_compressed
+    }
+
     /// Whether this is an implant displaced view
     #[getter]
     fn is_implant_displaced(&self) -> bool {
@@ -155,9 +167,10 @@ impl PyMammogramRecord {
     /// 1. Standard views beat non-standard views
     /// 2. Non-spot/mag views beat spot/mag views
     /// 3. Implant displaced beats non-displaced (same study only)
-    /// 4. Type preference (FFDM > SYNTH > TOMO > SFM)
-    /// 5. Higher resolution beats lower resolution
-    /// 6. Fallback to SOP Instance UID comparison
+    /// 4. Lossless beats lossy compressed
+    /// 5. Type preference (FFDM > SYNTH > TOMO > SFM)
+    /// 6. Higher resolution beats lower resolution
+    /// 7. Fallback to SOP Instance UID comparison
     ///
     /// Args:
     ///     other: Another MammogramRecord to compare against
@@ -174,9 +187,10 @@ impl PyMammogramRecord {
     /// 1. Standard views beat non-standard views
     /// 2. Non-spot/mag views beat spot/mag views
     /// 3. Implant displaced beats non-displaced (same study only)
-    /// 4. Type preference (according to the provided preference order)
-    /// 5. Higher resolution beats lower resolution
-    /// 6. Fallback to SOP Instance UID comparison
+    /// 4. Lossless beats lossy compressed
+    /// 5. Type preference (according to the provided preference order)
+    /// 6. Higher resolution beats lower resolution
+    /// 7. Fallback to SOP Instance UID comparison
     ///
     /// Args:
     ///     other: Another MammogramRecord to compare against
@@ -202,6 +216,8 @@ impl PyMammogramRecord {
         dict.set_item("sop_instance_uid", self.sop_instance_uid(py))?;
         dict.set_item("rows", self.rows(py))?;
         dict.set_item("columns", self.columns(py))?;
+        dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid(py))?;
+        dict.set_item("is_lossy_compressed", self.is_lossy_compressed())?;
         dict.set_item("is_implant_displaced", self.is_implant_displaced())?;
         dict.set_item("is_spot_compression", self.is_spot_compression())?;
         dict.set_item("is_magnified", self.is_magnified())?;

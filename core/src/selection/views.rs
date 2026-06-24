@@ -1,5 +1,6 @@
 use crate::selection::record::MammogramRecord;
 use crate::types::{FilterConfig, MammogramView, PreferenceOrder, STANDARD_MAMMO_VIEWS};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 /// Selects preferred inference views from a collection of mammogram records
@@ -39,6 +40,14 @@ pub fn get_preferred_views_with_order(
     records: &[MammogramRecord],
     preference_order: PreferenceOrder,
 ) -> HashMap<MammogramView, Option<MammogramRecord>> {
+    get_preferred_views_with_options(records, preference_order, true)
+}
+
+fn get_preferred_views_with_options(
+    records: &[MammogramRecord],
+    preference_order: PreferenceOrder,
+    deprioritize_lossy_compressed: bool,
+) -> HashMap<MammogramView, Option<MammogramRecord>> {
     let mut result = HashMap::new();
 
     // Try each standard view
@@ -52,19 +61,28 @@ pub fn get_preferred_views_with_order(
         let selection = candidates
             .into_iter()
             .min_by(|a, b| {
-                if a.is_preferred_to_with_order(b, preference_order) {
-                    std::cmp::Ordering::Less
-                } else if b.is_preferred_to_with_order(a, preference_order) {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
+                compare_record_preference(a, b, preference_order, deprioritize_lossy_compressed)
             })
             .cloned();
         result.insert(*standard_view, selection);
     }
 
     result
+}
+
+fn compare_record_preference(
+    a: &MammogramRecord,
+    b: &MammogramRecord,
+    preference_order: PreferenceOrder,
+    deprioritize_lossy_compressed: bool,
+) -> Ordering {
+    if a.is_preferred_to_with_options(b, preference_order, deprioritize_lossy_compressed) {
+        Ordering::Less
+    } else if b.is_preferred_to_with_options(a, preference_order, deprioritize_lossy_compressed) {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    }
 }
 
 /// Selects preferred inference views from a filtered collection of mammogram records
@@ -110,11 +128,20 @@ pub fn get_preferred_views_filtered(
     let filtered_records = apply_filters(records, filter_config);
 
     // Run initial selection
-    let selection = get_preferred_views_with_order(&filtered_records, preference_order);
+    let selection = get_preferred_views_with_options(
+        &filtered_records,
+        preference_order,
+        filter_config.deprioritize_lossy_compressed,
+    );
 
     // Optionally enforce common modality
     if filter_config.require_common_modality {
-        enforce_common_modality(&filtered_records, selection, preference_order)
+        enforce_common_modality_with_options(
+            &filtered_records,
+            selection,
+            preference_order,
+            filter_config.deprioritize_lossy_compressed,
+        )
     } else {
         selection
     }
@@ -175,6 +202,11 @@ fn apply_filters(records: &[MammogramRecord], config: &FilterConfig) -> Vec<Mamm
                 }
             }
 
+            // Filter: Exclude lossy compressed images
+            if config.exclude_lossy_compressed && record.is_lossy_compressed {
+                return false;
+            }
+
             true
         })
         .cloned()
@@ -187,10 +219,25 @@ fn apply_filters(records: &[MammogramRecord], config: &FilterConfig) -> Vec<Mamm
 /// Otherwise, re-runs selection on 2D-only and DBT-only record pools separately,
 /// then picks the candidate with higher coverage, breaking ties by preference score
 /// and defaulting to 2D.
+#[cfg(test)]
 fn enforce_common_modality(
     filtered_records: &[MammogramRecord],
     initial_selection: HashMap<MammogramView, Option<MammogramRecord>>,
     preference_order: PreferenceOrder,
+) -> HashMap<MammogramView, Option<MammogramRecord>> {
+    enforce_common_modality_with_options(
+        filtered_records,
+        initial_selection,
+        preference_order,
+        true,
+    )
+}
+
+fn enforce_common_modality_with_options(
+    filtered_records: &[MammogramRecord],
+    initial_selection: HashMap<MammogramView, Option<MammogramRecord>>,
+    preference_order: PreferenceOrder,
+    deprioritize_lossy_compressed: bool,
 ) -> HashMap<MammogramView, Option<MammogramRecord>> {
     // If already single-modality, return as-is
     if is_single_modality(&initial_selection) {
@@ -210,8 +257,16 @@ fn enforce_common_modality(
         .cloned()
         .collect();
 
-    let selection_2d = get_preferred_views_with_order(&records_2d, preference_order);
-    let selection_dbt = get_preferred_views_with_order(&records_dbt, preference_order);
+    let selection_2d = get_preferred_views_with_options(
+        &records_2d,
+        preference_order,
+        deprioritize_lossy_compressed,
+    );
+    let selection_dbt = get_preferred_views_with_options(
+        &records_dbt,
+        preference_order,
+        deprioritize_lossy_compressed,
+    );
 
     let coverage_2d = count_coverage(&selection_2d);
     let coverage_dbt = count_coverage(&selection_dbt);
@@ -221,6 +276,18 @@ fn enforce_common_modality(
     } else if coverage_dbt > coverage_2d {
         selection_dbt
     } else {
+        if deprioritize_lossy_compressed {
+            let lossy_2d = count_lossy(&selection_2d);
+            let lossy_dbt = count_lossy(&selection_dbt);
+
+            if lossy_2d < lossy_dbt {
+                return selection_2d;
+            }
+            if lossy_dbt < lossy_2d {
+                return selection_dbt;
+            }
+        }
+
         // Equal coverage: tie-break by total preference score (lower wins)
         let score_2d = total_preference_score(&selection_2d, preference_order);
         let score_dbt = total_preference_score(&selection_dbt, preference_order);
@@ -258,6 +325,15 @@ fn is_single_modality(selection: &HashMap<MammogramView, Option<MammogramRecord>
 /// Counts the number of non-None entries in a selection
 fn count_coverage(selection: &HashMap<MammogramView, Option<MammogramRecord>>) -> usize {
     selection.values().filter(|v| v.is_some()).count()
+}
+
+/// Counts the number of selected records marked as lossy compressed
+fn count_lossy(selection: &HashMap<MammogramView, Option<MammogramRecord>>) -> usize {
+    selection
+        .values()
+        .flatten()
+        .filter(|record| record.is_lossy_compressed)
+        .count()
 }
 
 /// Sums preference values for all present views in a selection
@@ -343,9 +419,22 @@ mod tests {
             is_implant_displaced: false,
             is_spot_compression: false,
             is_magnified: false,
+            transfer_syntax_uid: None,
+            is_lossy_compressed: false,
             study_instance_uid: None,
             sop_instance_uid: None,
         }
+    }
+
+    fn make_lossy_test_record(
+        laterality: Laterality,
+        view_pos: ViewPosition,
+        mammo_type: MammogramType,
+        is_lossy_compressed: bool,
+    ) -> MammogramRecord {
+        let mut record = make_test_record(laterality, view_pos, mammo_type);
+        record.is_lossy_compressed = is_lossy_compressed;
+        record
     }
 
     #[test]
@@ -634,6 +723,29 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_filters_exclude_lossy_compressed() {
+        let config = FilterConfig::default().exclude_lossy_compressed(true);
+
+        let lossy_record = make_lossy_test_record(
+            Laterality::Left,
+            ViewPosition::Mlo,
+            MammogramType::Ffdm,
+            true,
+        );
+        let lossless_record = make_lossy_test_record(
+            Laterality::Left,
+            ViewPosition::Cc,
+            MammogramType::Ffdm,
+            false,
+        );
+
+        let filtered = apply_filters(&[lossy_record, lossless_record], &config);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(!filtered[0].is_lossy_compressed);
+    }
+
+    #[test]
     fn test_get_preferred_views_filtered() {
         use std::collections::HashSet;
 
@@ -851,6 +963,46 @@ mod tests {
         assert_eq!(count_coverage(&result), 2);
         for record in result.values().flatten() {
             assert!(record.metadata.mammogram_type.is_2d_group());
+        }
+    }
+
+    #[test]
+    fn test_enforce_common_modality_equal_coverage_prefers_fewer_lossy_records() {
+        // Equal coverage: DBT would lose the default type-score tie-breaker,
+        // but should win because both 2D candidates are lossy.
+        let records = vec![
+            make_lossy_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                true,
+            ),
+            make_lossy_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Tomo,
+                false,
+            ),
+            make_lossy_test_record(
+                Laterality::Left,
+                ViewPosition::Cc,
+                MammogramType::Ffdm,
+                true,
+            ),
+            make_lossy_test_record(
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+                false,
+            ),
+        ];
+        let initial = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+        let result = enforce_common_modality(&records, initial, PreferenceOrder::Default);
+
+        assert_eq!(count_coverage(&result), 2);
+        for record in result.values().flatten() {
+            assert!(record.metadata.mammogram_type.is_dbt_group());
+            assert!(!record.is_lossy_compressed);
         }
     }
 

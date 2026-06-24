@@ -56,6 +56,14 @@ struct Cli {
     #[arg(long)]
     include_non_mg: bool,
 
+    /// Exclude lossy compressed images
+    #[arg(long)]
+    exclude_lossy: bool,
+
+    /// Do not prefer lossless images over lossy compressed images
+    #[arg(long)]
+    no_deprioritize_lossy: bool,
+
     /// Require all selected views to come from a common modality group (2D or DBT)
     #[arg(long)]
     require_common_modality: bool,
@@ -268,6 +276,8 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
     config = config.exclude_for_processing(!cli.include_for_processing);
     config = config.exclude_secondary_capture(!cli.include_secondary_capture);
     config = config.exclude_non_mg_modality(!cli.include_non_mg);
+    config = config.exclude_lossy_compressed(cli.exclude_lossy);
+    config = config.deprioritize_lossy_compressed(!cli.no_deprioritize_lossy);
     config = config.require_common_modality(cli.require_common_modality);
 
     config
@@ -333,6 +343,8 @@ fn output_json(
         rows: Option<u16>,
         columns: Option<u16>,
         image_area: Option<u32>,
+        transfer_syntax_uid: Option<String>,
+        is_lossy_compressed: bool,
         is_implant_displaced: bool,
     }
 
@@ -346,6 +358,8 @@ fn output_json(
                 rows: r.rows,
                 columns: r.columns,
                 image_area: r.image_area(),
+                transfer_syntax_uid: r.transfer_syntax_uid.clone(),
+                is_lossy_compressed: r.is_lossy_compressed,
                 is_implant_displaced: r.is_implant_displaced,
             });
             (key, value)
@@ -408,6 +422,12 @@ impl<'a> fmt::Display for TextReport<'a> {
                 }
                 if record.is_implant_displaced {
                     writeln!(f, "  Implant Displaced: yes")?;
+                }
+                if record.is_lossy_compressed {
+                    writeln!(f, "  Lossy Compressed: yes")?;
+                }
+                if let Some(transfer_syntax_uid) = &record.transfer_syntax_uid {
+                    writeln!(f, "  Transfer Syntax UID: {}", transfer_syntax_uid)?;
                 }
             } else {
                 writeln!(f, "Not found")?;
@@ -522,5 +542,32 @@ mod tests {
         // Should find only the valid DICOM file
         assert_eq!(files.len(), 1);
         assert_eq!(files[0], dicom_file);
+    }
+
+    #[test]
+    fn test_build_filter_config_deprioritizes_lossy_by_default() {
+        let cli = Cli::try_parse_from(["mammoselect", "/tmp"]).unwrap();
+        let config = build_filter_config(&cli);
+
+        assert!(!config.exclude_lossy_compressed);
+        assert!(config.deprioritize_lossy_compressed);
+    }
+
+    #[test]
+    fn test_build_filter_config_excludes_lossy_when_flag_enabled() {
+        let cli = Cli::try_parse_from(["mammoselect", "--exclude-lossy", "/tmp"]).unwrap();
+        let config = build_filter_config(&cli);
+
+        assert!(config.exclude_lossy_compressed);
+        assert!(config.deprioritize_lossy_compressed);
+    }
+
+    #[test]
+    fn test_build_filter_config_can_disable_lossy_deprioritization() {
+        let cli = Cli::try_parse_from(["mammoselect", "--no-deprioritize-lossy", "/tmp"]).unwrap();
+        let config = build_filter_config(&cli);
+
+        assert!(!config.exclude_lossy_compressed);
+        assert!(!config.deprioritize_lossy_compressed);
     }
 }

@@ -15,6 +15,8 @@ def create_mammogram_dicom(
     is_spot_compression: bool = False,
     is_magnified: bool = False,
     is_implant_displaced: bool = False,
+    transfer_syntax_uid: str = ExplicitVRLittleEndian,
+    lossy_image_compression: str = "00",
 ) -> Dataset:
     """Create a synthetic mammography DICOM dataset.
 
@@ -28,13 +30,15 @@ def create_mammogram_dicom(
         is_spot_compression: Whether this is spot compression view
         is_magnified: Whether this is magnified view
         is_implant_displaced: Whether this is implant displaced view
+        transfer_syntax_uid: DICOM transfer syntax UID to write in file metadata
+        lossy_image_compression: LossyImageCompression tag value
 
     Returns:
         A pydicom Dataset with mammography metadata
     """
     # Create file meta information
     file_meta = Dataset()
-    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.TransferSyntaxUID = transfer_syntax_uid
     file_meta.MediaStorageSOPClassUID = (
         "1.2.840.10008.5.1.4.1.1.1.2"  # Digital Mammography X-Ray Image Storage
     )
@@ -101,6 +105,8 @@ def create_mammogram_dicom(
     if not hasattr(ds, "NumberOfFrames"):
         ds.NumberOfFrames = 1
 
+    ds.LossyImageCompression = lossy_image_compression
+
     # Implant information
     if has_implant:
         ds.BreastImplantPresent = "YES"
@@ -146,6 +152,22 @@ def sample_dicom(fixtures_dir):
         view_position="MLO",
         rows=2048,
         columns=1536,
+    )
+    ds.save_as(dicom_path, enforce_file_format=True)
+    return str(dicom_path)
+
+
+@pytest.fixture
+def lossy_dicom(fixtures_dir):
+    """Creates and returns a sample DICOM file marked as lossy compressed."""
+    dicom_path = fixtures_dir / "lossy_ffdm_l_mlo.dcm"
+    ds = create_mammogram_dicom(
+        mammogram_type="FFDM",
+        laterality="L",
+        view_position="MLO",
+        rows=2048,
+        columns=1536,
+        lossy_image_compression="01",
     )
     ds.save_as(dicom_path, enforce_file_format=True)
     return str(dicom_path)

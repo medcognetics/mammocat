@@ -1,14 +1,65 @@
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::error::Result;
 use crate::extraction::tags::{
-    get_string_value, get_u16_value, COLUMNS, PIXEL_DATA_TAG, ROWS, SOP_INSTANCE_UID,
-    STUDY_INSTANCE_UID,
+    get_string_value, get_u16_value, COLUMNS, LOSSY_IMAGE_COMPRESSION, PIXEL_DATA_TAG, ROWS,
+    SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
 };
 use crate::extraction::{is_implant_displaced, is_magnified, is_spot_compression};
 use crate::types::PreferenceOrder;
 use dicom_object::{InMemDicomObject, OpenFileOptions};
 use std::cmp::Ordering;
 use std::path::PathBuf;
+
+/// Transfer syntax UIDs that imply lossy image compression.
+///
+/// This excludes DICOM syntaxes explicitly named lossless or lossless-only.
+pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
+    // JPEG lossy and retired lossy forms
+    "1.2.840.10008.1.2.4.50",
+    "1.2.840.10008.1.2.4.51",
+    "1.2.840.10008.1.2.4.52",
+    "1.2.840.10008.1.2.4.53",
+    "1.2.840.10008.1.2.4.54",
+    "1.2.840.10008.1.2.4.55",
+    "1.2.840.10008.1.2.4.56",
+    "1.2.840.10008.1.2.4.59",
+    "1.2.840.10008.1.2.4.60",
+    "1.2.840.10008.1.2.4.61",
+    "1.2.840.10008.1.2.4.62",
+    "1.2.840.10008.1.2.4.63",
+    "1.2.840.10008.1.2.4.64",
+    // JPEG-LS near-lossless
+    "1.2.840.10008.1.2.4.81",
+    // JPEG 2000 / JPIP forms not marked lossless-only
+    "1.2.840.10008.1.2.4.91",
+    "1.2.840.10008.1.2.4.93",
+    "1.2.840.10008.1.2.4.94",
+    "1.2.840.10008.1.2.4.95",
+    // MPEG / HEVC video transfer syntaxes
+    "1.2.840.10008.1.2.4.100",
+    "1.2.840.10008.1.2.4.100.1",
+    "1.2.840.10008.1.2.4.101",
+    "1.2.840.10008.1.2.4.101.1",
+    "1.2.840.10008.1.2.4.102",
+    "1.2.840.10008.1.2.4.102.1",
+    "1.2.840.10008.1.2.4.103",
+    "1.2.840.10008.1.2.4.103.1",
+    "1.2.840.10008.1.2.4.104",
+    "1.2.840.10008.1.2.4.104.1",
+    "1.2.840.10008.1.2.4.105",
+    "1.2.840.10008.1.2.4.105.1",
+    "1.2.840.10008.1.2.4.106",
+    "1.2.840.10008.1.2.4.106.1",
+    "1.2.840.10008.1.2.4.107",
+    "1.2.840.10008.1.2.4.108",
+    // JPEG XL non-lossless and recompression forms
+    "1.2.840.10008.1.2.4.111",
+    "1.2.840.10008.1.2.4.112",
+    // High-throughput JPEG 2000 forms not marked lossless-only
+    "1.2.840.10008.1.2.4.203",
+    "1.2.840.10008.1.2.4.204",
+    "1.2.840.10008.1.2.4.205",
+];
 
 /// Mammogram record combining file path and extracted metadata
 ///
@@ -33,6 +84,12 @@ pub struct MammogramRecord {
 
     /// Number of columns in image
     pub columns: Option<u16>,
+
+    /// Transfer Syntax UID from file metadata, when available
+    pub transfer_syntax_uid: Option<String>,
+
+    /// Whether metadata indicates current or historical lossy compression
+    pub is_lossy_compressed: bool,
 
     /// Whether this is an implant displaced view
     pub is_implant_displaced: bool,
@@ -61,7 +118,8 @@ impl MammogramRecord {
         let dcm = OpenFileOptions::new()
             .read_until(PIXEL_DATA_TAG)
             .open_file(&path)?;
-        Self::from_dicom(path, &dcm)
+        let transfer_syntax_uid = normalize_transfer_syntax_uid(dcm.meta().transfer_syntax());
+        Self::from_dicom_with_transfer_syntax(path, &dcm, transfer_syntax_uid)
     }
 
     /// Creates a MammogramRecord from in-memory DICOM bytes.
@@ -86,7 +144,8 @@ impl MammogramRecord {
             .from_reader(cursor)?;
 
         let path = id.map(PathBuf::from).unwrap_or_default();
-        Self::from_dicom(path, &dcm)
+        let transfer_syntax_uid = normalize_transfer_syntax_uid(dcm.meta().transfer_syntax());
+        Self::from_dicom_with_transfer_syntax(path, &dcm, transfer_syntax_uid)
     }
 
     /// Creates a record from an already-opened DICOM object
@@ -100,7 +159,20 @@ impl MammogramRecord {
     ///
     /// Result containing the MammogramRecord or an error
     pub fn from_dicom(path: PathBuf, dcm: &InMemDicomObject) -> Result<Self> {
+        Self::from_dicom_with_transfer_syntax(path, dcm, None)
+    }
+
+    /// Creates a record from an already-opened DICOM object and optional transfer syntax.
+    ///
+    /// Use this when the caller has access to file-meta transfer syntax. Dataset-only
+    /// callers can pass `None`, in which case lossy detection only uses dataset tags.
+    pub fn from_dicom_with_transfer_syntax(
+        path: PathBuf,
+        dcm: &InMemDicomObject,
+        transfer_syntax_uid: Option<String>,
+    ) -> Result<Self> {
         let metadata = MammogramExtractor::extract(dcm)?;
+        let is_lossy_compressed = is_lossy_compressed(dcm, transfer_syntax_uid.as_deref());
 
         Ok(Self {
             file_path: path,
@@ -109,6 +181,8 @@ impl MammogramRecord {
             sop_instance_uid: get_string_value(dcm, SOP_INSTANCE_UID),
             rows: get_u16_value(dcm, ROWS),
             columns: get_u16_value(dcm, COLUMNS),
+            transfer_syntax_uid,
+            is_lossy_compressed,
             is_implant_displaced: is_implant_displaced(dcm),
             is_spot_compression: is_spot_compression(dcm),
             is_magnified: is_magnified(dcm),
@@ -145,10 +219,12 @@ impl MammogramRecord {
     ///
     /// Priority order:
     /// 1. Standard views beat non-standard views
-    /// 2. Implant displaced beats non-displaced (same study only)
-    /// 3. Type preference (FFDM > SYNTH > TOMO > SFM)
-    /// 4. Higher resolution beats lower resolution
-    /// 5. Fallback to SOPInstanceUID comparison
+    /// 2. Non-spot/mag views beat spot/mag views
+    /// 3. Implant displaced beats non-displaced (same study only)
+    /// 4. Lossless beats lossy compressed
+    /// 5. Type preference (FFDM > SYNTH > TOMO > SFM)
+    /// 6. Higher resolution beats lower resolution
+    /// 7. Fallback to SOPInstanceUID comparison
     ///
     /// # Arguments
     ///
@@ -169,9 +245,10 @@ impl MammogramRecord {
     /// 1. Standard views beat non-standard views
     /// 2. Non-spot/mag views beat spot/mag views
     /// 3. Implant displaced beats non-displaced (same study only)
-    /// 4. Type preference (according to the provided preference order)
-    /// 5. Higher resolution beats lower resolution
-    /// 6. Fallback to SOPInstanceUID comparison
+    /// 4. Lossless beats lossy compressed
+    /// 5. Type preference (according to the provided preference order)
+    /// 6. Higher resolution beats lower resolution
+    /// 7. Fallback to SOPInstanceUID comparison
     ///
     /// # Arguments
     ///
@@ -185,6 +262,19 @@ impl MammogramRecord {
         &self,
         other: &MammogramRecord,
         preference_order: PreferenceOrder,
+    ) -> bool {
+        self.is_preferred_to_with_options(other, preference_order, true)
+    }
+
+    /// Checks if this record is preferred over another with lossy-ranking control
+    ///
+    /// When `deprioritize_lossy_compressed` is true, lossless records are preferred
+    /// over lossy records before mammogram type preference is considered.
+    pub fn is_preferred_to_with_options(
+        &self,
+        other: &MammogramRecord,
+        preference_order: PreferenceOrder,
+        deprioritize_lossy_compressed: bool,
     ) -> bool {
         // 1. Standard views take priority
         if self.metadata.is_standard_view() && !other.metadata.is_standard_view() {
@@ -212,7 +302,12 @@ impl MammogramRecord {
             }
         }
 
-        // 4. Type preference (using configurable order)
+        // 4. Lossless images take priority when requested
+        if deprioritize_lossy_compressed && self.is_lossy_compressed != other.is_lossy_compressed {
+            return !self.is_lossy_compressed && other.is_lossy_compressed;
+        }
+
+        // 5. Type preference (using configurable order)
         let self_type = &self.metadata.mammogram_type;
         let other_type = &other.metadata.mammogram_type;
         if self_type != other_type {
@@ -221,19 +316,60 @@ impl MammogramRecord {
             return self_pref < other_pref;
         }
 
-        // 5. Resolution preference (higher is better)
+        // 6. Resolution preference (higher is better)
         if self.image_area() != other.image_area() {
             let self_area = self.image_area().unwrap_or(0);
             let other_area = other.image_area().unwrap_or(0);
             return self_area > other_area;
         }
 
-        // 6. Fallback to SOP UID comparison (for stable ordering)
+        // 7. Fallback to SOP UID comparison (for stable ordering)
         match (&self.sop_instance_uid, &other.sop_instance_uid) {
             (Some(a), Some(b)) => a < b,
             _ => false,
         }
     }
+}
+
+fn normalize_transfer_syntax_uid(uid: &str) -> Option<String> {
+    let normalized = normalized_transfer_syntax_uid(uid);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn normalized_transfer_syntax_uid(uid: &str) -> &str {
+    uid.trim().trim_end_matches('\0').trim()
+}
+
+fn is_lossy_compressed(dcm: &InMemDicomObject, transfer_syntax_uid: Option<&str>) -> bool {
+    if let Some(is_lossy) = lossy_image_compression_tag(dcm) {
+        return is_lossy;
+    }
+
+    transfer_syntax_uid
+        .map(is_lossy_transfer_syntax_uid)
+        .unwrap_or(false)
+}
+
+fn lossy_image_compression_tag(dcm: &InMemDicomObject) -> Option<bool> {
+    get_string_value(dcm, LOSSY_IMAGE_COMPRESSION)
+        .as_deref()
+        .and_then(parse_lossy_image_compression_value)
+}
+
+fn parse_lossy_image_compression_value(value: &str) -> Option<bool> {
+    match value.trim() {
+        "01" => Some(true),
+        "00" => Some(false),
+        _ => None,
+    }
+}
+
+fn is_lossy_transfer_syntax_uid(uid: &str) -> bool {
+    LOSSY_TRANSFER_SYNTAX_UIDS.contains(&normalized_transfer_syntax_uid(uid))
 }
 
 // Implement Ord/PartialOrd for use with min/max
@@ -266,7 +402,9 @@ impl Ord for MammogramRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extraction::tags::LOSSY_IMAGE_COMPRESSION;
     use crate::types::{ImageType, Laterality, MammogramType, ViewPosition};
+    use dicom_core::{DataElement, PrimitiveValue, VR};
 
     fn make_test_record(
         mammo_type: MammogramType,
@@ -309,9 +447,79 @@ mod tests {
             is_implant_displaced,
             is_spot_compression,
             is_magnified,
+            transfer_syntax_uid: None,
+            is_lossy_compressed: false,
             study_instance_uid: study_uid,
             sop_instance_uid: sop_uid,
         }
+    }
+
+    fn make_lossy_test_record(
+        mammo_type: MammogramType,
+        is_lossy_compressed: bool,
+    ) -> MammogramRecord {
+        let mut record = make_test_record(
+            mammo_type,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            None,
+            Some(
+                if is_lossy_compressed {
+                    "lossy"
+                } else {
+                    "lossless"
+                }
+                .to_string(),
+            ),
+        );
+        record.is_lossy_compressed = is_lossy_compressed;
+        record
+    }
+
+    fn dicom_with_lossy_image_compression(value: &str) -> InMemDicomObject {
+        let mut dcm = InMemDicomObject::new_empty();
+        dcm.put(DataElement::new(
+            LOSSY_IMAGE_COMPRESSION,
+            VR::CS,
+            PrimitiveValue::from(value),
+        ));
+        dcm
+    }
+
+    #[test]
+    fn test_lossy_image_compression_tag_true() {
+        let dcm = dicom_with_lossy_image_compression("01");
+        assert!(is_lossy_compressed(&dcm, None));
+    }
+
+    #[test]
+    fn test_lossy_image_compression_tag_false() {
+        let dcm = dicom_with_lossy_image_compression("00");
+        assert!(!is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.50")));
+    }
+
+    #[test]
+    fn test_lossy_image_compression_falls_back_to_transfer_syntax_when_missing() {
+        let dcm = InMemDicomObject::new_empty();
+        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.50")));
+    }
+
+    #[test]
+    fn test_lossy_image_compression_falls_back_to_transfer_syntax_when_invalid() {
+        let dcm = dicom_with_lossy_image_compression("MAYBE");
+        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.81")));
+    }
+
+    #[test]
+    fn test_lossless_transfer_syntax_is_not_lossy() {
+        let dcm = InMemDicomObject::new_empty();
+        assert!(!is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.90")));
     }
 
     #[test]
@@ -487,6 +695,27 @@ mod tests {
         // FFDM is preferred over TOMO (with default ordering)
         assert!(ffdm.is_preferred_to(&tomo));
         assert!(!tomo.is_preferred_to(&ffdm));
+    }
+
+    #[test]
+    fn test_lossless_preferred_over_lossy_before_type_preference_by_default() {
+        let lossless_tomo = make_lossy_test_record(MammogramType::Tomo, false);
+        let lossy_ffdm = make_lossy_test_record(MammogramType::Ffdm, true);
+
+        assert!(lossless_tomo.is_preferred_to(&lossy_ffdm));
+        assert!(!lossy_ffdm.is_preferred_to(&lossless_tomo));
+    }
+
+    #[test]
+    fn test_lossy_deprioritization_can_be_disabled() {
+        let lossless_tomo = make_lossy_test_record(MammogramType::Tomo, false);
+        let lossy_ffdm = make_lossy_test_record(MammogramType::Ffdm, true);
+
+        assert!(lossy_ffdm.is_preferred_to_with_options(
+            &lossless_tomo,
+            PreferenceOrder::Default,
+            false
+        ));
     }
 
     #[test]

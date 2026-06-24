@@ -13,6 +13,7 @@ pub const COLUMNS: Tag = Tag(0x0028, 0x0011);
 pub const BITS_STORED: Tag = Tag(0x0028, 0x0101);
 pub const PIXEL_SPACING: Tag = Tag(0x0028, 0x0030);
 pub const IMAGER_PIXEL_SPACING: Tag = Tag(0x0018, 0x1164);
+pub const LOSSY_IMAGE_COMPRESSION: Tag = Tag(0x0028, 0x2110);
 
 // View Position Tags
 pub const VIEW_POSITION: Tag = Tag(0x0018, 0x5101);
