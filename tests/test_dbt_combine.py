@@ -43,6 +43,26 @@ def _write_multifile_ffdm_series(directory: Path, series_uid: str) -> None:
         ds.save_as(directory / f"ffdm_{index}.dcm", enforce_file_format=True)
 
 
+def _write_multiframe_dbt(path: Path, series_uid: str, instance_number: int) -> None:
+    ds = create_mammogram_dicom(
+        mammogram_type="TOMO",
+        laterality="L",
+        view_position="MLO",
+        rows=4,
+        columns=3,
+    )
+    ds.StudyInstanceUID = "1.2.826.0.1.3680043.10.543.12"
+    ds.SeriesInstanceUID = series_uid
+    ds.SOPInstanceUID = f"{series_uid}.{instance_number}"
+    ds.SOPClassUID = EXPECTED_DBT_SOP_CLASS_UID
+    ds.file_meta.MediaStorageSOPClassUID = UID(EXPECTED_DBT_SOP_CLASS_UID)
+    ds.file_meta.MediaStorageSOPInstanceUID = UID(ds.SOPInstanceUID)
+    ds.InstanceNumber = str(instance_number)
+    ds.NumberOfFrames = "2"
+    ds.PixelData = b"\x00\x00" * (int(ds.NumberOfFrames) * ds.Rows * ds.Columns)
+    ds.save_as(path, enforce_file_format=True)
+
+
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     command = [
         "cargo",
@@ -155,6 +175,21 @@ def test_convert_rejects_invalid_pixel_data_length(tmp_path: Path) -> None:
     assert not output_dir.exists()
 
 
+def test_convert_preflights_copy_collisions_before_writes(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    create_old_format_dbt_series(input_dir)
+    _write_ffdm(input_dir / "ffdm.dcm")
+    (output_dir / "ffdm.dcm").write_bytes(b"existing")
+
+    with pytest.raises(Exception, match="already exists"):
+        convert_dbt_study(input_dir, output_dir)
+
+    assert not list(output_dir.glob("dbt_*.dcm"))
+
+
 def test_python_and_cli_check_reports_match(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     input_dir.mkdir()
@@ -264,6 +299,25 @@ def test_scan_flags_duplicate_instance_numbers(tmp_path: Path) -> None:
     assert "duplicate InstanceNumber" in report["unsupported_series"][0]["reason"]
 
 
+def test_scan_flags_mixed_view_positions(tmp_path: Path) -> None:
+    series_uid = "1.2.826.0.1.3680043.10.543.13.1"
+    for index, view in enumerate(["MLO", "CC"]):
+        ds = create_old_format_dbt_slice(
+            series_uid=series_uid,
+            sop_uid=f"{series_uid}.{index + 1}",
+            instance_number=index,
+            view=view,
+        )
+        ds.ViewPosition = view
+        ds.save_as(tmp_path / f"slice_{index}.dcm", enforce_file_format=True)
+
+    report = scan_dbt_study(tmp_path)
+
+    assert report["summary"]["conversion_needed_series"] == 0
+    assert report["summary"]["unsupported_series"] == 1
+    assert "mixed view position" in report["unsupported_series"][0]["reason"]
+
+
 def test_scan_flags_ambiguous_multifile_non_dbt_series(tmp_path: Path) -> None:
     _write_multifile_ffdm_series(tmp_path, "1.2.826.0.1.3680043.10.543.10.1")
 
@@ -288,6 +342,35 @@ def test_scan_flags_missing_view(tmp_path: Path) -> None:
     assert report["summary"]["conversion_needed_series"] == 0
     assert report["summary"]["unsupported_series"] == 1
     assert "view position" in report["unsupported_series"][0]["reason"]
+
+
+def test_convert_copies_multi_instance_multiframe_dbt_series(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    series_uid = "1.2.826.0.1.3680043.10.543.12.1"
+    for instance_number in range(1, 3):
+        _write_multiframe_dbt(
+            input_dir / f"dbt_multiframe_{instance_number}.dcm",
+            series_uid,
+            instance_number,
+        )
+
+    report = scan_dbt_study(input_dir)
+
+    assert report["summary"]["already_multiframe_dbt_series"] == 1
+    assert report["summary"]["unsupported_series"] == 0
+    assert report["already_multiframe_dbt_series"][0]["source_paths"] == [
+        "dbt_multiframe_1.dcm",
+        "dbt_multiframe_2.dcm",
+    ]
+
+    convert_report = convert_dbt_study(input_dir, output_dir)
+
+    assert convert_report["summary"]["converted_series"] == 0
+    assert convert_report["summary"]["copied_files"] == 2
+    assert (output_dir / "dbt_multiframe_1.dcm").exists()
+    assert (output_dir / "dbt_multiframe_2.dcm").exists()
 
 
 def test_exported_sop_class_constant_matches_expected() -> None:

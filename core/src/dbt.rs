@@ -144,6 +144,13 @@ pub struct DbtCopiedFile {
 }
 
 #[derive(Debug, Clone)]
+struct PlannedCopy {
+    source_path: PathBuf,
+    output_path: PathBuf,
+    report: DbtCopiedFile,
+}
+
+#[derive(Debug, Clone)]
 struct DicomFileInfo {
     relative_path: PathBuf,
     study_instance_uid: Option<String>,
@@ -250,6 +257,11 @@ pub fn scan_dbt_study(input: impl AsRef<Path>, _options: DbtScanOptions) -> Resu
             continue;
         }
 
+        if items.iter().all(is_multiframe_dbt) {
+            already_multiframe_dbt_series.push(series_finding_from_multiframe_group(&key, &items));
+            continue;
+        }
+
         if !has_dbt_evidence(&items) {
             unsupported_series.push(DbtUnsupportedSeries {
                 study_instance_uid: Some(key.study_instance_uid),
@@ -315,7 +327,7 @@ pub fn convert_dbt_study(
     }
 
     let mut converted_series = Vec::new();
-    let mut copied_files = Vec::new();
+    let mut planned_copies = Vec::new();
 
     for series in &scan.conversion_needed_series {
         let output_path = series_output_path(output, series);
@@ -326,27 +338,35 @@ pub fn convert_dbt_study(
             frame_count: series.frame_count,
             source_paths: series.source_paths.clone(),
         });
-
-        if !options.dry_run {
-            ensure_can_write(&output_path, options.force)?;
-            combine_series(input, series, &output_path)?;
-        }
     }
 
     for file in &scan.copy_through_files {
-        copy_file_for_report(
+        planned_copies.push(plan_copy_file(
             input,
             output,
             &file.source_path,
             &file.relative_path,
-            &options,
-            &mut copied_files,
-        )?;
+        ));
     }
 
     for series in &scan.already_multiframe_dbt_series {
         for source in &series.source_paths {
-            copy_file_for_report(input, output, source, source, &options, &mut copied_files)?;
+            planned_copies.push(plan_copy_file(input, output, source, source));
+        }
+    }
+
+    let copied_files = planned_copies
+        .iter()
+        .map(|planned| planned.report.clone())
+        .collect::<Vec<_>>();
+
+    if !options.dry_run {
+        preflight_output_paths(&converted_series, &planned_copies, options.force)?;
+        for (series, converted) in scan.conversion_needed_series.iter().zip(&converted_series) {
+            combine_series(input, series, Path::new(&converted.output_path))?;
+        }
+        for planned in &planned_copies {
+            copy_file_atomic(&planned.source_path, &planned.output_path)?;
         }
     }
 
@@ -524,12 +544,8 @@ fn validate_old_format_dbt_series(
 
     let laterality = consistent_code(items.iter().filter_map(effective_laterality), "laterality")
         .map_err(|reason| unsupported(reason, source_paths(&items)))?;
-    let view_position = derive_view_position(&items).ok_or_else(|| {
-        unsupported(
-            "missing or unknown view position".to_string(),
-            source_paths(&items),
-        )
-    })?;
+    let view_position = consistent_view_position(&items)
+        .map_err(|reason| unsupported(reason, source_paths(&items)))?;
 
     sort_frames(&mut items).map_err(|reason| unsupported(reason, source_paths(&items)))?;
 
@@ -597,6 +613,40 @@ fn series_finding_from_single(key: &SeriesKey, info: &DicomFileInfo) -> DbtSerie
     }
 }
 
+fn series_finding_from_multiframe_group(
+    key: &SeriesKey,
+    items: &[DicomFileInfo],
+) -> DbtSeriesFinding {
+    let laterality = consistent_code(items.iter().filter_map(effective_laterality), "laterality")
+        .unwrap_or_default();
+    let view_position = consistent_view_position(items)
+        .map(str::to_string)
+        .unwrap_or_else(|_| "UNKNOWN".to_string());
+    let source_modality = consistent_code(
+        items.iter().filter_map(|item| item.modality.as_deref()),
+        "modality",
+    )
+    .unwrap_or_default();
+
+    DbtSeriesFinding {
+        study_instance_uid: key.study_instance_uid.clone(),
+        series_instance_uid: key.series_instance_uid.clone(),
+        source_paths: items
+            .iter()
+            .map(|i| relative_string(&i.relative_path))
+            .collect(),
+        relative_parent: common_relative_parent(items),
+        frame_count: items
+            .iter()
+            .map(|item| item.number_of_frames.unwrap_or(1).max(1) as usize)
+            .sum(),
+        laterality,
+        view_position,
+        source_modality,
+        series_description: items[0].series_description.clone(),
+    }
+}
+
 fn file_finding(info: &DicomFileInfo) -> DbtFileFinding {
     DbtFileFinding {
         source_path: relative_string(&info.relative_path),
@@ -629,22 +679,40 @@ fn effective_laterality(info: &DicomFileInfo) -> Option<&str> {
 
 fn derive_view_position(items: &[DicomFileInfo]) -> Option<&'static str> {
     for info in items {
-        if let Some(view_position) = &info.view_position {
-            let parsed = parse_view_position(view_position, false);
-            if !parsed.is_unknown() {
-                return Some(view_position_code(parsed));
-            }
-        }
-    }
-    for info in items {
-        if let Some(description) = &info.series_description {
-            let parsed = parse_view_position(description, false);
-            if !parsed.is_unknown() {
-                return Some(view_position_code(parsed));
-            }
+        if let Some(view_position) = first_view_position_candidate(info) {
+            return Some(view_position);
         }
     }
     None
+}
+
+fn consistent_view_position(items: &[DicomFileInfo]) -> std::result::Result<&'static str, String> {
+    let candidates = items
+        .iter()
+        .flat_map(view_position_candidates)
+        .collect::<BTreeSet<_>>();
+    match candidates.len() {
+        0 => Err("missing or unknown view position".to_string()),
+        1 => Ok(candidates.into_iter().next().unwrap()),
+        _ => Err("mixed view position values".to_string()),
+    }
+}
+
+fn first_view_position_candidate(info: &DicomFileInfo) -> Option<&'static str> {
+    view_position_candidates(info).into_iter().next()
+}
+
+fn view_position_candidates(info: &DicomFileInfo) -> Vec<&'static str> {
+    [&info.view_position, &info.series_description]
+        .into_iter()
+        .filter_map(|value| value.as_deref())
+        .filter_map(recognized_view_position)
+        .collect()
+}
+
+fn recognized_view_position(value: &str) -> Option<&'static str> {
+    let parsed = parse_view_position(value, false);
+    (!parsed.is_unknown()).then(|| view_position_code(parsed))
 }
 
 fn view_position_code(view: ViewPosition) -> &'static str {
@@ -732,27 +800,51 @@ fn series_output_path(output_root: &Path, series: &DbtSeriesFinding) -> PathBuf 
     }
 }
 
-fn copy_file_for_report(
+fn plan_copy_file(
     input: &Path,
     output: &Path,
     source_report_path: &str,
     relative_path: &str,
-    options: &DbtConvertOptions,
-    copied_files: &mut Vec<DbtCopiedFile>,
-) -> Result<()> {
+) -> PlannedCopy {
     let source_path = input.join(relative_path);
     let output_path = output.join(relative_path);
-    copied_files.push(DbtCopiedFile {
-        source_path: source_report_path.to_string(),
-        output_path: output_path.display().to_string(),
-    });
-
-    if !options.dry_run {
-        ensure_can_write(&output_path, options.force)?;
-        copy_file_atomic(&source_path, &output_path)?;
+    PlannedCopy {
+        source_path,
+        output_path: output_path.clone(),
+        report: DbtCopiedFile {
+            source_path: source_report_path.to_string(),
+            output_path: output_path.display().to_string(),
+        },
     }
+}
 
+fn preflight_output_paths(
+    converted_series: &[DbtConvertedSeries],
+    planned_copies: &[PlannedCopy],
+    force: bool,
+) -> Result<()> {
+    let mut planned_paths = BTreeSet::new();
+    for series in converted_series {
+        preflight_output_path(Path::new(&series.output_path), force, &mut planned_paths)?;
+    }
+    for copy in planned_copies {
+        preflight_output_path(&copy.output_path, force, &mut planned_paths)?;
+    }
     Ok(())
+}
+
+fn preflight_output_path(
+    path: &Path,
+    force: bool,
+    planned_paths: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    if !planned_paths.insert(path.to_path_buf()) {
+        return Err(MammocatError::IoError(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} is planned more than once", path.display()),
+        )));
+    }
+    ensure_can_write(path, force)
 }
 
 fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -> Result<()> {
