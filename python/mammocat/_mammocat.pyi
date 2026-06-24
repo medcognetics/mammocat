@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 __version__: str
+BREAST_TOMOSYNTHESIS_SOP_CLASS_UID: str
 
 # Exceptions
 class MammocatError(Exception):
@@ -342,3 +343,14 @@ def get_preferred_views_filtered(
     Returns:
         Dictionary mapping MammogramView to MammogramRecord (or None if not found)
     """
+
+def scan_dbt_study(input_dir: str | Path) -> dict[str, Any]:
+    """Scan a study directory for old-format DBT series needing conversion."""
+
+def convert_dbt_study(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Convert old-format DBT series and copy through other DICOM files."""
