@@ -2,8 +2,9 @@ use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
-    get_preferred_views_filtered, FilterConfig, MammogramRecord, MammogramType, MammogramView,
-    PreferenceOrder, STANDARD_MAMMO_VIEWS,
+    get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig, MammogramRecord,
+    MammogramType, MammogramView, PreferenceOrder, PreferredViewSelectionWithWarnings,
+    SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -59,6 +60,10 @@ struct Cli {
     /// Require all selected views to come from a common modality group (2D or DBT)
     #[arg(long)]
     require_common_modality: bool,
+
+    /// Error if usable records contain multiple studies or missing StudyInstanceUID
+    #[arg(long)]
+    strict: bool,
 }
 
 /// Output format options
@@ -175,7 +180,16 @@ fn main() {
     info!("Using preference order: {:?}", preference_order);
 
     // Select preferred views with filtering
-    let selections = get_preferred_views_filtered(&records, &filter_config, preference_order);
+    let (selections, warnings) =
+        match select_preferred_views(&records, &filter_config, preference_order, cli.strict) {
+            Ok(selection_result) => selection_result,
+            Err(e) => {
+                error!("Selection failed: {}", e);
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        };
+    output_selection_warnings(&warnings);
 
     // Output results
     output_selections(&selections, cli.format);
@@ -271,6 +285,26 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
     config = config.require_common_modality(cli.require_common_modality);
 
     config
+}
+
+fn select_preferred_views(
+    records: &[MammogramRecord],
+    filter_config: &FilterConfig,
+    preference_order: PreferenceOrder,
+    strict: bool,
+) -> mammocat_core::Result<PreferredViewSelectionWithWarnings> {
+    get_preferred_views_filtered_with_study_mode_and_warnings(
+        records,
+        filter_config,
+        preference_order,
+        StudySelectionMode::from_strict(strict),
+    )
+}
+
+fn output_selection_warnings(warnings: &[SelectionWarning]) {
+    for warning in warnings {
+        warn!("{}", warning.message());
+    }
 }
 
 fn output_selections(
@@ -422,9 +456,54 @@ impl<'a> fmt::Display for TextReport<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mammocat_core::{ImageType, Laterality, ViewPosition};
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
+
+    fn make_cli_test_record(
+        laterality: Laterality,
+        view_position: ViewPosition,
+        mammo_type: MammogramType,
+        study_uid: &str,
+    ) -> MammogramRecord {
+        MammogramRecord {
+            file_path: PathBuf::from(format!("{study_uid}_{laterality:?}_{view_position:?}.dcm")),
+            metadata: mammocat_core::MammogramMetadata {
+                mammogram_type: mammo_type,
+                laterality,
+                view_position,
+                image_type: ImageType::new(
+                    "ORIGINAL".to_string(),
+                    "PRIMARY".to_string(),
+                    None,
+                    None,
+                ),
+                is_for_processing: false,
+                has_implant: false,
+                is_spot_compression: false,
+                is_magnified: false,
+                is_implant_displaced: false,
+                manufacturer: None,
+                model: None,
+                number_of_frames: 1,
+                is_secondary_capture: false,
+                modality: Some("MG".to_string()),
+            },
+            study_instance_uid: Some(study_uid.to_string()),
+            sop_instance_uid: Some(format!(
+                "{}.{}.{}",
+                study_uid,
+                laterality.short_str(),
+                view_position.short_str()
+            )),
+            rows: Some(2560),
+            columns: Some(3328),
+            is_implant_displaced: false,
+            is_spot_compression: false,
+            is_magnified: false,
+        }
+    }
 
     #[test]
     fn test_is_dicom_file_with_valid_header() {
@@ -522,5 +601,90 @@ mod tests {
         // Should find only the valid DICOM file
         assert_eq!(files.len(), 1);
         assert_eq!(files[0], dicom_file);
+    }
+
+    #[test]
+    fn test_select_preferred_views_default_uses_most_complete_study() {
+        let incomplete_study = "1.2.826.0.10";
+        let complete_study = "1.2.826.0.20";
+        let records = vec![
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                incomplete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                incomplete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Tomo,
+                complete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Tomo,
+                complete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+                complete_study,
+            ),
+        ];
+
+        let (selections, warnings) = select_preferred_views(
+            &records,
+            &FilterConfig::permissive(),
+            PreferenceOrder::Default,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message().contains("mixed study input detected"));
+        assert!(warnings[0]
+            .message()
+            .contains("selecting only the most complete study"));
+        for record in selections.values().flatten() {
+            assert_eq!(record.study_instance_uid.as_deref(), Some(complete_study));
+        }
+    }
+
+    #[test]
+    fn test_select_preferred_views_strict_errors_for_multiple_studies() {
+        let records = vec![
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                "1.2.826.0.10",
+            ),
+            make_cli_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                "1.2.826.0.20",
+            ),
+        ];
+
+        let error = select_preferred_views(
+            &records,
+            &FilterConfig::permissive(),
+            PreferenceOrder::Default,
+            true,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("strict study selection"));
+        assert!(error.to_string().contains("1.2.826.0.10"));
+        assert!(error.to_string().contains("1.2.826.0.20"));
     }
 }

@@ -50,11 +50,14 @@ mammocat --verbose path/to/mammogram.dcm
 Select the best mammogram for each standard view (L-CC, R-CC, L-MLO, R-MLO) from a directory:
 
 ```bash
-# Select preferred views (default ordering: FFDM > SYNTH > TOMO > SFM)
+# Select preferred views from the most complete study
 mammoselect /path/to/dicom_directory
 
 # Use tomo-first ordering (TOMO > FFDM > SYNTH > SFM)
 mammoselect --preference tomo-first /path/to/directory
+
+# Error if usable records contain multiple studies or missing StudyInstanceUID
+mammoselect --strict /path/to/directory
 
 # Output as JSON
 mammoselect --format json /path/to/directory
@@ -62,6 +65,21 @@ mammoselect --format json /path/to/directory
 # Output file paths only (useful for scripting)
 mammoselect --format paths /path/to/directory
 ```
+
+`mammoselect` never mixes studies in its output. After filtering, it groups usable
+candidate records by `StudyInstanceUID`, chooses the study with the most true
+standard-view slots, then uses MLO-like/CC-like candidate coverage as a
+tie-break. If multiple known studies are still tied, the lowest
+`StudyInstanceUID` is selected. Records without `StudyInstanceUID` are treated
+as singleton fallback groups in default mode and sort after known studies on
+equal completeness. When `--require-common-modality` is used, completeness is
+scored within the best single modality group for each study. Default mode emits
+a warning when usable candidates span multiple study groups so callers know only
+the most complete study was selected.
+
+Use `--strict` when a directory must contain exactly one usable study. Strict
+mode fails if usable candidates span more than one `StudyInstanceUID` or if any
+usable candidate is missing `StudyInstanceUID`.
 
 Example output:
 
