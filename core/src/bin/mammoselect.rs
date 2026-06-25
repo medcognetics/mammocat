@@ -1,10 +1,9 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
-use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
-    get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig, MammogramRecord,
-    MammogramType, MammogramView, PreferenceOrder, PreferredViewSelectionWithWarnings,
-    SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
+    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig,
+    MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
+    PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -204,60 +203,6 @@ fn setup_logging(verbose: bool) {
         env_logger::Builder::from_default_env()
             .filter_level(log::LevelFilter::Info)
             .init();
-    }
-}
-
-fn collect_dicom_files(directory: &PathBuf) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                // Accept .dcm and .dicom extensions
-                if ext.eq_ignore_ascii_case("dcm") || ext.eq_ignore_ascii_case("dicom") {
-                    files.push(path);
-                }
-            } else {
-                // For files without extension, check for DICOM header
-                if is_dicom_file(&path) {
-                    info!("Found headerless DICOM file: {}", path.display());
-                    files.push(path);
-                }
-            }
-        }
-    }
-
-    Ok(files)
-}
-
-/// Checks if a file has a DICOM header
-///
-/// DICOM files typically have:
-/// - 128-byte preamble
-/// - 4-byte "DICM" magic string at offset 128
-///
-/// Some DICOM files may not have the preamble and start directly with
-/// DICOM data elements, but we primarily check for the standard header.
-fn is_dicom_file(path: &PathBuf) -> bool {
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-
-    // Read first 132 bytes (128-byte preamble + 4-byte "DICM" magic)
-    let mut buffer = [0u8; 132];
-    match file.read(&mut buffer) {
-        Ok(n) if n >= 132 => {
-            // Check for "DICM" magic bytes at offset 128
-            &buffer[128..132] == DICOM_MAGIC_BYTES
-        }
-        _ => false,
     }
 }
 
@@ -489,6 +434,9 @@ mod tests {
                 number_of_frames: 1,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
+                transfer_syntax_uid: None,
+                transfer_syntax_name: None,
+                compression_type: None,
             },
             study_instance_uid: Some(study_uid.to_string()),
             sop_instance_uid: Some(format!(
@@ -522,7 +470,7 @@ mod tests {
         // Write some additional data
         file.write_all(b"additional data").unwrap();
 
-        assert!(is_dicom_file(&file_path));
+        assert!(mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -534,7 +482,7 @@ mod tests {
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"This is not a DICOM file").unwrap();
 
-        assert!(!is_dicom_file(&file_path));
+        assert!(!mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -546,7 +494,7 @@ mod tests {
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"small").unwrap();
 
-        assert!(!is_dicom_file(&file_path));
+        assert!(!mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -559,7 +507,7 @@ mod tests {
         file.write_all(&[0u8; 128]).unwrap();
         file.write_all(b"NOTM").unwrap(); // Wrong magic
 
-        assert!(!is_dicom_file(&file_path));
+        assert!(!mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]

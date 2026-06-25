@@ -1,7 +1,7 @@
 """Type stubs for the mammocat Rust extension module."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 __version__: str
 BREAST_TOMOSYNTHESIS_SOP_CLASS_UID: str
@@ -208,6 +208,12 @@ class MammogramMetadata:
     def model(self) -> str | None: ...
     @property
     def number_of_frames(self) -> int: ...
+    @property
+    def transfer_syntax_uid(self) -> str | None: ...
+    @property
+    def transfer_syntax_name(self) -> str | None: ...
+    @property
+    def compression_type(self) -> str | None: ...
     def mammogram_view(self) -> MammogramView: ...
     def is_standard_view(self) -> bool: ...
     def is_2d(self) -> bool: ...
@@ -258,6 +264,20 @@ class MammogramExtractor:
     def extract_from_file_with_options(
         path: str | Path, is_sfm: bool = False
     ) -> MammogramMetadata: ...
+
+def validate_dicom(
+    path: str | Path,
+    profile: Literal["selection", "extraction"] = "selection",
+) -> dict[str, Any]:
+    """Validate one DICOM file for mammocat extraction or mammoselect readiness."""
+
+def validate_directory(
+    path: str | Path,
+    profile: Literal["selection", "extraction"] = "selection",
+    filter_config: FilterConfig | None = None,
+    preference_order: PreferenceOrder | None = None,
+) -> dict[str, Any]:
+    """Validate a DICOM directory or ZIP archive and report preferred-view coverage."""
 
 # Filter configuration
 class FilterConfig:

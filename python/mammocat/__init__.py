@@ -51,6 +51,8 @@ from ._mammocat import (
     get_preferred_views_filtered,
     get_preferred_views_with_order,
     scan_dbt_study,
+    validate_dicom,
+    validate_directory,
 )
 
 __all__ = [
@@ -78,4 +80,6 @@ __all__ = [
     "get_preferred_views_filtered",
     "get_preferred_views_with_order",
     "scan_dbt_study",
+    "validate_dicom",
+    "validate_directory",
 ]

@@ -1,10 +1,12 @@
 pub mod api;
 pub mod cli;
 pub mod dbt;
+pub mod dicom_files;
 pub mod error;
 pub mod extraction;
 pub mod selection;
 pub mod types;
+pub mod validation;
 
 // Python bindings module (optional)
 #[cfg(feature = "python")]
@@ -18,6 +20,7 @@ pub use dbt::{
     DbtScanSummary, DbtSeriesFinding, DbtSkippedFile, DbtUnsupportedSeries,
     BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
 };
+pub use dicom_files::{collect_dicom_files, is_dicom_file};
 pub use error::{MammocatError, Result};
 pub use selection::{
     get_preferred_views, get_preferred_views_filtered,
@@ -27,3 +30,8 @@ pub use selection::{
     PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode,
 };
 pub use types::*;
+pub use validation::{
+    validate_dicom_file, validate_directory_path, validate_path, CheckStatus, Severity,
+    ValidationMessage, ValidationOptions, ValidationProfile, ValidationReport,
+    ValidationRuntimeError, ValidationStatus,
+};

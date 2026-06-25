@@ -6,7 +6,7 @@ use crate::extraction::tags::{
 };
 use crate::extraction::{is_implant_displaced, is_magnified, is_spot_compression};
 use crate::types::PreferenceOrder;
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::{FileDicomObject, InMemDicomObject, OpenFileOptions};
 use std::cmp::Ordering;
 use std::path::PathBuf;
 
@@ -61,7 +61,7 @@ impl MammogramRecord {
         let dcm = OpenFileOptions::new()
             .read_until(PIXEL_DATA_TAG)
             .open_file(&path)?;
-        Self::from_dicom(path, &dcm)
+        Self::from_file_dicom(path, &dcm)
     }
 
     /// Creates a MammogramRecord from in-memory DICOM bytes.
@@ -86,7 +86,7 @@ impl MammogramRecord {
             .from_reader(cursor)?;
 
         let path = id.map(PathBuf::from).unwrap_or_default();
-        Self::from_dicom(path, &dcm)
+        Self::from_file_dicom(path, &dcm)
     }
 
     /// Creates a record from an already-opened DICOM object
@@ -101,7 +101,20 @@ impl MammogramRecord {
     /// Result containing the MammogramRecord or an error
     pub fn from_dicom(path: PathBuf, dcm: &InMemDicomObject) -> Result<Self> {
         let metadata = MammogramExtractor::extract(dcm)?;
+        Self::from_dicom_with_metadata(path, dcm, metadata)
+    }
 
+    /// Creates a record from an already-opened DICOM file object.
+    pub fn from_file_dicom(path: PathBuf, dcm: &FileDicomObject<InMemDicomObject>) -> Result<Self> {
+        let metadata = MammogramExtractor::extract_file(dcm)?;
+        Self::from_dicom_with_metadata(path, dcm, metadata)
+    }
+
+    pub(crate) fn from_dicom_with_metadata(
+        path: PathBuf,
+        dcm: &InMemDicomObject,
+        metadata: MammogramMetadata,
+    ) -> Result<Self> {
         Ok(Self {
             file_path: path,
             metadata,
@@ -303,6 +316,9 @@ mod tests {
                 number_of_frames: 1,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
+                transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
+                transfer_syntax_name: Some("Explicit VR Little Endian".to_string()),
+                compression_type: Some("uncompressed".to_string()),
             },
             rows,
             columns,
