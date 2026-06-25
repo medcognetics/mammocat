@@ -50,6 +50,10 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "ExtractionError",
         py.get_type_bound::<errors::PyExtractionError>(),
     )?;
+    m.add(
+        "SelectionError",
+        py.get_type_bound::<errors::PySelectionError>(),
+    )?;
 
     // Register enum classes
     m.add_class::<PyMammogramType>()?;

@@ -10,10 +10,35 @@ from mammocat import (
     MammogramExtractor,
     MammogramRecord,
     PreferenceOrder,
+    SelectionError,
     get_preferred_views,
     get_preferred_views_filtered,
     get_preferred_views_with_order,
 )
+
+
+def _write_test_dicom(
+    directory: Path,
+    mammogram_dicom_factory,
+    *,
+    filename: str,
+    study_uid: str,
+    sop_suffix: str,
+    laterality: str,
+    view_position: str,
+    mammogram_type: str = "FFDM",
+) -> Path:
+    path = directory / filename
+    ds = mammogram_dicom_factory(
+        mammogram_type=mammogram_type,
+        laterality=laterality,
+        view_position=view_position,
+        study_instance_uid=study_uid,
+        series_instance_uid=f"{study_uid}.1",
+        sop_instance_uid=f"{study_uid}.{sop_suffix}",
+    )
+    ds.save_as(path, enforce_file_format=True)
+    return path
 
 
 class TestMammogramExtractor:
@@ -239,6 +264,101 @@ class TestPreferredViews:
         assert isinstance(result_tomo, dict)
         assert len(result_default) == 4
         assert len(result_tomo) == 4
+
+    def test_default_selects_one_most_complete_study(self, fixtures_dir, mammogram_dicom_factory):
+        """Test default selection does not mix studies."""
+        incomplete_study = "1.2.826.0.10"
+        complete_study = "1.2.826.0.20"
+        paths = [
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="a_l_mlo.dcm",
+                study_uid=incomplete_study,
+                sop_suffix="1",
+                laterality="L",
+                view_position="MLO",
+            ),
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="a_r_mlo.dcm",
+                study_uid=incomplete_study,
+                sop_suffix="2",
+                laterality="R",
+                view_position="MLO",
+            ),
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="b_l_mlo.dcm",
+                study_uid=complete_study,
+                sop_suffix="1",
+                laterality="L",
+                view_position="MLO",
+                mammogram_type="TOMO",
+            ),
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="b_r_mlo.dcm",
+                study_uid=complete_study,
+                sop_suffix="2",
+                laterality="R",
+                view_position="MLO",
+                mammogram_type="TOMO",
+            ),
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="b_l_cc.dcm",
+                study_uid=complete_study,
+                sop_suffix="3",
+                laterality="L",
+                view_position="CC",
+                mammogram_type="TOMO",
+            ),
+        ]
+        records = [MammogramRecord.from_file(str(path)) for path in paths]
+
+        with pytest.warns(
+            UserWarning,
+            match="mixed study input detected.*selecting only the most complete study",
+        ):
+            result = get_preferred_views(records)
+
+        selected = [record for record in result.values() if record is not None]
+        assert len(selected) == 3
+        assert {record.study_instance_uid for record in selected} == {complete_study}
+
+    def test_strict_selection_errors_for_multiple_studies(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        """Test strict selection rejects multiple usable studies."""
+        paths = [
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="a_l_mlo.dcm",
+                study_uid="1.2.826.0.10",
+                sop_suffix="1",
+                laterality="L",
+                view_position="MLO",
+            ),
+            _write_test_dicom(
+                fixtures_dir,
+                mammogram_dicom_factory,
+                filename="b_r_mlo.dcm",
+                study_uid="1.2.826.0.20",
+                sop_suffix="1",
+                laterality="R",
+                view_position="MLO",
+            ),
+        ]
+        records = [MammogramRecord.from_file(str(path)) for path in paths]
+
+        with pytest.raises(SelectionError, match="strict study selection"):
+            get_preferred_views(records, strict=True)
 
 
 class TestFilterConfig:

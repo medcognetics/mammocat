@@ -15,6 +15,9 @@ def create_mammogram_dicom(
     view_position: str = "MLO",
     rows: int = 2048,
     columns: int = 1536,
+    study_instance_uid: str = "1.2.3.4.5",
+    series_instance_uid: str = "1.2.3.4.5.6",
+    sop_instance_uid: str = "1.2.3.4.5.6.7.8.9",
     has_implant: bool = False,
     is_spot_compression: bool = False,
     is_magnified: bool = False,
@@ -28,6 +31,9 @@ def create_mammogram_dicom(
         view_position: MLO, CC, etc.
         rows: Image height in pixels
         columns: Image width in pixels
+        study_instance_uid: DICOM StudyInstanceUID value
+        series_instance_uid: DICOM SeriesInstanceUID value
+        sop_instance_uid: DICOM SOPInstanceUID value
         has_implant: Whether patient has implant
         is_spot_compression: Whether this is spot compression view
         is_magnified: Whether this is magnified view
@@ -40,7 +46,7 @@ def create_mammogram_dicom(
     file_meta = Dataset()
     file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
     file_meta.MediaStorageSOPClassUID = DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID
-    file_meta.MediaStorageSOPInstanceUID = "1.2.3.4.5.6.7.8.9"
+    file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
 
     # Create a basic DICOM dataset
     ds = Dataset()
@@ -53,19 +59,19 @@ def create_mammogram_dicom(
     ds.PatientSex = "F"
 
     # Study Information
-    ds.StudyInstanceUID = "1.2.3.4.5"
+    ds.StudyInstanceUID = study_instance_uid
     ds.StudyDate = "20240101"
     ds.StudyTime = "120000"
     ds.AccessionNumber = "ACC123"
 
     # Series Information
-    ds.SeriesInstanceUID = "1.2.3.4.5.6"
+    ds.SeriesInstanceUID = series_instance_uid
     ds.SeriesNumber = "1"
     ds.Modality = "MG"
 
     # Instance Information
     ds.SOPClassUID = DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID
-    ds.SOPInstanceUID = "1.2.3.4.5.6.7.8.9"
+    ds.SOPInstanceUID = sop_instance_uid
     ds.InstanceNumber = "1"
 
     # Image Information
@@ -204,6 +210,12 @@ def create_old_format_dbt_series(directory, *, frame_count: int = 3, **kwargs):
 def fixtures_dir(tmp_path):
     """Returns path to test fixtures directory using pytest's tmp_path."""
     return tmp_path
+
+
+@pytest.fixture
+def mammogram_dicom_factory():
+    """Returns the synthetic mammography DICOM factory."""
+    return create_mammogram_dicom
 
 
 @pytest.fixture

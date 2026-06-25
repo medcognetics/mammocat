@@ -22,6 +22,10 @@ pub enum MammocatError {
     #[error("Extraction error: {0}")]
     ExtractionError(String),
 
+    /// Preferred-view selection error
+    #[error("Selection error: {0}")]
+    SelectionError(String),
+
     /// I/O error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
