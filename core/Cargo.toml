@@ -20,10 +20,11 @@ thiserror = "1.0"
 regex = "1.10"
 log = "0.4"
 env_logger = "0.11"
+uuid = { version = "=1.23.3", features = ["v4"] }
 
-# Optional: JSON output
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
+# JSON/report output
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
 
 # Python bindings (optional)
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
@@ -33,8 +34,8 @@ tempfile = "3.10"
 rstest = "0.19"
 
 [features]
-json = ["serde", "serde_json"]
-python = ["pyo3", "serde", "serde_json"]
+json = []
+python = ["pyo3"]
 
 [lib]
 name = "mammocat_core"
@@ -47,3 +48,7 @@ path = "src/main.rs"
 [[bin]]
 name = "mammoselect"
 path = "src/bin/mammoselect.rs"
+
+[[bin]]
+name = "dbt-combine"
+path = "src/bin/dbt-combine.rs"
