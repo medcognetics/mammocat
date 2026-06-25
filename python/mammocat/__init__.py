@@ -21,6 +21,7 @@ Example:
 """
 
 from ._mammocat import (
+    BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
     DicomError,
     ExtractionError,
     # Filter configuration
@@ -40,18 +41,22 @@ from ._mammocat import (
     MammogramView,
     PhotometricInterpretation,
     PreferenceOrder,
+    SelectionError,
     TagNotFoundError,
     ViewPosition,
     __version__,
+    convert_dbt_study,
     # Selection functions
     get_preferred_views,
     get_preferred_views_filtered,
     get_preferred_views_with_order,
+    scan_dbt_study,
     validate_dicom,
     validate_directory,
 )
 
 __all__ = [
+    "BREAST_TOMOSYNTHESIS_SOP_CLASS_UID",
     "DicomError",
     "ExtractionError",
     "FilterConfig",
@@ -66,12 +71,15 @@ __all__ = [
     "MammogramView",
     "PhotometricInterpretation",
     "PreferenceOrder",
+    "SelectionError",
     "TagNotFoundError",
     "ViewPosition",
     "__version__",
+    "convert_dbt_study",
     "get_preferred_views",
     "get_preferred_views_filtered",
     "get_preferred_views_with_order",
+    "scan_dbt_study",
     "validate_dicom",
     "validate_directory",
 ]

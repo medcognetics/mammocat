@@ -1,5 +1,6 @@
 pub mod api;
 pub mod cli;
+pub mod dbt;
 pub mod dicom_files;
 pub mod error;
 pub mod extraction;
@@ -13,11 +14,20 @@ pub mod python;
 
 pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
+pub use dbt::{
+    convert_dbt_study, scan_dbt_study, DbtConvertOptions, DbtConvertReport, DbtConvertSummary,
+    DbtConvertedSeries, DbtCopiedFile, DbtFileFinding, DbtScanOptions, DbtScanReport,
+    DbtScanSummary, DbtSeriesFinding, DbtSkippedFile, DbtUnsupportedSeries,
+    BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
+};
 pub use dicom_files::{collect_dicom_files, is_dicom_file};
 pub use error::{MammocatError, Result};
 pub use selection::{
-    get_preferred_views, get_preferred_views_filtered, get_preferred_views_with_order,
-    MammogramRecord,
+    get_preferred_views, get_preferred_views_filtered,
+    get_preferred_views_filtered_with_study_mode,
+    get_preferred_views_filtered_with_study_mode_and_warnings, get_preferred_views_with_order,
+    get_preferred_views_with_order_and_warnings, MammogramRecord, PreferredViewSelection,
+    PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode,
 };
 pub use types::*;
 pub use validation::{

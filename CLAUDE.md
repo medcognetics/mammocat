@@ -100,6 +100,9 @@ make quality-fix
 # Output file paths only
 ./target/release/mammoselect --format paths /path/to/directory
 
+# Error if usable candidates contain multiple studies or missing StudyInstanceUID
+./target/release/mammoselect --strict /path/to/directory
+
 # Verbose logging
 ./target/release/mammoselect --verbose /path/to/directory
 
@@ -133,6 +136,26 @@ make quality-fix
 ```
 
 Exit code `0` means validation passed, `1` means validation completed and found validation problems, and `2` means a runtime/output error occurred.
+
+#### dbt-combine - Old-Format DBT Conversion
+```bash
+# Check whether a study contains old-format DBT slice series
+./target/release/dbt-combine check "/path/to/study"
+
+# Convert old-format DBT slice series and copy through other DICOM files
+./target/release/dbt-combine convert "/path/to/study" "/path/to/output"
+```
+
+DBT conversion is shared core functionality in `core/src/dbt.rs`; keep the Rust API,
+`dbt-combine` CLI, Python bindings, and Python stubs in schema parity when changing report
+fields or options. Python DBT APIs return dictionaries generated from the same serde report
+structs used by CLI JSON output.
+
+On this workstation, DBT all-features checks need `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`.
+For DBT changes, run `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make quality` and
+`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make test`. The local Apollo smoke is:
+`dbt-combine check "/home/chase/data apollo"` should report 15 conversion-needed DBT series
+and 26 copy-through DICOM files.
 
 ## Architecture
 
@@ -198,7 +221,9 @@ The codebase follows a clear separation of concerns:
 - `Default`: FFDM > SYNTH > TOMO > SFM - Prefers 2D images for general inference
 - `TomoFirst`: TOMO > FFDM > SYNTH > SFM - Maximizes use of 3D imaging when available
 
-MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) uses this to pick the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC).
+MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) first chooses one study, then picks the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC) within that study.
+
+**Single-Study Selection**: Preferred-view selection never mixes studies. After filters are applied, usable candidate records are grouped by `StudyInstanceUID`. Default selection chooses the most complete known study by true standard-view coverage first, MLO-like/CC-like candidate coverage second, and lowest `StudyInstanceUID` as the deterministic tie-break. When common-modality selection is required, completeness is scored within the best single modality group for each study. Default mode emits a warning when usable candidates span multiple study groups. Records missing `StudyInstanceUID` are singleton fallback groups in default mode and sort after known studies on equal completeness. `StudySelectionMode::StrictSingleStudy`, Python `strict=True`, and CLI `--strict` fail if usable candidates contain multiple studies or any missing `StudyInstanceUID`.
 
 **Fallback Hierarchy**: Laterality extraction attempts multiple DICOM tags in order:
 1. ImageLaterality
@@ -220,8 +245,9 @@ Hard filtering is used - records that don't pass filters are completely excluded
 Filtering flow:
 1. Load all DICOM files into MammogramRecord collection
 2. Apply FilterConfig to remove unwanted records via `apply_filters()`
-3. Run view selection algorithm (`get_preferred_views_with_order`) on filtered set
-4. Return best views from remaining candidates
+3. Choose one study from filtered usable candidates, or fail in strict study mode
+4. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
+5. Return best views from remaining candidates
 
 ### Validation Architecture
 

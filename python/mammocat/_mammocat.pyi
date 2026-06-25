@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 __version__: str
+BREAST_TOMOSYNTHESIS_SOP_CLASS_UID: str
 
 # Exceptions
 class MammocatError(Exception):
@@ -20,6 +21,9 @@ class InvalidValueError(MammocatError):
 
 class ExtractionError(MammocatError):
     """Generic metadata extraction error."""
+
+class SelectionError(MammocatError):
+    """Preferred-view selection error."""
 
 # Enums
 class MammogramType:
@@ -311,6 +315,7 @@ class FilterConfig:
 # Selection functions
 def get_preferred_views(
     records: list[MammogramRecord],
+    strict: bool = False,
 ) -> dict[MammogramView, MammogramRecord | None]:
     """Select preferred views from records using default preference order.
 
@@ -320,6 +325,8 @@ def get_preferred_views(
 
     Args:
         records: List of MammogramRecord objects to select from
+        strict: If False, warn when usable records span studies and select the
+            most complete study; if True, raise SelectionError instead
 
     Returns:
         Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -328,6 +335,7 @@ def get_preferred_views(
 def get_preferred_views_with_order(
     records: list[MammogramRecord],
     preference_order: PreferenceOrder,
+    strict: bool = False,
 ) -> dict[MammogramView, MammogramRecord | None]:
     """Select preferred views using a specific preference order.
 
@@ -338,6 +346,8 @@ def get_preferred_views_with_order(
     Args:
         records: List of MammogramRecord objects to select from
         preference_order: The preference ordering strategy to use
+        strict: If False, warn when usable records span studies and select the
+            most complete study; if True, raise SelectionError instead
 
     Returns:
         Dictionary mapping MammogramView to MammogramRecord (or None if not found)
@@ -347,6 +357,7 @@ def get_preferred_views_filtered(
     records: list[MammogramRecord],
     filter_config: FilterConfig,
     preference_order: PreferenceOrder,
+    strict: bool = False,
 ) -> dict[MammogramView, MammogramRecord | None]:
     """Select preferred views with filtering.
 
@@ -358,7 +369,20 @@ def get_preferred_views_filtered(
         records: List of MammogramRecord objects to select from
         filter_config: FilterConfig specifying which records to include
         preference_order: The preference ordering strategy to use
+        strict: If False, warn when usable records span studies and select the
+            most complete study; if True, raise SelectionError instead
 
     Returns:
         Dictionary mapping MammogramView to MammogramRecord (or None if not found)
     """
+
+def scan_dbt_study(input_dir: str | Path) -> dict[str, Any]:
+    """Scan a study directory for old-format DBT series needing conversion."""
+
+def convert_dbt_study(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Convert old-format DBT series and copy through other DICOM files."""
