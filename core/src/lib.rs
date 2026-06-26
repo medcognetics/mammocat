@@ -15,10 +15,10 @@ pub mod python;
 pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
 pub use dbt::{
-    convert_dbt_study, scan_dbt_study, DbtConvertOptions, DbtConvertReport, DbtConvertSummary,
-    DbtConvertedSeries, DbtCopiedFile, DbtFileFinding, DbtScanOptions, DbtScanReport,
-    DbtScanSummary, DbtSeriesFinding, DbtSkippedFile, DbtUnsupportedSeries,
-    BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
+    convert_dbt_study, scan_dbt_study, write_combined_dbt_series, DbtConvertOptions,
+    DbtConvertReport, DbtConvertSummary, DbtConvertedSeries, DbtCopiedFile, DbtFileFinding,
+    DbtScanOptions, DbtScanReport, DbtScanSummary, DbtSeriesFinding, DbtSkippedFile,
+    DbtUnsupportedSeries, BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
 };
 pub use dicom_files::{collect_dicom_files, is_dicom_file};
 pub use error::{MammocatError, Result};
