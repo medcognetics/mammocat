@@ -1,9 +1,9 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
-use mammocat_core::extraction::tags::DICOM_MAGIC_BYTES;
 use mammocat_core::{
-    get_preferred_views_filtered, FilterConfig, MammogramRecord, MammogramType, MammogramView,
-    PreferenceOrder, STANDARD_MAMMO_VIEWS,
+    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig,
+    MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
+    PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -67,6 +67,10 @@ struct Cli {
     /// Require all selected views to come from a common modality group (2D or DBT)
     #[arg(long)]
     require_common_modality: bool,
+
+    /// Error if usable records contain multiple studies or missing StudyInstanceUID
+    #[arg(long)]
+    strict: bool,
 }
 
 /// Output format options
@@ -183,7 +187,16 @@ fn main() {
     info!("Using preference order: {:?}", preference_order);
 
     // Select preferred views with filtering
-    let selections = get_preferred_views_filtered(&records, &filter_config, preference_order);
+    let (selections, warnings) =
+        match select_preferred_views(&records, &filter_config, preference_order, cli.strict) {
+            Ok(selection_result) => selection_result,
+            Err(e) => {
+                error!("Selection failed: {}", e);
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        };
+    output_selection_warnings(&warnings);
     output_selected_lossy_warnings(&selections, &filter_config);
 
     // Output results
@@ -199,60 +212,6 @@ fn setup_logging(verbose: bool) {
         env_logger::Builder::from_default_env()
             .filter_level(log::LevelFilter::Info)
             .init();
-    }
-}
-
-fn collect_dicom_files(directory: &PathBuf) -> std::io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                // Accept .dcm and .dicom extensions
-                if ext.eq_ignore_ascii_case("dcm") || ext.eq_ignore_ascii_case("dicom") {
-                    files.push(path);
-                }
-            } else {
-                // For files without extension, check for DICOM header
-                if is_dicom_file(&path) {
-                    info!("Found headerless DICOM file: {}", path.display());
-                    files.push(path);
-                }
-            }
-        }
-    }
-
-    Ok(files)
-}
-
-/// Checks if a file has a DICOM header
-///
-/// DICOM files typically have:
-/// - 128-byte preamble
-/// - 4-byte "DICM" magic string at offset 128
-///
-/// Some DICOM files may not have the preamble and start directly with
-/// DICOM data elements, but we primarily check for the standard header.
-fn is_dicom_file(path: &PathBuf) -> bool {
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-
-    // Read first 132 bytes (128-byte preamble + 4-byte "DICM" magic)
-    let mut buffer = [0u8; 132];
-    match file.read(&mut buffer) {
-        Ok(n) if n >= 132 => {
-            // Check for "DICM" magic bytes at offset 128
-            &buffer[128..132] == DICOM_MAGIC_BYTES
-        }
-        _ => false,
     }
 }
 
@@ -317,6 +276,26 @@ fn selected_lossy_warning_messages(
             ))
         })
         .collect()
+}
+
+fn select_preferred_views(
+    records: &[MammogramRecord],
+    filter_config: &FilterConfig,
+    preference_order: PreferenceOrder,
+    strict: bool,
+) -> mammocat_core::Result<PreferredViewSelectionWithWarnings> {
+    get_preferred_views_filtered_with_study_mode_and_warnings(
+        records,
+        filter_config,
+        preference_order,
+        StudySelectionMode::from_strict(strict),
+    )
+}
+
+fn output_selection_warnings(warnings: &[SelectionWarning]) {
+    for warning in warnings {
+        warn!("{}", warning.message());
+    }
 }
 
 fn output_selections(
@@ -484,16 +463,32 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_cli_test_record(
-        view: MammogramView,
-        file_name: &str,
+        laterality: Laterality,
+        view_position: ViewPosition,
+        mammo_type: MammogramType,
+        study_uid: &str,
+    ) -> MammogramRecord {
+        make_cli_test_record_with_lossy(laterality, view_position, mammo_type, study_uid, false)
+    }
+
+    fn make_cli_test_record_with_lossy(
+        laterality: Laterality,
+        view_position: ViewPosition,
+        mammo_type: MammogramType,
+        study_uid: &str,
         is_lossy_compressed: bool,
     ) -> MammogramRecord {
+        let transfer_syntax_uid = if is_lossy_compressed {
+            "1.2.840.10008.1.2.4.50"
+        } else {
+            "1.2.840.10008.1.2.1"
+        };
         MammogramRecord {
-            file_path: PathBuf::from(file_name),
+            file_path: PathBuf::from(format!("{study_uid}_{laterality:?}_{view_position:?}.dcm")),
             metadata: MammogramMetadata {
-                mammogram_type: MammogramType::Ffdm,
-                laterality: view.laterality,
-                view_position: view.view,
+                mammogram_type: mammo_type,
+                laterality,
+                view_position,
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -510,17 +505,41 @@ mod tests {
                 number_of_frames: 1,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
+                transfer_syntax_uid: Some(transfer_syntax_uid.to_string()),
+                transfer_syntax_name: None,
+                compression_type: None,
             },
-            study_instance_uid: None,
-            sop_instance_uid: None,
+            study_instance_uid: Some(study_uid.to_string()),
+            sop_instance_uid: Some(format!(
+                "{}.{}.{}",
+                study_uid,
+                laterality.short_str(),
+                view_position.short_str()
+            )),
             rows: Some(2560),
             columns: Some(3328),
-            transfer_syntax_uid: Some("1.2.840.10008.1.2.4.50".to_string()),
+            transfer_syntax_uid: Some(transfer_syntax_uid.to_string()),
             is_lossy_compressed,
             is_implant_displaced: false,
             is_spot_compression: false,
             is_magnified: false,
         }
+    }
+
+    fn make_cli_test_record_with_path(
+        view: MammogramView,
+        file_name: &str,
+        is_lossy_compressed: bool,
+    ) -> MammogramRecord {
+        let mut record = make_cli_test_record_with_lossy(
+            view.laterality,
+            view.view,
+            MammogramType::Ffdm,
+            "1.2.826.0.99",
+            is_lossy_compressed,
+        );
+        record.file_path = PathBuf::from(file_name);
+        record
     }
 
     #[test]
@@ -540,7 +559,7 @@ mod tests {
         // Write some additional data
         file.write_all(b"additional data").unwrap();
 
-        assert!(is_dicom_file(&file_path));
+        assert!(mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -552,7 +571,7 @@ mod tests {
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"This is not a DICOM file").unwrap();
 
-        assert!(!is_dicom_file(&file_path));
+        assert!(!mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -564,7 +583,7 @@ mod tests {
         let mut file = File::create(&file_path).unwrap();
         file.write_all(b"small").unwrap();
 
-        assert!(!is_dicom_file(&file_path));
+        assert!(!mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -577,7 +596,7 @@ mod tests {
         file.write_all(&[0u8; 128]).unwrap();
         file.write_all(b"NOTM").unwrap(); // Wrong magic
 
-        assert!(!is_dicom_file(&file_path));
+        assert!(!mammocat_core::is_dicom_file(&file_path));
     }
 
     #[test]
@@ -654,7 +673,7 @@ mod tests {
         let mut selections = HashMap::new();
         selections.insert(
             view,
-            Some(make_cli_test_record(view, "/tmp/lossy.dcm", true)),
+            Some(make_cli_test_record_with_path(view, "/tmp/lossy.dcm", true)),
         );
 
         let warnings = selected_lossy_warning_messages(&selections, &FilterConfig::default());
@@ -672,7 +691,7 @@ mod tests {
         let mut selections = HashMap::new();
         selections.insert(
             view,
-            Some(make_cli_test_record(view, "/tmp/lossy.dcm", true)),
+            Some(make_cli_test_record_with_path(view, "/tmp/lossy.dcm", true)),
         );
         let config = FilterConfig::default().exclude_lossy_compressed(true);
 
@@ -687,11 +706,100 @@ mod tests {
         let mut selections = HashMap::new();
         selections.insert(
             view,
-            Some(make_cli_test_record(view, "/tmp/lossless.dcm", false)),
+            Some(make_cli_test_record_with_path(
+                view,
+                "/tmp/lossless.dcm",
+                false,
+            )),
         );
 
         let warnings = selected_lossy_warning_messages(&selections, &FilterConfig::default());
 
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_select_preferred_views_default_uses_most_complete_study() {
+        let incomplete_study = "1.2.826.0.10";
+        let complete_study = "1.2.826.0.20";
+        let records = vec![
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                incomplete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                incomplete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Tomo,
+                complete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Tomo,
+                complete_study,
+            ),
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Cc,
+                MammogramType::Tomo,
+                complete_study,
+            ),
+        ];
+
+        let (selections, warnings) = select_preferred_views(
+            &records,
+            &FilterConfig::permissive(),
+            PreferenceOrder::Default,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message().contains("mixed study input detected"));
+        assert!(warnings[0]
+            .message()
+            .contains("selecting only the most complete study"));
+        for record in selections.values().flatten() {
+            assert_eq!(record.study_instance_uid.as_deref(), Some(complete_study));
+        }
+    }
+
+    #[test]
+    fn test_select_preferred_views_strict_errors_for_multiple_studies() {
+        let records = vec![
+            make_cli_test_record(
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                "1.2.826.0.10",
+            ),
+            make_cli_test_record(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                "1.2.826.0.20",
+            ),
+        ];
+
+        let error = select_preferred_views(
+            &records,
+            &FilterConfig::permissive(),
+            PreferenceOrder::Default,
+            true,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("strict study selection"));
+        assert!(error.to_string().contains("1.2.826.0.10"));
+        assert!(error.to_string().contains("1.2.826.0.20"));
     }
 }

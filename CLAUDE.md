@@ -100,6 +100,9 @@ make quality-fix
 # Output file paths only
 ./target/release/mammoselect --format paths /path/to/directory
 
+# Error if usable candidates contain multiple studies or missing StudyInstanceUID
+./target/release/mammoselect --strict /path/to/directory
+
 # Verbose logging
 ./target/release/mammoselect --verbose /path/to/directory
 
@@ -110,6 +113,49 @@ make quality-fix
 ./target/release/mammoselect --include-for-processing /path/to/directory
 ./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
+
+#### mammovalidate - DICOM Validation
+```bash
+# Validate a single DICOM file for mammoselect readiness
+./target/release/mammovalidate /path/to/file.dcm
+
+# Validate a directory using the same non-recursive discovery behavior as mammoselect
+./target/release/mammovalidate /path/to/dicom_directory
+
+# Validate a ZIP archive as a pseudo-directory
+./target/release/mammovalidate /path/to/dicom_archive.zip
+
+# Use the looser extraction profile
+./target/release/mammovalidate --profile extraction /path/to/file.dcm
+
+# Machine-readable output
+./target/release/mammovalidate --format json /path/to/dicom_archive.zip
+
+# Directory readiness with mammoselect-compatible filters
+./target/release/mammovalidate --allowed-types ffdm,tomo --include-for-processing /path/to/directory
+```
+
+Exit code `0` means validation passed, `1` means validation completed and found validation problems, and `2` means a runtime/output error occurred.
+
+#### dbt-combine - Old-Format DBT Conversion
+```bash
+# Check whether a study contains old-format DBT slice series
+./target/release/dbt-combine check "/path/to/study"
+
+# Convert old-format DBT slice series and copy through other DICOM files
+./target/release/dbt-combine convert "/path/to/study" "/path/to/output"
+```
+
+DBT conversion is shared core functionality in `core/src/dbt.rs`; keep the Rust API,
+`dbt-combine` CLI, Python bindings, and Python stubs in schema parity when changing report
+fields or options. Python DBT APIs return dictionaries generated from the same serde report
+structs used by CLI JSON output.
+
+On this workstation, DBT all-features checks need `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`.
+For DBT changes, run `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make quality` and
+`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make test`. The local Apollo smoke is:
+`dbt-combine check "/home/chase/data apollo"` should report 15 conversion-needed DBT series
+and 26 copy-through DICOM files.
 
 ## Architecture
 
@@ -142,9 +188,15 @@ The codebase follows a clear separation of concerns:
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
 - `views.rs`: get_preferred_views, get_preferred_views_with_order, and get_preferred_views_filtered for selecting best views
 
+**`validation.rs`** - File and collection validation reports
+- `validate_path()`: Validates a single DICOM file, non-recursive directory, or ZIP archive.
+- `validate_dicom_file()`: File-only validation helper used by Python bindings.
+- `validate_directory_path()`: Directory or ZIP validation with mammoselect-compatible filter and preference options.
+- `ValidationProfile`: `Selection` is strict and checks preferred-view readiness; `Extraction` only fails when mammocat extraction cannot run.
+
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
-- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames, is_secondary_capture, modality)
+- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
 
 **`python/`** - PyO3 bindings (enabled with `--features python`)
 - `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)
@@ -152,11 +204,14 @@ The codebase follows a clear separation of concerns:
 - `metadata.rs`: PyMammogramMetadata wrapper
 - `record.rs`: PyMammogramRecord wrapper
 - `selection.rs`: Python wrappers for selection functions (get_preferred_views_filtered, etc.)
+- `validation.rs`: Python wrappers for `validate_dicom()` and `validate_directory()`; returns the same report schema as `mammovalidate --format json`
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap
 - `report.rs`: Text formatting for CLI output
+
+**`dicom_files.rs`** - Shared non-recursive DICOM discovery helpers used by `mammoselect` and `mammovalidate`
 
 **`error.rs`** - Error types using thiserror
 
@@ -166,7 +221,9 @@ The codebase follows a clear separation of concerns:
 - `Default`: FFDM > SYNTH > TOMO > SFM - Prefers 2D images for general inference
 - `TomoFirst`: TOMO > FFDM > SYNTH > SFM - Maximizes use of 3D imaging when available
 
-MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) uses this to pick the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC).
+MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) first chooses one study, then picks the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC) within that study.
+
+**Single-Study Selection**: Preferred-view selection never mixes studies. After filters are applied, usable candidate records are grouped by `StudyInstanceUID`. Default selection chooses the most complete known study by true standard-view coverage first, MLO-like/CC-like candidate coverage second, and lowest `StudyInstanceUID` as the deterministic tie-break. When common-modality selection is required, completeness is scored within the best single modality group for each study. Default mode emits a warning when usable candidates span multiple study groups. Records missing `StudyInstanceUID` are singleton fallback groups in default mode and sort after known studies on equal completeness. `StudySelectionMode::StrictSingleStudy`, Python `strict=True`, and CLI `--strict` fail if usable candidates contain multiple studies or any missing `StudyInstanceUID`.
 
 **Fallback Hierarchy**: Laterality extraction attempts multiple DICOM tags in order:
 1. ImageLaterality
@@ -188,8 +245,17 @@ Hard filtering is used - records that don't pass filters are completely excluded
 Filtering flow:
 1. Load all DICOM files into MammogramRecord collection
 2. Apply FilterConfig to remove unwanted records via `apply_filters()`
-3. Run view selection algorithm (`get_preferred_views_with_order`) on filtered set
-4. Return best views from remaining candidates
+3. Choose one study from filtered usable candidates, or fail in strict study mode
+4. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
+5. Return best views from remaining candidates
+
+### Validation Architecture
+
+`mammovalidate` and the Python validation functions use the same Rust report model. File validation records critical errors, warnings, info messages, and check details. Directory and ZIP validation aggregate per-file reports and run `get_preferred_views_filtered()` on valid records to verify standard-view coverage.
+
+The default `Selection` profile is strict: it fails files with missing/invalid selection-critical tags such as `Modality`, `SOPInstanceUID`, `StudyInstanceUID`, `SeriesInstanceUID`, laterality, view position, dimensions, bit-depth fields, or `PixelData`. It warns about metadata that can cause default filtering or deprioritization, including `FOR PROCESSING`, secondary capture, non-standard views, spot/magnification views, implants, and optional manufacturer/model/spacing gaps.
+
+The `Extraction` profile is looser: it fails only when DICOM reading or `MammogramExtractor` metadata extraction fails. Selection-specific gaps are warnings or info.
 
 New metadata fields for filtering:
 - `is_secondary_capture`: Detected via SOP Class UID (checks if starts with "1.2.840.10008.5.1.4.1.1.7")
@@ -227,7 +293,7 @@ When adding features that affect metadata extraction, add corresponding unit tes
 
 ## Binary Locations
 
-Two CLI binaries are defined in core/Cargo.toml:
+Three CLI binaries are defined in core/Cargo.toml:
 
 **mammocat** - Metadata extraction from individual DICOM files
 ```toml
@@ -243,6 +309,14 @@ name = "mammoselect"
 path = "src/bin/mammoselect.rs"
 ```
 
+**mammovalidate** - Validation for files, directories, or ZIP archives
+```toml
+[[bin]]
+name = "mammovalidate"
+path = "src/bin/mammovalidate.rs"
+```
+
 After building, binaries are at:
 - `./target/release/mammocat` and `./target/release/mammoselect` (release)
-- `./target/debug/mammocat` and `./target/debug/mammoselect` (debug)
+- `./target/release/mammovalidate` (release)
+- `./target/debug/mammocat`, `./target/debug/mammoselect`, and `./target/debug/mammovalidate` (debug)

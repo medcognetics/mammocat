@@ -44,6 +44,13 @@ create_exception!(
     "Generic metadata extraction error"
 );
 
+create_exception!(
+    mammocat,
+    PySelectionError,
+    PyMammocatError,
+    "Preferred-view selection error"
+);
+
 /// Convert Rust MammocatError to appropriate Python exception
 pub fn convert_error(err: crate::error::MammocatError) -> PyErr {
     match err {
@@ -51,6 +58,7 @@ pub fn convert_error(err: crate::error::MammocatError) -> PyErr {
         crate::error::MammocatError::TagNotFound(msg) => PyTagNotFoundError::new_err(msg),
         crate::error::MammocatError::InvalidValue(msg) => PyInvalidValueError::new_err(msg),
         crate::error::MammocatError::ExtractionError(msg) => PyExtractionError::new_err(msg),
+        crate::error::MammocatError::SelectionError(msg) => PySelectionError::new_err(msg),
         crate::error::MammocatError::IoError(e) => {
             PyDicomError::new_err(format!("IO error: {}", e))
         }

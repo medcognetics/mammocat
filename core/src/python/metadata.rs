@@ -99,6 +99,24 @@ impl PyMammogramMetadata {
         option_string_to_py(py, self.inner.modality.clone())
     }
 
+    /// DICOM Transfer Syntax UID from file meta information
+    #[getter]
+    fn transfer_syntax_uid(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.transfer_syntax_uid.clone())
+    }
+
+    /// Human-readable DICOM transfer syntax name
+    #[getter]
+    fn transfer_syntax_name(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.transfer_syntax_name.clone())
+    }
+
+    /// Derived compression category from the transfer syntax
+    #[getter]
+    fn compression_type(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.compression_type.clone())
+    }
+
     /// Returns the mammogram view (laterality + view position)
     fn mammogram_view(&self) -> PyMammogramView {
         self.inner.mammogram_view().into()
@@ -131,6 +149,9 @@ impl PyMammogramMetadata {
         dict.set_item("number_of_frames", self.number_of_frames())?;
         dict.set_item("is_secondary_capture", self.is_secondary_capture())?;
         dict.set_item("modality", self.modality(py))?;
+        dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid(py))?;
+        dict.set_item("transfer_syntax_name", self.transfer_syntax_name(py))?;
+        dict.set_item("compression_type", self.compression_type(py))?;
         Ok(dict.unbind())
     }
 

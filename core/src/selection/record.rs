@@ -6,7 +6,7 @@ use crate::extraction::tags::{
 };
 use crate::extraction::{is_implant_displaced, is_magnified, is_spot_compression};
 use crate::types::PreferenceOrder;
-use dicom_object::{InMemDicomObject, OpenFileOptions};
+use dicom_object::{FileDicomObject, InMemDicomObject, OpenFileOptions};
 use std::cmp::Ordering;
 use std::path::PathBuf;
 
@@ -118,8 +118,7 @@ impl MammogramRecord {
         let dcm = OpenFileOptions::new()
             .read_until(PIXEL_DATA_TAG)
             .open_file(&path)?;
-        let transfer_syntax_uid = normalize_transfer_syntax_uid(dcm.meta().transfer_syntax());
-        Self::from_dicom_with_transfer_syntax(path, &dcm, transfer_syntax_uid)
+        Self::from_file_dicom(path, &dcm)
     }
 
     /// Creates a MammogramRecord from in-memory DICOM bytes.
@@ -144,8 +143,7 @@ impl MammogramRecord {
             .from_reader(cursor)?;
 
         let path = id.map(PathBuf::from).unwrap_or_default();
-        let transfer_syntax_uid = normalize_transfer_syntax_uid(dcm.meta().transfer_syntax());
-        Self::from_dicom_with_transfer_syntax(path, &dcm, transfer_syntax_uid)
+        Self::from_file_dicom(path, &dcm)
     }
 
     /// Creates a record from an already-opened DICOM object
@@ -172,8 +170,37 @@ impl MammogramRecord {
         transfer_syntax_uid: Option<String>,
     ) -> Result<Self> {
         let metadata = MammogramExtractor::extract(dcm)?;
-        let is_lossy_compressed = is_lossy_compressed(dcm, transfer_syntax_uid.as_deref());
+        let transfer_syntax_uid =
+            transfer_syntax_uid.or_else(|| metadata.transfer_syntax_uid.clone());
+        Self::from_dicom_with_metadata_and_transfer_syntax(path, dcm, metadata, transfer_syntax_uid)
+    }
 
+    /// Creates a record from an already-opened DICOM file object.
+    pub fn from_file_dicom(path: PathBuf, dcm: &FileDicomObject<InMemDicomObject>) -> Result<Self> {
+        let metadata = MammogramExtractor::extract_file(dcm)?;
+        let transfer_syntax_uid = metadata
+            .transfer_syntax_uid
+            .clone()
+            .or_else(|| normalize_transfer_syntax_uid(dcm.meta().transfer_syntax()));
+        Self::from_dicom_with_metadata_and_transfer_syntax(path, dcm, metadata, transfer_syntax_uid)
+    }
+
+    pub(crate) fn from_dicom_with_metadata(
+        path: PathBuf,
+        dcm: &InMemDicomObject,
+        metadata: MammogramMetadata,
+    ) -> Result<Self> {
+        let transfer_syntax_uid = metadata.transfer_syntax_uid.clone();
+        Self::from_dicom_with_metadata_and_transfer_syntax(path, dcm, metadata, transfer_syntax_uid)
+    }
+
+    fn from_dicom_with_metadata_and_transfer_syntax(
+        path: PathBuf,
+        dcm: &InMemDicomObject,
+        metadata: MammogramMetadata,
+        transfer_syntax_uid: Option<String>,
+    ) -> Result<Self> {
+        let is_lossy_compressed = is_lossy_compressed(dcm, transfer_syntax_uid.as_deref());
         Ok(Self {
             file_path: path,
             metadata,
@@ -441,6 +468,9 @@ mod tests {
                 number_of_frames: 1,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
+                transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
+                transfer_syntax_name: Some("Explicit VR Little Endian".to_string()),
+                compression_type: Some("uncompressed".to_string()),
             },
             rows,
             columns,

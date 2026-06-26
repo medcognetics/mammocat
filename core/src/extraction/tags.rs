@@ -10,10 +10,15 @@ pub const PHOTOMETRIC_INTERPRETATION: Tag = Tag(0x0028, 0x0004);
 // Image Geometry Tags
 pub const ROWS: Tag = Tag(0x0028, 0x0010);
 pub const COLUMNS: Tag = Tag(0x0028, 0x0011);
+pub const SAMPLES_PER_PIXEL: Tag = Tag(0x0028, 0x0002);
+pub const BITS_ALLOCATED: Tag = Tag(0x0028, 0x0100);
 pub const BITS_STORED: Tag = Tag(0x0028, 0x0101);
+pub const HIGH_BIT: Tag = Tag(0x0028, 0x0102);
+pub const PIXEL_REPRESENTATION: Tag = Tag(0x0028, 0x0103);
 pub const PIXEL_SPACING: Tag = Tag(0x0028, 0x0030);
-pub const IMAGER_PIXEL_SPACING: Tag = Tag(0x0018, 0x1164);
 pub const LOSSY_IMAGE_COMPRESSION: Tag = Tag(0x0028, 0x2110);
+pub const LOSSY_IMAGE_COMPRESSION_METHOD: Tag = Tag(0x0028, 0x2114);
+pub const IMAGER_PIXEL_SPACING: Tag = Tag(0x0018, 0x1164);
 
 // View Position Tags
 pub const VIEW_POSITION: Tag = Tag(0x0018, 0x5101);
