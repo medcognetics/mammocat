@@ -393,6 +393,28 @@ pub fn convert_dbt_study(
     })
 }
 
+/// Convert one validated old-format DBT series into a multiframe DICOM.
+///
+/// The `series` value should come from [`scan_dbt_study`]. This writes only the
+/// requested series and does not copy through unrelated study files.
+pub fn write_combined_dbt_series(
+    input: impl AsRef<Path>,
+    series: &DbtSeriesFinding,
+    output_path: impl AsRef<Path>,
+) -> Result<DbtConvertedSeries> {
+    let input = input.as_ref();
+    let output_path = output_path.as_ref();
+    ensure_can_write(output_path, false)?;
+    combine_series(input, series, output_path)?;
+    Ok(DbtConvertedSeries {
+        study_instance_uid: series.study_instance_uid.clone(),
+        series_instance_uid: series.series_instance_uid.clone(),
+        output_path: output_path.display().to_string(),
+        frame_count: series.frame_count,
+        source_paths: series.source_paths.clone(),
+    })
+}
+
 fn collect_files(input: &Path) -> Result<Vec<PathBuf>> {
     fn visit(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in fs::read_dir(path)? {
@@ -1115,4 +1137,240 @@ fn relative_string(path: &Path) -> String {
         .map(|part| part.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dicom_object::open_file;
+    use tempfile::tempdir;
+
+    const STUDY_UID: &str = "1.2.826.0.1.3680043.10.100.1";
+    const SERIES_UID: &str = "1.2.826.0.1.3680043.10.100.2";
+    const OTHER_SERIES_UID: &str = "1.2.826.0.1.3680043.10.100.3";
+    const ROWS: u16 = 2;
+    const COLUMNS: u16 = 2;
+    const BYTES_PER_FRAME: usize = ROWS as usize * COLUMNS as usize * 2;
+
+    #[test]
+    fn write_combined_dbt_series_converts_requested_series_in_mammocat_order() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("input");
+        let output = temp.path().join("output").join("combined.dcm");
+        fs::create_dir_all(input.join("study")).unwrap();
+
+        write_test_slice(
+            &input.join("study/z_instance_1.dcm"),
+            SERIES_UID,
+            1,
+            ROWS,
+            frame_bytes(1, BYTES_PER_FRAME),
+        );
+        write_test_slice(
+            &input.join("study/a_instance_2.dcm"),
+            SERIES_UID,
+            2,
+            ROWS,
+            frame_bytes(2, BYTES_PER_FRAME),
+        );
+        write_test_slice(
+            &input.join("study/unrelated_series.dcm"),
+            OTHER_SERIES_UID,
+            1,
+            ROWS,
+            frame_bytes(9, BYTES_PER_FRAME),
+        );
+
+        let scan = scan_dbt_study(&input, DbtScanOptions).unwrap();
+        let series = scan
+            .conversion_needed_series
+            .iter()
+            .find(|series| series.series_instance_uid == SERIES_UID)
+            .unwrap();
+        assert_eq!(
+            series.source_paths,
+            vec!["study/z_instance_1.dcm", "study/a_instance_2.dcm"]
+        );
+
+        let converted = write_combined_dbt_series(&input, series, &output).unwrap();
+
+        assert_eq!(converted.study_instance_uid, STUDY_UID);
+        assert_eq!(converted.series_instance_uid, SERIES_UID);
+        assert_eq!(converted.frame_count, 2);
+        assert_eq!(converted.source_paths, series.source_paths);
+        assert!(output.exists());
+        assert_eq!(fs::read_dir(output.parent().unwrap()).unwrap().count(), 1);
+
+        let combined = open_file(&output).unwrap();
+        assert_eq!(
+            get_string(&combined, tags::SOP_CLASS_UID).as_deref(),
+            Some(BREAST_TOMOSYNTHESIS_SOP_CLASS_UID)
+        );
+        assert_eq!(get_string(&combined, tags::MODALITY).as_deref(), Some("MG"));
+        assert_eq!(
+            get_string(&combined, tags::VIEW_POSITION).as_deref(),
+            Some("MLO")
+        );
+        assert_eq!(get_i32(&combined, tags::NUMBER_OF_FRAMES), Some(2));
+        assert_eq!(get_u16(&combined, tags::ROWS), Some(ROWS));
+        assert_eq!(get_u16(&combined, tags::COLUMNS), Some(COLUMNS));
+
+        let pixels = combined
+            .element(tags::PIXEL_DATA)
+            .unwrap()
+            .to_bytes()
+            .unwrap();
+        assert_eq!(&pixels[..BYTES_PER_FRAME], frame_bytes(1, BYTES_PER_FRAME));
+        assert_eq!(&pixels[BYTES_PER_FRAME..], frame_bytes(2, BYTES_PER_FRAME));
+    }
+
+    #[test]
+    fn write_combined_dbt_series_errors_on_malformed_pixel_data() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("input");
+        fs::create_dir_all(input.join("study")).unwrap();
+
+        write_test_slice(
+            &input.join("study/instance_1.dcm"),
+            SERIES_UID,
+            1,
+            ROWS,
+            frame_bytes(1, BYTES_PER_FRAME),
+        );
+        write_test_slice(
+            &input.join("study/instance_2.dcm"),
+            SERIES_UID,
+            2,
+            ROWS,
+            frame_bytes(2, BYTES_PER_FRAME - 2),
+        );
+
+        let scan = scan_dbt_study(&input, DbtScanOptions).unwrap();
+        let series = scan.conversion_needed_series.first().unwrap();
+        let error = write_combined_dbt_series(
+            &input,
+            series,
+            temp.path().join("output").join("combined.dcm"),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("PixelData length"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn scan_dbt_study_rejects_mixed_geometry_before_series_conversion() {
+        let temp = tempdir().unwrap();
+        let input = temp.path().join("input");
+        fs::create_dir_all(input.join("study")).unwrap();
+
+        write_test_slice(
+            &input.join("study/instance_1.dcm"),
+            SERIES_UID,
+            1,
+            ROWS,
+            frame_bytes(1, BYTES_PER_FRAME),
+        );
+        write_test_slice(
+            &input.join("study/instance_2.dcm"),
+            SERIES_UID,
+            2,
+            ROWS + 1,
+            frame_bytes(2, (ROWS as usize + 1) * COLUMNS as usize * 2),
+        );
+
+        let scan = scan_dbt_study(&input, DbtScanOptions).unwrap();
+
+        assert!(scan.conversion_needed_series.is_empty());
+        assert_eq!(scan.unsupported_series.len(), 1);
+        assert_eq!(
+            scan.unsupported_series[0].reason,
+            "mixed image dimensions or pixel attributes in DBT series"
+        );
+    }
+
+    fn write_test_slice(
+        path: &Path,
+        series_instance_uid: &str,
+        instance_number: i32,
+        rows: u16,
+        pixel_data: Vec<u8>,
+    ) {
+        let sop_instance_uid = format!("{series_instance_uid}.{instance_number}");
+        let mut obj = InMemDicomObject::new_empty();
+        put_str(&mut obj, tags::SOP_CLASS_UID, uids::CT_IMAGE_STORAGE);
+        put_str(&mut obj, tags::SOP_INSTANCE_UID, &sop_instance_uid);
+        put_str(&mut obj, tags::STUDY_INSTANCE_UID, STUDY_UID);
+        put_str(&mut obj, tags::SERIES_INSTANCE_UID, series_instance_uid);
+        put_str(&mut obj, tags::MODALITY, "CT");
+        put_str(&mut obj, tags::IMAGE_LATERALITY, "L");
+        put_str(&mut obj, tags::VIEW_POSITION, "MLO");
+        put_str(&mut obj, tags::SERIES_DESCRIPTION, "TOMO L MLO");
+        obj.put(DataElement::new(
+            tags::IMAGE_TYPE,
+            VR::CS,
+            PrimitiveValue::Strs(
+                vec![
+                    "DERIVED".to_string(),
+                    "PRIMARY".to_string(),
+                    "TOMO".to_string(),
+                ]
+                .into(),
+            ),
+        ));
+        obj.put(DataElement::new(
+            tags::INSTANCE_NUMBER,
+            VR::IS,
+            instance_number.to_string(),
+        ));
+        obj.put(DataElement::new(
+            tags::IMAGE_POSITION_PATIENT,
+            VR::DS,
+            PrimitiveValue::Strs(
+                vec![
+                    "0".to_string(),
+                    "0".to_string(),
+                    instance_number.to_string(),
+                ]
+                .into(),
+            ),
+        ));
+        put_u16(&mut obj, tags::ROWS, rows);
+        put_u16(&mut obj, tags::COLUMNS, COLUMNS);
+        put_u16(&mut obj, tags::SAMPLES_PER_PIXEL, 1);
+        put_str(&mut obj, tags::PHOTOMETRIC_INTERPRETATION, "MONOCHROME2");
+        put_u16(&mut obj, tags::BITS_ALLOCATED, 16);
+        put_u16(&mut obj, tags::BITS_STORED, 12);
+        put_u16(&mut obj, tags::HIGH_BIT, 11);
+        put_u16(&mut obj, tags::PIXEL_REPRESENTATION, 0);
+        obj.put(DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OW,
+            PrimitiveValue::from(pixel_data),
+        ));
+
+        let file_obj = obj
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .transfer_syntax(uids::EXPLICIT_VR_LITTLE_ENDIAN)
+                    .media_storage_sop_class_uid(uids::CT_IMAGE_STORAGE)
+                    .media_storage_sop_instance_uid(sop_instance_uid),
+            )
+            .unwrap();
+        file_obj.write_to_file(path).unwrap();
+    }
+
+    fn put_str(obj: &mut InMemDicomObject, tag: Tag, value: &str) {
+        obj.put(DataElement::new(tag, VR::CS, PrimitiveValue::from(value)));
+    }
+
+    fn put_u16(obj: &mut InMemDicomObject, tag: Tag, value: u16) {
+        obj.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
+    }
+
+    fn frame_bytes(seed: u8, length: usize) -> Vec<u8> {
+        vec![seed; length]
+    }
 }
