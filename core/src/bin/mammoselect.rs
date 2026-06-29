@@ -5,10 +5,13 @@ use mammocat_core::{
     MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
     PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::process;
+
+#[path = "shared/filter_config.rs"]
+mod filter_config;
 
 /// CLI tool for selecting preferred mammogram views from a directory
 #[derive(Parser, Debug)]
@@ -217,30 +220,17 @@ fn setup_logging(verbose: bool) {
 
 /// Builds FilterConfig from CLI arguments
 fn build_filter_config(cli: &Cli) -> FilterConfig {
-    let mut config = FilterConfig::default();
-
-    // Handle allowed types (whitelist)
-    if let Some(type_args) = &cli.allowed_types {
-        let allowed: HashSet<MammogramType> = type_args
-            .iter()
-            .map(|arg| MammogramType::from(arg.clone()))
-            .collect();
-        config = config.with_allowed_types(allowed);
-    }
-
-    // Handle exclude flags
-    config = config.exclude_implants(cli.exclude_implants);
-    config = config.exclude_non_standard_views(cli.only_standard_views);
-
-    // Handle include flags (inverted logic)
-    config = config.exclude_for_processing(!cli.include_for_processing);
-    config = config.exclude_secondary_capture(!cli.include_secondary_capture);
-    config = config.exclude_non_mg_modality(!cli.include_non_mg);
-    config = config.exclude_lossy_compressed(cli.exclude_lossy);
-    config = config.deprioritize_lossy_compressed(!cli.no_deprioritize_lossy);
-    config = config.require_common_modality(cli.require_common_modality);
-
-    config
+    filter_config::build_filter_config(filter_config::FilterConfigArgs {
+        allowed_types: cli.allowed_types.as_deref(),
+        exclude_implants: cli.exclude_implants,
+        only_standard_views: cli.only_standard_views,
+        include_for_processing: cli.include_for_processing,
+        include_secondary_capture: cli.include_secondary_capture,
+        include_non_mg: cli.include_non_mg,
+        require_common_modality: cli.require_common_modality,
+        exclude_lossy_compressed: cli.exclude_lossy,
+        deprioritize_lossy_compressed: !cli.no_deprioritize_lossy,
+    })
 }
 
 fn output_selected_lossy_warnings(
