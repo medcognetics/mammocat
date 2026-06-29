@@ -212,10 +212,7 @@ pub fn scan_dbt_study(input: impl AsRef<Path>, _options: DbtScanOptions) -> Resu
     for path in files {
         match read_dicom_info(input, &path) {
             Ok(info) => dicom_infos.push(info),
-            Err(reason) => skipped_files.push(DbtSkippedFile {
-                path: path.display().to_string(),
-                reason,
-            }),
+            Err(reason) => skipped_files.push(skipped_file(&path, reason)),
         }
     }
 
@@ -233,12 +230,10 @@ pub fn scan_dbt_study(input: impl AsRef<Path>, _options: DbtScanOptions) -> Resu
                 })
                 .or_default()
                 .push(info),
-            _ => unsupported_series.push(DbtUnsupportedSeries {
-                study_instance_uid: info.study_instance_uid.clone(),
-                series_instance_uid: info.series_instance_uid.clone(),
-                source_paths: vec![relative_string(&info.relative_path)],
-                reason: "missing StudyInstanceUID or SeriesInstanceUID".to_string(),
-            }),
+            _ => unsupported_series.push(unsupported_file_series(
+                &info,
+                "missing StudyInstanceUID or SeriesInstanceUID",
+            )),
         }
     }
 
@@ -263,15 +258,11 @@ pub fn scan_dbt_study(input: impl AsRef<Path>, _options: DbtScanOptions) -> Resu
         }
 
         if !has_dbt_evidence(&items) {
-            unsupported_series.push(DbtUnsupportedSeries {
-                study_instance_uid: Some(key.study_instance_uid),
-                series_instance_uid: Some(key.series_instance_uid),
-                source_paths: items
-                    .iter()
-                    .map(|i| relative_string(&i.relative_path))
-                    .collect(),
-                reason: "multi-file series has no DBT evidence".to_string(),
-            });
+            unsupported_series.push(unsupported_series_for_items(
+                &key,
+                "multi-file series has no DBT evidence",
+                &items,
+            ));
             continue;
         }
 
@@ -326,34 +317,12 @@ pub fn convert_dbt_study(
         )));
     }
 
-    let mut converted_series = Vec::new();
-    let mut planned_copies = Vec::new();
-
-    for series in &scan.conversion_needed_series {
-        let output_path = series_output_path(output, series);
-        converted_series.push(DbtConvertedSeries {
-            study_instance_uid: series.study_instance_uid.clone(),
-            series_instance_uid: series.series_instance_uid.clone(),
-            output_path: output_path.display().to_string(),
-            frame_count: series.frame_count,
-            source_paths: series.source_paths.clone(),
-        });
-    }
-
-    for file in &scan.copy_through_files {
-        planned_copies.push(plan_copy_file(
-            input,
-            output,
-            &file.source_path,
-            &file.relative_path,
-        ));
-    }
-
-    for series in &scan.already_multiframe_dbt_series {
-        for source in &series.source_paths {
-            planned_copies.push(plan_copy_file(input, output, source, source));
-        }
-    }
+    let converted_series = scan
+        .conversion_needed_series
+        .iter()
+        .map(|series| converted_series_report(output, series))
+        .collect::<Vec<_>>();
+    let planned_copies = plan_copy_files(input, output, &scan);
 
     let copied_files = planned_copies
         .iter()
@@ -435,6 +404,13 @@ fn collect_files(input: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn skipped_file(path: &Path, reason: String) -> DbtSkippedFile {
+    DbtSkippedFile {
+        path: path.display().to_string(),
+        reason,
+    }
+}
+
 fn read_dicom_info(input: &Path, path: &Path) -> std::result::Result<DicomFileInfo, String> {
     let dcm = OpenFileOptions::new()
         .read_until(PIXEL_DATA_TAG)
@@ -502,44 +478,34 @@ fn validate_old_format_dbt_series(
     key: &SeriesKey,
     mut items: Vec<DicomFileInfo>,
 ) -> std::result::Result<DbtSeriesFinding, DbtUnsupportedSeries> {
-    let source_paths = |items: &[DicomFileInfo]| {
-        items
-            .iter()
-            .map(|i| relative_string(&i.relative_path))
-            .collect::<Vec<_>>()
-    };
-    let unsupported = |reason: String, paths: Vec<String>| DbtUnsupportedSeries {
-        study_instance_uid: Some(key.study_instance_uid.clone()),
-        series_instance_uid: Some(key.series_instance_uid.clone()),
-        source_paths: paths,
-        reason,
-    };
-
     for item in &items {
         let modality = item.modality.as_deref().unwrap_or("");
         if !modality.eq_ignore_ascii_case("CT") && !modality.eq_ignore_ascii_case("MG") {
-            return Err(unsupported(
+            return Err(unsupported_series_for_items(
+                key,
                 format!(
                     "unsupported source modality {}; expected CT or MG",
                     modality
                 ),
-                source_paths(&items),
+                &items,
             ));
         }
 
         let frames = item.number_of_frames.unwrap_or(1);
         if frames != 1 {
-            return Err(unsupported(
+            return Err(unsupported_series_for_items(
+                key,
                 "old-format DBT slices must be single-frame files".to_string(),
-                source_paths(&items),
+                &items,
             ));
         }
 
         let transfer_syntax = item.transfer_syntax_uid.as_deref().unwrap_or("");
         if !SUPPORTED_TRANSFER_SYNTAXES.contains(&transfer_syntax) {
-            return Err(unsupported(
+            return Err(unsupported_series_for_items(
+                key,
                 format!("unsupported transfer syntax {}", transfer_syntax),
-                source_paths(&items),
+                &items,
             ));
         }
     }
@@ -547,9 +513,10 @@ fn validate_old_format_dbt_series(
     let expected_geometry = match geometry(&items[0]) {
         Some(expected_geometry) => expected_geometry,
         None => {
-            return Err(unsupported(
+            return Err(unsupported_series_for_items(
+                key,
                 "missing required pixel geometry tags".to_string(),
-                source_paths(&items),
+                &items,
             ));
         }
     };
@@ -558,34 +525,32 @@ fn validate_old_format_dbt_series(
         .skip(1)
         .any(|item| geometry(item) != Some(expected_geometry.clone()))
     {
-        return Err(unsupported(
+        return Err(unsupported_series_for_items(
+            key,
             "mixed image dimensions or pixel attributes in DBT series".to_string(),
-            source_paths(&items),
+            &items,
         ));
     }
 
     let laterality = consistent_code(items.iter().filter_map(effective_laterality), "laterality")
-        .map_err(|reason| unsupported(reason, source_paths(&items)))?;
+        .map_err(|reason| unsupported_series_for_items(key, reason, &items))?;
     let view_position = consistent_view_position(&items)
-        .map_err(|reason| unsupported(reason, source_paths(&items)))?;
+        .map_err(|reason| unsupported_series_for_items(key, reason, &items))?;
 
-    sort_frames(&mut items).map_err(|reason| unsupported(reason, source_paths(&items)))?;
+    sort_frames(&mut items).map_err(|reason| unsupported_series_for_items(key, reason, &items))?;
 
     let source_modality = consistent_code(
         items.iter().filter_map(|item| item.modality.as_deref()),
         "modality",
     )
-    .map_err(|reason| unsupported(reason, source_paths(&items)))?;
+    .map_err(|reason| unsupported_series_for_items(key, reason, &items))?;
     let relative_parent = common_relative_parent(&items);
     let series_description = items[0].series_description.clone();
 
     Ok(DbtSeriesFinding {
         study_instance_uid: key.study_instance_uid.clone(),
         series_instance_uid: key.series_instance_uid.clone(),
-        source_paths: items
-            .iter()
-            .map(|i| relative_string(&i.relative_path))
-            .collect(),
+        source_paths: source_paths(&items),
         relative_parent,
         frame_count: items.len(),
         laterality,
@@ -593,6 +558,46 @@ fn validate_old_format_dbt_series(
         source_modality,
         series_description,
     })
+}
+
+fn unsupported_file_series(
+    info: &DicomFileInfo,
+    reason: impl Into<String>,
+) -> DbtUnsupportedSeries {
+    DbtUnsupportedSeries {
+        study_instance_uid: info.study_instance_uid.clone(),
+        series_instance_uid: info.series_instance_uid.clone(),
+        source_paths: vec![relative_string(&info.relative_path)],
+        reason: reason.into(),
+    }
+}
+
+fn unsupported_series_for_items(
+    key: &SeriesKey,
+    reason: impl Into<String>,
+    items: &[DicomFileInfo],
+) -> DbtUnsupportedSeries {
+    unsupported_series(key, reason, source_paths(items))
+}
+
+fn unsupported_series(
+    key: &SeriesKey,
+    reason: impl Into<String>,
+    source_paths: Vec<String>,
+) -> DbtUnsupportedSeries {
+    DbtUnsupportedSeries {
+        study_instance_uid: Some(key.study_instance_uid.clone()),
+        series_instance_uid: Some(key.series_instance_uid.clone()),
+        source_paths,
+        reason: reason.into(),
+    }
+}
+
+fn source_paths(items: &[DicomFileInfo]) -> Vec<String> {
+    items
+        .iter()
+        .map(|info| relative_string(&info.relative_path))
+        .collect()
 }
 
 fn validate_contiguous_instance_numbers(
@@ -653,10 +658,7 @@ fn series_finding_from_multiframe_group(
     DbtSeriesFinding {
         study_instance_uid: key.study_instance_uid.clone(),
         series_instance_uid: key.series_instance_uid.clone(),
-        source_paths: items
-            .iter()
-            .map(|i| relative_string(&i.relative_path))
-            .collect(),
+        source_paths: source_paths(items),
         relative_parent: common_relative_parent(items),
         frame_count: items
             .iter()
@@ -820,6 +822,36 @@ fn series_output_path(output_root: &Path, series: &DbtSeriesFinding) -> PathBuf 
     } else {
         output_root.join(&series.relative_parent).join(file_name)
     }
+}
+
+fn converted_series_report(output_root: &Path, series: &DbtSeriesFinding) -> DbtConvertedSeries {
+    DbtConvertedSeries {
+        study_instance_uid: series.study_instance_uid.clone(),
+        series_instance_uid: series.series_instance_uid.clone(),
+        output_path: series_output_path(output_root, series)
+            .display()
+            .to_string(),
+        frame_count: series.frame_count,
+        source_paths: series.source_paths.clone(),
+    }
+}
+
+fn plan_copy_files(input: &Path, output: &Path, scan: &DbtScanReport) -> Vec<PlannedCopy> {
+    let copy_through = scan
+        .copy_through_files
+        .iter()
+        .map(|file| plan_copy_file(input, output, &file.source_path, &file.relative_path));
+    let already_multiframe = scan
+        .already_multiframe_dbt_series
+        .iter()
+        .flat_map(|series| {
+            series
+                .source_paths
+                .iter()
+                .map(|source| plan_copy_file(input, output, source, source))
+        });
+
+    copy_through.chain(already_multiframe).collect()
 }
 
 fn plan_copy_file(

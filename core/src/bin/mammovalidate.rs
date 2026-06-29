@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process;
@@ -6,10 +5,12 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use mammocat_core::{
-    validate_path, CheckStatus, FilterConfig, MammogramType, PreferenceOrder, Severity,
-    ValidationOptions, ValidationProfile, ValidationReport, ValidationRuntimeError,
-    ValidationStatus,
+    validate_path, CheckStatus, MammogramType, PreferenceOrder, Severity, ValidationOptions,
+    ValidationProfile, ValidationReport, ValidationRuntimeError, ValidationStatus,
 };
+
+#[path = "shared/filter_config.rs"]
+mod filter_config;
 
 const TOOL_NAME: &str = "mammovalidate";
 
@@ -219,22 +220,19 @@ fn run(args: Args, stdout: &mut impl Write) -> Result<i32, Error> {
 }
 
 fn build_validation_options(args: &Args) -> ValidationOptions {
-    let mut filter_config = FilterConfig::default();
-    if let Some(type_args) = &args.allowed_types {
-        let allowed_types: HashSet<MammogramType> =
-            type_args.iter().copied().map(MammogramType::from).collect();
-        filter_config = filter_config.with_allowed_types(allowed_types);
-    }
-    filter_config = filter_config.exclude_implants(args.exclude_implants);
-    filter_config = filter_config.exclude_non_standard_views(args.only_standard_views);
-    filter_config = filter_config.exclude_for_processing(!args.include_for_processing);
-    filter_config = filter_config.exclude_secondary_capture(!args.include_secondary_capture);
-    filter_config = filter_config.exclude_non_mg_modality(!args.include_non_mg);
-    filter_config = filter_config.require_common_modality(args.require_common_modality);
-
     ValidationOptions {
         profile: args.profile.into(),
-        filter_config,
+        filter_config: filter_config::build_filter_config(filter_config::FilterConfigArgs {
+            allowed_types: args.allowed_types.as_deref(),
+            exclude_implants: args.exclude_implants,
+            only_standard_views: args.only_standard_views,
+            include_for_processing: args.include_for_processing,
+            include_secondary_capture: args.include_secondary_capture,
+            include_non_mg: args.include_non_mg,
+            require_common_modality: args.require_common_modality,
+            exclude_lossy_compressed: false,
+            deprioritize_lossy_compressed: true,
+        }),
         preference_order: args.preference.into(),
     }
 }

@@ -144,6 +144,70 @@ impl<'a> CheckDetails<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RecordedValidation {
+    message: ValidationMessage,
+    check: ValidationCheck,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecordDetails {
+    path: Option<String>,
+    tag: Option<String>,
+    tag_name: Option<String>,
+    value: Option<String>,
+}
+
+fn recorded_validation(
+    kind: MessageKind,
+    code: &str,
+    name: &str,
+    message: String,
+    details: RecordDetails,
+) -> RecordedValidation {
+    let (severity, status) = kind.metadata();
+    RecordedValidation {
+        message: ValidationMessage {
+            code: code.to_string(),
+            message: message.clone(),
+            severity,
+            path: details.path.clone(),
+            tag: details.tag.clone(),
+            tag_name: details.tag_name.clone(),
+            value: details.value.clone(),
+        },
+        check: ValidationCheck {
+            name: name.to_string(),
+            status,
+            severity,
+            message,
+            path: details.path,
+            tag: details.tag,
+            tag_name: details.tag_name,
+            value: details.value,
+        },
+    }
+}
+
+fn passed_validation_check(
+    name: &str,
+    message: String,
+    path: Option<String>,
+    tag: Option<Tag>,
+    value: Option<String>,
+) -> ValidationCheck {
+    ValidationCheck {
+        name: name.to_string(),
+        status: CheckStatus::Pass,
+        severity: Severity::Info,
+        message,
+        path,
+        tag: tag.map(format_tag),
+        tag_name: Some(name.to_string()),
+        value,
+    }
+}
+
 /// Runtime error that prevents report construction.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationRuntimeError {
@@ -452,32 +516,24 @@ impl FileValidationReport {
         message: String,
         details: CheckDetails<'_>,
     ) {
-        let (severity, status) = kind.metadata();
-        let path = Some(self.file.path.clone());
-        let validation_message = ValidationMessage {
-            code: code.to_string(),
-            message: message.clone(),
-            severity,
-            path: path.clone(),
-            tag: details.tag.map(format_tag),
-            tag_name: details.tag_name.map(ToOwned::to_owned),
-            value: details.value.clone(),
-        };
-        match kind {
-            MessageKind::Error => self.errors.push(validation_message),
-            MessageKind::Warning => self.warnings.push(validation_message),
-            MessageKind::Info => self.info.push(validation_message),
-        }
-        self.checks.push(ValidationCheck {
-            name: name.to_string(),
-            status,
-            severity,
+        let recorded = recorded_validation(
+            kind,
+            code,
+            name,
             message,
-            path,
-            tag: details.tag.map(format_tag),
-            tag_name: details.tag_name.map(ToOwned::to_owned),
-            value: details.value,
-        });
+            RecordDetails {
+                path: Some(self.file.path.clone()),
+                tag: details.tag.map(format_tag),
+                tag_name: details.tag_name.map(ToOwned::to_owned),
+                value: details.value,
+            },
+        );
+        match kind {
+            MessageKind::Error => self.errors.push(recorded.message),
+            MessageKind::Warning => self.warnings.push(recorded.message),
+            MessageKind::Info => self.info.push(recorded.message),
+        }
+        self.checks.push(recorded.check);
     }
 
     fn record_plain(&mut self, kind: MessageKind, code: &str, name: &str, message: String) {
@@ -521,16 +577,13 @@ impl FileValidationReport {
     }
 
     fn pass(&mut self, name: &str, message: String, tag: Option<Tag>, value: Option<String>) {
-        self.checks.push(ValidationCheck {
-            name: name.to_string(),
-            status: CheckStatus::Pass,
-            severity: Severity::Info,
+        self.checks.push(passed_validation_check(
+            name,
             message,
-            path: Some(self.file.path.clone()),
-            tag: tag.map(format_tag),
-            tag_name: Some(name.to_string()),
+            Some(self.file.path.clone()),
+            tag,
             value,
-        });
+        ));
     }
 }
 
@@ -596,31 +649,23 @@ impl ValidationReport {
         message: String,
         value: Option<String>,
     ) {
-        let (severity, status) = kind.metadata();
-        let validation_message = ValidationMessage {
-            code: code.to_string(),
-            message: message.clone(),
-            severity,
-            path: Some(self.source.path.clone()),
-            tag: None,
-            tag_name: None,
-            value: value.clone(),
-        };
-        match kind {
-            MessageKind::Error => self.errors.push(validation_message),
-            MessageKind::Warning => self.warnings.push(validation_message),
-            MessageKind::Info => self.info.push(validation_message),
-        }
-        self.checks.push(ValidationCheck {
-            name: name.to_string(),
-            status,
-            severity,
+        let recorded = recorded_validation(
+            kind,
+            code,
+            name,
             message,
-            path: Some(self.source.path.clone()),
-            tag: None,
-            tag_name: None,
-            value,
-        });
+            RecordDetails {
+                path: Some(self.source.path.clone()),
+                value,
+                ..RecordDetails::default()
+            },
+        );
+        match kind {
+            MessageKind::Error => self.errors.push(recorded.message),
+            MessageKind::Warning => self.warnings.push(recorded.message),
+            MessageKind::Info => self.info.push(recorded.message),
+        }
+        self.checks.push(recorded.check);
     }
 
     fn finalize(&mut self) {
