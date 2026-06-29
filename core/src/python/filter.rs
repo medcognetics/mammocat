@@ -22,8 +22,11 @@ impl PyFilterConfig {
         exclude_for_processing=true,
         exclude_secondary_capture=true,
         exclude_non_mg_modality=true,
-        require_common_modality=false
+        require_common_modality=false,
+        exclude_lossy_compressed=false,
+        deprioritize_lossy_compressed=true
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         allowed_types: Option<Vec<PyMammogramType>>,
         exclude_implants: bool,
@@ -32,6 +35,8 @@ impl PyFilterConfig {
         exclude_secondary_capture: bool,
         exclude_non_mg_modality: bool,
         require_common_modality: bool,
+        exclude_lossy_compressed: bool,
+        deprioritize_lossy_compressed: bool,
     ) -> Self {
         let rust_allowed =
             allowed_types.map(|types| types.into_iter().map(|t| t.inner).collect::<HashSet<_>>());
@@ -44,6 +49,8 @@ impl PyFilterConfig {
                 exclude_for_processing,
                 exclude_secondary_capture,
                 exclude_non_mg_modality,
+                exclude_lossy_compressed,
+                deprioritize_lossy_compressed,
                 require_common_modality,
             },
         }
@@ -99,6 +106,16 @@ impl PyFilterConfig {
     #[getter]
     fn require_common_modality(&self) -> bool {
         self.inner.require_common_modality
+    }
+
+    #[getter]
+    fn exclude_lossy_compressed(&self) -> bool {
+        self.inner.exclude_lossy_compressed
+    }
+
+    #[getter]
+    fn deprioritize_lossy_compressed(&self) -> bool {
+        self.inner.deprioritize_lossy_compressed
     }
 
     fn __repr__(&self) -> String {

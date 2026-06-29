@@ -125,6 +125,16 @@ class TestMammogramRecord:
         assert isinstance(record.is_implant_displaced, bool)
         assert isinstance(record.is_spot_compression, bool)
         assert isinstance(record.is_magnified, bool)
+        assert isinstance(record.is_lossy_compressed, bool)
+        assert isinstance(record.transfer_syntax_uid, str)
+        assert not record.is_lossy_compressed
+
+    def test_record_lossy_properties_from_file(self, lossy_dicom):
+        """Test lossy compression property extraction from a DICOM file."""
+        record = MammogramRecord.from_file(lossy_dicom)
+
+        assert record.is_lossy_compressed
+        assert record.transfer_syntax_uid is not None
 
     def test_image_area(self, sample_dicom):
         """Test image_area calculation."""
@@ -198,6 +208,18 @@ class TestMammogramRecordFromBytes:
         assert record_bytes.is_implant_displaced == record_file.is_implant_displaced
         assert record_bytes.is_spot_compression == record_file.is_spot_compression
         assert record_bytes.is_magnified == record_file.is_magnified
+        assert record_bytes.is_lossy_compressed == record_file.is_lossy_compressed
+        assert record_bytes.transfer_syntax_uid == record_file.transfer_syntax_uid
+
+    def test_from_bytes_lossy_properties(self, lossy_dicom):
+        """Test lossy compression property extraction from in-memory DICOM bytes."""
+        with Path(lossy_dicom).open("rb") as f:
+            data = f.read()
+
+        record = MammogramRecord.from_bytes(data, id="lossy_upload")
+
+        assert record.is_lossy_compressed
+        assert record.transfer_syntax_uid is not None
 
     def test_from_bytes_invalid_data(self):
         """Test from_bytes with invalid DICOM data."""
@@ -398,6 +420,18 @@ class TestFilterConfig:
         assert config.exclude_secondary_capture is True
         assert config.exclude_non_mg_modality is True
         assert config.require_common_modality is False
+        assert config.exclude_lossy_compressed is False
+        assert config.deprioritize_lossy_compressed is True
+
+    def test_lossy_compression_options(self):
+        """Test FilterConfig lossy compression options."""
+        config = FilterConfig(
+            exclude_lossy_compressed=True,
+            deprioritize_lossy_compressed=False,
+        )
+
+        assert config.exclude_lossy_compressed is True
+        assert config.deprioritize_lossy_compressed is False
 
     def test_get_preferred_views_filtered_empty(self):
         """Test get_preferred_views_filtered with empty list."""
