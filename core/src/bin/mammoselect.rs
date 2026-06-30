@@ -457,7 +457,7 @@ impl<'a> fmt::Display for TextReport<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mammocat_core::{ImageType, Laterality, MammogramMetadata, ViewPosition};
+    use mammocat_core::{DbtObjectKind, ImageType, Laterality, MammogramMetadata, ViewPosition};
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
@@ -487,6 +487,7 @@ mod tests {
             file_path: PathBuf::from(format!("{study_uid}_{laterality:?}_{view_position:?}.dcm")),
             metadata: MammogramMetadata {
                 mammogram_type: mammo_type,
+                dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position,
                 image_type: ImageType::new(
@@ -503,6 +504,8 @@ mod tests {
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
+                concatenation_uid: None,
+                sop_instance_uid_of_concatenation_source: None,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
                 transfer_syntax_uid: Some(transfer_syntax_uid.to_string()),
@@ -523,6 +526,14 @@ mod tests {
             is_implant_displaced: false,
             is_spot_compression: false,
             is_magnified: false,
+            series_instance_uid: Some(format!("{study_uid}.series")),
+        }
+    }
+
+    fn default_dbt_object_kind(mammo_type: MammogramType) -> DbtObjectKind {
+        match mammo_type {
+            MammogramType::Tomo => DbtObjectKind::Unknown,
+            _ => DbtObjectKind::None,
         }
     }
 

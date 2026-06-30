@@ -354,10 +354,11 @@ fn render_text_report(
                 .file_path
                 .as_ref()
                 .map(|path| {
+                    let mammogram_type = view.mammogram_type.as_deref().unwrap_or("unknown");
+                    let dbt_object_kind = view.dbt_object_kind.as_deref().unwrap_or("unknown");
                     format!(
-                        "{} ({})",
-                        path,
-                        view.mammogram_type.as_deref().unwrap_or("unknown")
+                        "{} (type={}, dbt_object_kind={})",
+                        path, mammogram_type, dbt_object_kind
                     )
                 })
                 .unwrap_or_else(|| "missing".to_string());

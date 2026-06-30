@@ -5,16 +5,19 @@ from pathlib import Path
 import pytest
 
 from mammocat import (
+    DbtObjectKind,
     DicomError,
     FilterConfig,
     MammogramExtractor,
     MammogramRecord,
+    MammogramType,
     PreferenceOrder,
     SelectionError,
     get_preferred_views,
     get_preferred_views_filtered,
     get_preferred_views_with_order,
 )
+from tests.conftest import create_old_format_dbt_slice
 
 
 def _write_test_dicom(
@@ -60,6 +63,8 @@ class TestMammogramExtractor:
         assert isinstance(metadata.is_magnified, bool)
         assert isinstance(metadata.is_implant_displaced, bool)
         assert isinstance(metadata.number_of_frames, int)
+        assert metadata.concatenation_uid is None
+        assert metadata.sop_instance_uid_of_concatenation_source is None
         assert metadata.transfer_syntax_uid == "1.2.840.10008.1.2.1"
         assert metadata.transfer_syntax_name == "Explicit VR Little Endian"
         assert metadata.compression_type == "uncompressed"
@@ -101,9 +106,49 @@ class TestMammogramExtractor:
         assert "laterality" in d
         assert "view_position" in d
         assert "number_of_frames" in d
+        assert "dbt_object_kind" in d
+        assert "concatenation_uid" in d
+        assert "sop_instance_uid_of_concatenation_source" in d
         assert d["transfer_syntax_uid"] == "1.2.840.10008.1.2.1"
         assert d["transfer_syntax_name"] == "Explicit VR Little Endian"
         assert d["compression_type"] == "uncompressed"
+
+    def test_concat_metadata_to_dict(self, fixtures_dir, mammogram_dicom_factory):
+        """Test concat identifiers are exposed in metadata and to_dict."""
+        dicom_path = fixtures_dir / "concat_metadata.dcm"
+        ds = mammogram_dicom_factory(mammogram_type="FFDM")
+        ds.ConcatenationUID = "1.2.826.0.1.100"
+        ds.SOPInstanceUIDOfConcatenationSource = "1.2.826.0.1.101"
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+        metadata_dict = metadata.to_dict()
+
+        assert metadata.concatenation_uid == "1.2.826.0.1.100"
+        assert metadata.sop_instance_uid_of_concatenation_source == "1.2.826.0.1.101"
+        assert metadata_dict["concatenation_uid"] == "1.2.826.0.1.100"
+        assert metadata_dict["sop_instance_uid_of_concatenation_source"] == "1.2.826.0.1.101"
+
+    def test_single_frame_tomo_slice_metadata(self, fixtures_dir):
+        """Test single-frame DBT slices are TOMO with DBT slice kind."""
+        dicom_path = fixtures_dir / "dbt_slice.dcm"
+        ds = create_old_format_dbt_slice(
+            sop_uid="1.2.826.0.1.3680043.10.543.9.1",
+            instance_number=1,
+            laterality="R",
+            view="CC",
+            modality="MG",
+        )
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+        metadata_dict = metadata.to_dict()
+
+        assert metadata.mammogram_type == MammogramType.TOMO
+        assert metadata.dbt_object_kind == DbtObjectKind.SLICE
+        assert not metadata.is_2d()
+        assert metadata_dict["mammogram_type"] == "tomo"
+        assert metadata_dict["dbt_object_kind"] == "slice"
 
 
 class TestMammogramRecord:
@@ -122,6 +167,7 @@ class TestMammogramRecord:
         # Test all properties are accessible
         assert isinstance(record.file_path, str)
         assert record.metadata is not None
+        assert isinstance(record.series_instance_uid, str)
         assert isinstance(record.is_implant_displaced, bool)
         assert isinstance(record.is_spot_compression, bool)
         assert isinstance(record.is_magnified, bool)

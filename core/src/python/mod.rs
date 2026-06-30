@@ -58,6 +58,7 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Register enum classes
     m.add_class::<PyMammogramType>()?;
+    m.add_class::<PyDbtObjectKind>()?;
     m.add_class::<PyLaterality>()?;
     m.add_class::<PyViewPosition>()?;
     m.add_class::<PyPreferenceOrder>()?;

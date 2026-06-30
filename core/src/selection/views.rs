@@ -1,10 +1,14 @@
 use crate::error::{MammocatError, Result};
 use crate::selection::record::MammogramRecord;
-use crate::types::{FilterConfig, MammogramView, PreferenceOrder, STANDARD_MAMMO_VIEWS};
+use crate::types::{
+    DbtObjectKind, FilterConfig, Laterality, MammogramType, MammogramView, PreferenceOrder,
+    ViewPosition, STANDARD_MAMMO_VIEWS,
+};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const MIXED_STUDY_WARNING_PREFIX: &str = "mixed study input detected";
+const SPLIT_SLICE_SERIES_COUNT_THRESHOLD: usize = 12;
 
 /// Study handling policy for preferred-view selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +110,10 @@ pub fn get_preferred_views_with_order_and_warnings(
     records: &[MammogramRecord],
     preference_order: PreferenceOrder,
 ) -> PreferredViewSelectionWithWarnings {
-    let selected_study = select_study_records(records, StudySelectionMode::MostComplete, false)
-        .expect("most-complete study selection should not fail");
+    let refined_records = refine_dbt_object_classification(records);
+    let selected_study =
+        select_study_records(&refined_records, StudySelectionMode::MostComplete, false)
+            .expect("most-complete study selection should not fail");
     let selection =
         select_preferred_views_for_records(&selected_study.records, preference_order, true);
     (selection, selected_study.warnings)
@@ -232,7 +238,8 @@ pub fn get_preferred_views_filtered_with_study_mode_and_warnings(
     preference_order: PreferenceOrder,
     study_selection_mode: StudySelectionMode,
 ) -> Result<PreferredViewSelectionWithWarnings> {
-    let filtered_records = apply_filters(records, filter_config);
+    let refined_records = refine_dbt_object_classification(records);
+    let filtered_records = apply_filters(&refined_records, filter_config);
     let selected_study = select_study_records(
         &filtered_records,
         study_selection_mode,
@@ -259,6 +266,258 @@ pub fn get_preferred_views_filtered_with_study_mode_and_warnings(
     };
 
     Ok((selection, selected_study.warnings))
+}
+
+/// Refines ambiguous single-file DBT classifications using collection context.
+///
+/// Single-file extraction intentionally reports Fuji-like split-slice/SYN2D
+/// signatures as `Unknown/Unknown` because those objects can be metadata-identical.
+/// When a collection is available, series cardinality and source-object pairing can
+/// safely resolve the common Fuji layout without relying on filenames or UID suffixes.
+pub fn refine_dbt_object_classification(records: &[MammogramRecord]) -> Vec<MammogramRecord> {
+    let mut refined_records = records.to_vec();
+    let series_infos = build_series_infos(records);
+    let split_slice_series = split_slice_series_keys_from_cardinality(&series_infos);
+    let split_series_by_source =
+        index_split_series_by_source_uid(&series_infos, &split_slice_series);
+    let view_pairing = view_pairing_candidates_by_study_view(&series_infos, &split_slice_series);
+
+    for (index, record) in records.iter().enumerate() {
+        if !is_ambiguous_dbt_record(record) {
+            continue;
+        }
+        let Some(series_key) = series_key(record) else {
+            continue;
+        };
+
+        if split_slice_series.contains(&series_key) {
+            refine_record(
+                &mut refined_records[index],
+                MammogramType::Tomo,
+                DbtObjectKind::Slice,
+            );
+            continue;
+        }
+
+        let Some(series_info) = series_infos.get(&series_key) else {
+            continue;
+        };
+        if series_info.ambiguous_count != 1 {
+            continue;
+        }
+
+        if has_unique_split_series_source_pair(record, &split_series_by_source) {
+            refine_record(
+                &mut refined_records[index],
+                MammogramType::Synth,
+                DbtObjectKind::None,
+            );
+            continue;
+        }
+
+        if record
+            .metadata
+            .sop_instance_uid_of_concatenation_source
+            .as_deref()
+            .is_none_or(str::is_empty)
+            && has_unique_split_series_view_pair(record, &series_key, &view_pairing)
+        {
+            refine_record(
+                &mut refined_records[index],
+                MammogramType::Synth,
+                DbtObjectKind::None,
+            );
+        }
+    }
+
+    refined_records
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct SeriesKey {
+    study_uid: String,
+    series_uid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct SourceKey {
+    study_uid: String,
+    source_sop_uid: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ViewKey {
+    laterality: Laterality,
+    view_position: ViewPosition,
+}
+
+#[derive(Debug, Default)]
+struct SeriesInfo {
+    ambiguous_count: usize,
+    source_sop_uids: BTreeSet<String>,
+    view_keys: HashSet<ViewKey>,
+}
+
+#[derive(Debug, Default)]
+struct ViewPairingInfo {
+    split_series: BTreeSet<SeriesKey>,
+    singleton_series: BTreeSet<SeriesKey>,
+}
+
+fn build_series_infos(records: &[MammogramRecord]) -> HashMap<SeriesKey, SeriesInfo> {
+    let mut series_infos = HashMap::new();
+    for record in records {
+        let Some(series_key) = series_key(record) else {
+            continue;
+        };
+        let info: &mut SeriesInfo = series_infos.entry(series_key).or_default();
+        if is_ambiguous_dbt_record(record) {
+            info.ambiguous_count += 1;
+            if let Some(source_uid) = non_empty(
+                record
+                    .metadata
+                    .sop_instance_uid_of_concatenation_source
+                    .as_deref(),
+            ) {
+                info.source_sop_uids.insert(source_uid.to_string());
+            }
+            if let Some(view_key) = view_key(record) {
+                info.view_keys.insert(view_key);
+            }
+        }
+    }
+    series_infos
+}
+
+fn split_slice_series_keys_from_cardinality(
+    series_infos: &HashMap<SeriesKey, SeriesInfo>,
+) -> HashSet<SeriesKey> {
+    series_infos
+        .iter()
+        .filter(|(_, info)| info.ambiguous_count > SPLIT_SLICE_SERIES_COUNT_THRESHOLD)
+        .map(|(series_key, _)| series_key.clone())
+        .collect()
+}
+
+fn index_split_series_by_source_uid(
+    series_infos: &HashMap<SeriesKey, SeriesInfo>,
+    split_slice_series: &HashSet<SeriesKey>,
+) -> HashMap<SourceKey, BTreeSet<SeriesKey>> {
+    let mut by_source: HashMap<SourceKey, BTreeSet<SeriesKey>> = HashMap::new();
+    for series_key in split_slice_series {
+        let Some(info) = series_infos.get(series_key) else {
+            continue;
+        };
+        for source_uid in &info.source_sop_uids {
+            by_source
+                .entry(SourceKey {
+                    study_uid: series_key.study_uid.clone(),
+                    source_sop_uid: source_uid.clone(),
+                })
+                .or_default()
+                .insert(series_key.clone());
+        }
+    }
+    by_source
+}
+
+fn view_pairing_candidates_by_study_view(
+    series_infos: &HashMap<SeriesKey, SeriesInfo>,
+    split_slice_series: &HashSet<SeriesKey>,
+) -> HashMap<(String, ViewKey), ViewPairingInfo> {
+    let mut by_view = HashMap::new();
+    for (series_key, info) in series_infos {
+        if info.ambiguous_count == 0 || info.view_keys.len() != 1 {
+            continue;
+        }
+        let Some(&view_key) = info.view_keys.iter().next() else {
+            continue;
+        };
+        let pairing: &mut ViewPairingInfo = by_view
+            .entry((series_key.study_uid.clone(), view_key))
+            .or_default();
+        if split_slice_series.contains(series_key) {
+            pairing.split_series.insert(series_key.clone());
+        } else if info.ambiguous_count == 1 {
+            pairing.singleton_series.insert(series_key.clone());
+        }
+    }
+    by_view
+}
+
+fn is_ambiguous_dbt_record(record: &MammogramRecord) -> bool {
+    record.metadata.mammogram_type == MammogramType::Unknown
+        && record.metadata.dbt_object_kind == DbtObjectKind::Unknown
+}
+
+fn series_key(record: &MammogramRecord) -> Option<SeriesKey> {
+    Some(SeriesKey {
+        study_uid: non_empty(record.study_instance_uid.as_deref())?.to_string(),
+        series_uid: non_empty(record.series_instance_uid.as_deref())?.to_string(),
+    })
+}
+
+fn view_key(record: &MammogramRecord) -> Option<ViewKey> {
+    if !record.metadata.laterality.is_unilateral() || record.metadata.view_position.is_unknown() {
+        return None;
+    }
+    Some(ViewKey {
+        laterality: record.metadata.laterality,
+        view_position: record.metadata.view_position,
+    })
+}
+
+fn has_unique_split_series_source_pair(
+    record: &MammogramRecord,
+    split_series_by_source: &HashMap<SourceKey, BTreeSet<SeriesKey>>,
+) -> bool {
+    let Some(study_uid) = non_empty(record.study_instance_uid.as_deref()) else {
+        return false;
+    };
+    let Some(source_uid) = non_empty(
+        record
+            .metadata
+            .sop_instance_uid_of_concatenation_source
+            .as_deref(),
+    ) else {
+        return false;
+    };
+    let source_key = SourceKey {
+        study_uid: study_uid.to_string(),
+        source_sop_uid: source_uid.to_string(),
+    };
+    split_series_by_source
+        .get(&source_key)
+        .is_some_and(|series| series.len() == 1)
+}
+
+fn has_unique_split_series_view_pair(
+    record: &MammogramRecord,
+    series_key: &SeriesKey,
+    view_pairing: &HashMap<(String, ViewKey), ViewPairingInfo>,
+) -> bool {
+    let Some(view_key) = view_key(record) else {
+        return false;
+    };
+    let Some(pairing) = view_pairing.get(&(series_key.study_uid.clone(), view_key)) else {
+        return false;
+    };
+    pairing.split_series.len() == 1
+        && pairing.singleton_series.len() == 1
+        && pairing.singleton_series.contains(series_key)
+}
+
+fn refine_record(
+    record: &mut MammogramRecord,
+    mammogram_type: MammogramType,
+    dbt_object_kind: DbtObjectKind,
+) {
+    record.metadata.mammogram_type = mammogram_type;
+    record.metadata.dbt_object_kind = dbt_object_kind;
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// Applies filters to a collection of records
@@ -782,10 +1041,20 @@ fn is_candidate_for_any_standard_view(record: &MammogramRecord) -> bool {
 mod tests {
     use super::*;
     use crate::error::MammocatError;
-    use crate::types::{ImageType, Laterality, MammogramType, PreferenceOrder, ViewPosition};
+    use crate::types::{
+        DbtObjectKind, ImageType, Laterality, MammogramType, PreferenceOrder, ViewPosition,
+    };
     use std::path::PathBuf;
 
     const DEFAULT_STUDY_UID: &str = "1.2.826.0.1";
+    const MIN_SPLIT_SLICE_SERIES_COUNT: usize = SPLIT_SLICE_SERIES_COUNT_THRESHOLD + 1;
+    const SPLIT_SLICE_SERIES_UID: &str = "1.2.826.0.1.10";
+    const SYNTH_SINGLETON_SERIES_UID: &str = "1.2.826.0.1.20";
+    const SECOND_SYNTH_SINGLETON_SERIES_UID: &str = "1.2.826.0.1.21";
+    const SOURCE_SOP_UID_RCC: &str = "1.2.826.0.1.30";
+    const SYNTH_SINGLETON_SOP_UID: &str = "1.2.826.0.1.40";
+    const SECOND_SYNTH_SINGLETON_SOP_UID: &str = "1.2.826.0.1.41";
+    const AMBIGUOUS_SINGLETON_SOP_UID: &str = "1.2.826.0.1.50";
 
     fn make_test_record(
         laterality: Laterality,
@@ -806,6 +1075,7 @@ mod tests {
             file_path: PathBuf::from(format!("{study_label}_{laterality:?}_{view_pos:?}.dcm")),
             metadata: crate::api::MammogramMetadata {
                 mammogram_type: mammo_type,
+                dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position: view_pos,
                 image_type: ImageType::new(
@@ -822,6 +1092,8 @@ mod tests {
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
+                concatenation_uid: None,
+                sop_instance_uid_of_concatenation_source: None,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
                 transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
@@ -836,6 +1108,7 @@ mod tests {
             transfer_syntax_uid: None,
             is_lossy_compressed: false,
             study_instance_uid: study_uid.map(str::to_string),
+            series_instance_uid: study_uid.map(|uid| format!("{uid}.series")),
             sop_instance_uid: Some(format!(
                 "{}.{}.{}.{}",
                 study_label,
@@ -846,6 +1119,17 @@ mod tests {
         }
     }
 
+    fn default_dbt_object_kind(mammo_type: MammogramType) -> DbtObjectKind {
+        match mammo_type {
+            MammogramType::Tomo => DbtObjectKind::Unknown,
+            _ => DbtObjectKind::None,
+        }
+    }
+
+    fn with_allowed_types(base_config: FilterConfig, types: &[MammogramType]) -> FilterConfig {
+        base_config.with_allowed_types(types.iter().copied().collect())
+    }
+
     fn make_lossy_test_record(
         laterality: Laterality,
         view_pos: ViewPosition,
@@ -854,6 +1138,82 @@ mod tests {
     ) -> MammogramRecord {
         let mut record = make_test_record(laterality, view_pos, mammo_type);
         record.is_lossy_compressed = is_lossy_compressed;
+        record
+    }
+
+    fn make_tomo_slice_test_record(
+        laterality: Laterality,
+        view_pos: ViewPosition,
+    ) -> MammogramRecord {
+        let mut record = make_test_record(laterality, view_pos, MammogramType::Tomo);
+        record.metadata.dbt_object_kind = DbtObjectKind::Slice;
+        record
+    }
+
+    fn make_ambiguous_dbt_record(
+        study_uid: &str,
+        series_uid: &str,
+        sop_uid: &str,
+        source_sop_uid: Option<&str>,
+        laterality: Laterality,
+        view_pos: ViewPosition,
+    ) -> MammogramRecord {
+        let mut record = make_test_record_with_study(
+            laterality,
+            view_pos,
+            MammogramType::Unknown,
+            Some(study_uid),
+        );
+        record.file_path = PathBuf::from(format!("{series_uid}_{sop_uid}.dcm"));
+        record.series_instance_uid = Some(series_uid.to_string());
+        record.sop_instance_uid = Some(sop_uid.to_string());
+        record.metadata.dbt_object_kind = DbtObjectKind::Unknown;
+        record.metadata.image_type =
+            ImageType::new("DERIVED".to_string(), "PRIMARY".to_string(), None, None);
+        record.metadata.concatenation_uid =
+            source_sop_uid.map(|source_uid| format!("{source_uid}.1"));
+        record.metadata.sop_instance_uid_of_concatenation_source =
+            source_sop_uid.map(str::to_string);
+        record
+    }
+
+    fn make_ambiguous_series(
+        study_uid: &str,
+        series_uid: &str,
+        source_sop_uid: Option<&str>,
+        laterality: Laterality,
+        view_pos: ViewPosition,
+        count: usize,
+    ) -> Vec<MammogramRecord> {
+        (0..count)
+            .map(|index| {
+                make_ambiguous_dbt_record(
+                    study_uid,
+                    series_uid,
+                    &format!("{series_uid}.{index}"),
+                    source_sop_uid,
+                    laterality,
+                    view_pos,
+                )
+            })
+            .collect()
+    }
+
+    fn make_non_ambiguous_record_in_series(
+        study_uid: &str,
+        series_uid: &str,
+        sop_uid: &str,
+        mammogram_type: MammogramType,
+    ) -> MammogramRecord {
+        let mut record = make_test_record_with_study(
+            Laterality::Right,
+            ViewPosition::Cc,
+            mammogram_type,
+            Some(study_uid),
+        );
+        record.file_path = PathBuf::from(format!("{series_uid}_{sop_uid}.dcm"));
+        record.series_instance_uid = Some(series_uid.to_string());
+        record.sop_instance_uid = Some(sop_uid.to_string());
         record
     }
 
@@ -1345,11 +1705,7 @@ mod tests {
 
     #[test]
     fn test_filters_run_before_strict_study_selection() {
-        use std::collections::HashSet;
-
-        let mut allowed_types = HashSet::new();
-        allowed_types.insert(MammogramType::Ffdm);
-        let config = FilterConfig::permissive().with_allowed_types(allowed_types);
+        let config = with_allowed_types(FilterConfig::permissive(), &[MammogramType::Ffdm]);
         let records = vec![
             make_test_record_with_study(
                 Laterality::Left,
@@ -1386,12 +1742,7 @@ mod tests {
 
     #[test]
     fn test_apply_filters_allowed_types() {
-        use std::collections::HashSet;
-
-        let mut allowed_types = HashSet::new();
-        allowed_types.insert(MammogramType::Ffdm);
-
-        let config = FilterConfig::default().with_allowed_types(allowed_types);
+        let config = with_allowed_types(FilterConfig::default(), &[MammogramType::Ffdm]);
 
         let records = vec![
             make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
@@ -1402,6 +1753,294 @@ mod tests {
         let filtered = apply_filters(&records, &config);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].metadata.mammogram_type, MammogramType::Ffdm);
+    }
+
+    #[test]
+    fn test_clinical_2d_allowed_types_excludes_tomo_slice() {
+        let config = with_allowed_types(
+            FilterConfig::permissive(),
+            &[
+                MammogramType::Ffdm,
+                MammogramType::Synth,
+                MammogramType::Sfm,
+            ],
+        );
+        let records = vec![make_tomo_slice_test_record(
+            Laterality::Left,
+            ViewPosition::Mlo,
+        )];
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+
+        assert!(selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)].is_none());
+    }
+
+    #[test]
+    fn test_allowed_tomo_types_can_select_tomo_slice() {
+        let config = with_allowed_types(FilterConfig::permissive(), &[MammogramType::Tomo]);
+        let records = vec![make_tomo_slice_test_record(
+            Laterality::Left,
+            ViewPosition::Mlo,
+        )];
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+        let selected = selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)]
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Tomo);
+        assert_eq!(selected.metadata.dbt_object_kind, DbtObjectKind::Slice);
+    }
+
+    #[test]
+    fn collection_refinement_marks_large_ambiguous_series_as_tomo_slice() {
+        let records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+
+        let refined = refine_dbt_object_classification(&records);
+
+        assert!(refined.iter().all(|record| {
+            record.metadata.mammogram_type == MammogramType::Tomo
+                && record.metadata.dbt_object_kind == DbtObjectKind::Slice
+        }));
+    }
+
+    #[test]
+    fn collection_refinement_marks_source_paired_singleton_as_synth() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        ));
+
+        let refined = refine_dbt_object_classification(&records);
+        let singleton = refined
+            .iter()
+            .find(|record| {
+                record.series_instance_uid.as_deref() == Some(SYNTH_SINGLETON_SERIES_UID)
+            })
+            .expect("singleton record");
+
+        assert_eq!(singleton.metadata.mammogram_type, MammogramType::Synth);
+        assert_eq!(singleton.metadata.dbt_object_kind, DbtObjectKind::None);
+    }
+
+    #[test]
+    fn collection_refinement_leaves_unpaired_singleton_unknown() {
+        let records = vec![make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        )];
+
+        let refined = refine_dbt_object_classification(&records);
+
+        assert_eq!(refined[0].metadata.mammogram_type, MammogramType::Unknown);
+        assert_eq!(refined[0].metadata.dbt_object_kind, DbtObjectKind::Unknown);
+    }
+
+    #[test]
+    fn collection_refinement_counts_only_ambiguous_records_for_slice_cardinality() {
+        let mut records = vec![make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            AMBIGUOUS_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        )];
+        records.extend((0..MIN_SPLIT_SLICE_SERIES_COUNT).map(|index| {
+            make_non_ambiguous_record_in_series(
+                DEFAULT_STUDY_UID,
+                SPLIT_SLICE_SERIES_UID,
+                &format!("1.2.826.0.1.60.{index}"),
+                MammogramType::Ffdm,
+            )
+        }));
+
+        let refined = refine_dbt_object_classification(&records);
+        let ambiguous_record = refined
+            .iter()
+            .find(|record| record.sop_instance_uid.as_deref() == Some(AMBIGUOUS_SINGLETON_SOP_UID))
+            .expect("ambiguous singleton record");
+
+        assert_eq!(
+            ambiguous_record.metadata.mammogram_type,
+            MammogramType::Unknown
+        );
+        assert_eq!(
+            ambiguous_record.metadata.dbt_object_kind,
+            DbtObjectKind::Unknown
+        );
+    }
+
+    #[test]
+    fn collection_refinement_uses_view_pair_fallback_without_source_uid() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            None,
+            Laterality::Left,
+            ViewPosition::Mlo,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            None,
+            Laterality::Left,
+            ViewPosition::Mlo,
+        ));
+
+        let refined = refine_dbt_object_classification(&records);
+        let singleton = refined
+            .iter()
+            .find(|record| {
+                record.series_instance_uid.as_deref() == Some(SYNTH_SINGLETON_SERIES_UID)
+            })
+            .expect("singleton record");
+
+        assert_eq!(singleton.metadata.mammogram_type, MammogramType::Synth);
+        assert_eq!(singleton.metadata.dbt_object_kind, DbtObjectKind::None);
+    }
+
+    #[test]
+    fn collection_refinement_leaves_conflicting_singletons_unknown() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            None,
+            Laterality::Left,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            None,
+            Laterality::Left,
+            ViewPosition::Cc,
+        ));
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SECOND_SYNTH_SINGLETON_SERIES_UID,
+            SECOND_SYNTH_SINGLETON_SOP_UID,
+            None,
+            Laterality::Left,
+            ViewPosition::Cc,
+        ));
+
+        let refined = refine_dbt_object_classification(&records);
+        let singleton_types: Vec<_> = refined
+            .iter()
+            .filter(|record| {
+                record.series_instance_uid.as_deref().is_some_and(|series| {
+                    series == SYNTH_SINGLETON_SERIES_UID
+                        || series == SECOND_SYNTH_SINGLETON_SERIES_UID
+                })
+            })
+            .map(|record| {
+                (
+                    record.metadata.mammogram_type,
+                    record.metadata.dbt_object_kind,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            singleton_types,
+            vec![
+                (MammogramType::Unknown, DbtObjectKind::Unknown),
+                (MammogramType::Unknown, DbtObjectKind::Unknown),
+            ]
+        );
+    }
+
+    #[test]
+    fn clinical_2d_filter_uses_refined_singleton_synth_and_excludes_refined_slices() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        ));
+        let config = with_allowed_types(
+            FilterConfig::permissive(),
+            &[
+                MammogramType::Ffdm,
+                MammogramType::Synth,
+                MammogramType::Sfm,
+            ],
+        );
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+        let selected = selections[&MammogramView::new(Laterality::Right, ViewPosition::Cc)]
+            .as_ref()
+            .expect("refined SYN2D singleton selected");
+
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Synth);
+        assert_eq!(selected.metadata.dbt_object_kind, DbtObjectKind::None);
+    }
+
+    #[test]
+    fn tomo_filter_uses_refined_slices_and_excludes_refined_singleton_synth() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        ));
+        let config = with_allowed_types(FilterConfig::permissive(), &[MammogramType::Tomo]);
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+        let selected = selections[&MammogramView::new(Laterality::Right, ViewPosition::Cc)]
+            .as_ref()
+            .expect("refined slice selected");
+
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Tomo);
+        assert_eq!(selected.metadata.dbt_object_kind, DbtObjectKind::Slice);
     }
 
     #[test]
@@ -1520,12 +2159,7 @@ mod tests {
 
     #[test]
     fn test_get_preferred_views_filtered() {
-        use std::collections::HashSet;
-
-        let mut allowed_types = HashSet::new();
-        allowed_types.insert(MammogramType::Ffdm);
-
-        let config = FilterConfig::default().with_allowed_types(allowed_types);
+        let config = with_allowed_types(FilterConfig::default(), &[MammogramType::Ffdm]);
 
         let records = vec![
             make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),

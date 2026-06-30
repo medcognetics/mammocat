@@ -5,6 +5,7 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 ## Features
 
 - **Mammogram Type Classification**: Automatically determines if a mammogram is TOMO, FFDM, SYNTH, or SFM
+- **DBT Object Classification**: Reports whether DBT is stored as a multi-frame volume or split slice object
 - **Laterality Detection**: Extracts breast laterality (Left/Right/Bilateral) with fallback hierarchy
 - **View Position Parsing**: Identifies view positions (CC, MLO, ML, etc.) with pattern matching
 - **Implant Status**: Detects breast implant presence
@@ -14,7 +15,7 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **Python Bindings**: Full Python API via PyO3 for seamless integration
 - **Clean API**: Easy-to-use library and command-line interface
 - **Type Safe**: Leverages Rust's type system for correctness
-- **Well Tested**: Comprehensive test coverage (60+ Rust tests, 48 Python tests)
+- **Well Tested**: Comprehensive Rust and Python test coverage
 
 ## Installation
 
@@ -113,6 +114,7 @@ Mammogram Metadata
 ==================
 
 Type               : ffdm
+DBT Object Kind    : none
 Laterality         : left
 View Position      : cc
 Image Type         : ORIGINAL|PRIMARY
@@ -179,14 +181,15 @@ if not file_report["summary"]["valid"]:
 
 ### Mammogram Type
 
-Mammograms are classified into types with preference ordering (TOMO < FFDM < SYNTH < SFM):
+Mammograms are classified into types:
 
-- **TOMO**: Tomosynthesis (3D imaging) - detected by `NumberOfFrames > 1`
+- **TOMO**: Tomosynthesis/DBT imaging - detected by `NumberOfFrames > 1`, exact `ImageType` component `TOMO`, or collection refinement of ambiguous split-slice DBT series
 - **FFDM**: Full Field Digital Mammography - default for "ORIGINAL" images
-- **SYNTH**: Synthetic 2D from tomosynthesis - detected by series description or `GENERATED_2D` flag
+- **SYNTH**: Synthetic 2D from tomosynthesis - detected by series description, exact `ImageType` component `TOMO_2D`, or `GENERATED_2D` flag
 - **SFM**: Screen Film Mammography - manually flagged
 
-The classification follows a hierarchical rule system matching the Python implementation.
+`DbtObjectKind` separately reports whether TOMO objects are multi-frame `volume`, single-frame `slice`, or `unknown`; non-DBT images report `none`. Single-file extraction treats Fuji-like `DERIVED\PRIMARY` objects with `VolumetricProperties=VOLUME`, allowed/absent `VolumeBasedCalculationTechnique`, concatenation/source-volume tags, and supporting tomosynthesis evidence as `unknown` because some vendors copy those fields onto singleton synthetic 2D objects. Directory selection and validation refine those ambiguous records with study/series context: large same-series groups become `Tomo`/`slice`, and safely paired singleton objects become `Synth`/`none`. Tomosynthesis acquisition tags like `TomoClass`, source-image count, or processing text are supporting evidence only; tomo angle is not used as a classifier by itself.
+`ImageType` component matching is exact: `TOMO_PROJ` is not treated as `TOMO`.
 
 ### Laterality
 
@@ -215,7 +218,7 @@ mammocat/
 ├── core/                           # Library and binary
 │   ├── src/
 │   │   ├── types/                  # Core type system
-│   │   │   ├── enums.rs            # MammogramType, Laterality, ViewPosition
+│   │   │   ├── enums.rs            # MammogramType, DbtObjectKind, Laterality, ViewPosition
 │   │   │   ├── image_type.rs       # ImageType struct
 │   │   │   ├── pixel_spacing.rs
 │   │   │   └── view.rs             # MammogramView
@@ -252,6 +255,9 @@ mammocat/
 - **`MammogramType`**: Unknown, Tomo, Ffdm, Synth, Sfm
   - Implements preference ordering for deduplication
   - `is_preferred_to()` method for comparison
+
+- **`DbtObjectKind`**: None, Volume, Slice, Unknown
+  - Describes DBT storage representation independently from `MammogramType`
 
 - **`Laterality`**: Unknown, None, Left, Right, Bilateral
   - `reduce()` method for combining lateralities
@@ -307,7 +313,7 @@ Run specific Rust test:
 cargo test test_name
 ```
 
-Current test coverage: 60+ Rust unit tests and 48 Python tests covering:
+Current test coverage includes Rust unit/integration tests and Python tests covering:
 - Enum behavior and ordering
 - String parsing and pattern matching
 - Classification algorithm logic
