@@ -1477,6 +1477,11 @@ fn validate_selection_eligibility(
             filtered_by.push("allowed_types".to_string());
         }
     }
+    if let Some(allowed_dbt_object_kinds) = &filter_config.allowed_dbt_object_kinds {
+        if !allowed_dbt_object_kinds.contains(&metadata.dbt_object_kind) {
+            filtered_by.push("allowed_dbt_object_kinds".to_string());
+        }
+    }
     if filter_config.exclude_implants && metadata.has_implant {
         filtered_by.push("exclude_implants".to_string());
     }

@@ -460,6 +460,7 @@ class TestFilterConfig:
         """Test all default FilterConfig properties."""
         config = FilterConfig()
         assert config.allowed_types is None
+        assert config.allowed_dbt_object_kinds is None
         assert config.exclude_implants is False
         assert config.exclude_non_standard_views is False
         assert config.exclude_for_processing is True
@@ -478,6 +479,15 @@ class TestFilterConfig:
 
         assert config.exclude_lossy_compressed is True
         assert config.deprioritize_lossy_compressed is False
+
+    def test_dbt_object_kind_filter_options(self):
+        """Test FilterConfig DBT object kind whitelist options."""
+        config = FilterConfig(allowed_dbt_object_kinds=[DbtObjectKind.VOLUME, DbtObjectKind.SLICE])
+
+        assert set(config.allowed_dbt_object_kinds or []) == {
+            DbtObjectKind.VOLUME,
+            DbtObjectKind.SLICE,
+        }
 
     def test_get_preferred_views_filtered_empty(self):
         """Test get_preferred_views_filtered with empty list."""

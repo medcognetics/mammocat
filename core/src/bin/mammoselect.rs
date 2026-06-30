@@ -1,8 +1,8 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::{
-    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig,
-    MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
+    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, DbtObjectKind,
+    FilterConfig, MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
     PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
@@ -35,6 +35,10 @@ struct Cli {
     /// Allowed mammogram types (comma-separated: ffdm,tomo,synth,sfm)
     #[arg(long, value_delimiter = ',')]
     allowed_types: Option<Vec<MammogramTypeArg>>,
+
+    /// Allowed DBT object kinds (comma-separated: none,volume,slice,unknown)
+    #[arg(long, value_delimiter = ',')]
+    allowed_dbt_object_kinds: Option<Vec<DbtObjectKindArg>>,
 
     /// Exclude views with breast implants
     #[arg(long)]
@@ -122,6 +126,30 @@ impl From<MammogramTypeArg> for MammogramType {
             MammogramTypeArg::Tomo => MammogramType::Tomo,
             MammogramTypeArg::Synth => MammogramType::Synth,
             MammogramTypeArg::Sfm => MammogramType::Sfm,
+        }
+    }
+}
+
+/// DBT object kind argument for filtering
+#[derive(Debug, Clone, ValueEnum)]
+enum DbtObjectKindArg {
+    /// Not a DBT object
+    None,
+    /// Multi-frame DBT volume object
+    Volume,
+    /// Single-frame DBT slice object
+    Slice,
+    /// Ambiguous DBT object kind
+    Unknown,
+}
+
+impl From<DbtObjectKindArg> for DbtObjectKind {
+    fn from(arg: DbtObjectKindArg) -> Self {
+        match arg {
+            DbtObjectKindArg::None => DbtObjectKind::None,
+            DbtObjectKindArg::Volume => DbtObjectKind::Volume,
+            DbtObjectKindArg::Slice => DbtObjectKind::Slice,
+            DbtObjectKindArg::Unknown => DbtObjectKind::Unknown,
         }
     }
 }
@@ -226,6 +254,14 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
             .map(|arg| MammogramType::from(arg.clone()))
             .collect();
         config = config.with_allowed_types(allowed);
+    }
+
+    if let Some(kind_args) = &cli.allowed_dbt_object_kinds {
+        let allowed: HashSet<DbtObjectKind> = kind_args
+            .iter()
+            .map(|arg| DbtObjectKind::from(arg.clone()))
+            .collect();
+        config = config.with_allowed_dbt_object_kinds(allowed);
     }
 
     // Handle exclude flags
@@ -667,6 +703,25 @@ mod tests {
 
         assert!(config.exclude_lossy_compressed);
         assert!(config.deprioritize_lossy_compressed);
+    }
+
+    #[test]
+    fn test_build_filter_config_allows_dbt_object_kinds() {
+        let cli = Cli::try_parse_from([
+            "mammoselect",
+            "--allowed-dbt-object-kinds",
+            "volume,slice",
+            "/tmp",
+        ])
+        .unwrap();
+        let config = build_filter_config(&cli);
+        let allowed = config
+            .allowed_dbt_object_kinds
+            .expect("allowed DBT object kinds");
+
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&DbtObjectKind::Volume));
+        assert!(allowed.contains(&DbtObjectKind::Slice));
     }
 
     #[test]

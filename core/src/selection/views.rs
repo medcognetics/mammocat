@@ -543,6 +543,13 @@ fn apply_filters(records: &[MammogramRecord], config: &FilterConfig) -> Vec<Mamm
                 }
             }
 
+            // Filter: Allowed DBT object kinds (whitelist)
+            if let Some(allowed_dbt_object_kinds) = &config.allowed_dbt_object_kinds {
+                if !allowed_dbt_object_kinds.contains(&record.metadata.dbt_object_kind) {
+                    return false;
+                }
+            }
+
             // Filter: Exclude implants
             if config.exclude_implants && record.metadata.has_implant {
                 return false;
@@ -1128,6 +1135,13 @@ mod tests {
 
     fn with_allowed_types(base_config: FilterConfig, types: &[MammogramType]) -> FilterConfig {
         base_config.with_allowed_types(types.iter().copied().collect())
+    }
+
+    fn with_allowed_dbt_object_kinds(
+        base_config: FilterConfig,
+        kinds: &[DbtObjectKind],
+    ) -> FilterConfig {
+        base_config.with_allowed_dbt_object_kinds(kinds.iter().copied().collect())
     }
 
     fn make_lossy_test_record(
@@ -1756,6 +1770,23 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_filters_allowed_dbt_object_kinds() {
+        let config =
+            with_allowed_dbt_object_kinds(FilterConfig::permissive(), &[DbtObjectKind::None]);
+
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
+            make_tomo_slice_test_record(Laterality::Left, ViewPosition::Mlo),
+        ];
+
+        let filtered = apply_filters(&records, &config);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].metadata.mammogram_type, MammogramType::Ffdm);
+        assert_eq!(filtered[0].metadata.dbt_object_kind, DbtObjectKind::None);
+    }
+
+    #[test]
     fn test_clinical_2d_allowed_types_excludes_tomo_slice() {
         let config = with_allowed_types(
             FilterConfig::permissive(),
@@ -2015,6 +2046,50 @@ mod tests {
     }
 
     #[test]
+    fn clinical_2d_filter_can_require_non_dbt_object_kind() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        ));
+        records.push(make_tomo_slice_test_record(
+            Laterality::Left,
+            ViewPosition::Mlo,
+        ));
+        let config = with_allowed_dbt_object_kinds(
+            with_allowed_types(
+                FilterConfig::permissive(),
+                &[
+                    MammogramType::Ffdm,
+                    MammogramType::Synth,
+                    MammogramType::Sfm,
+                ],
+            ),
+            &[DbtObjectKind::None],
+        );
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+
+        let selected = selections[&MammogramView::new(Laterality::Right, ViewPosition::Cc)]
+            .as_ref()
+            .expect("refined SYN2D singleton selected");
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Synth);
+        assert_eq!(selected.metadata.dbt_object_kind, DbtObjectKind::None);
+        assert!(selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)].is_none());
+    }
+
+    #[test]
     fn tomo_filter_uses_refined_slices_and_excludes_refined_singleton_synth() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
@@ -2033,6 +2108,38 @@ mod tests {
             ViewPosition::Cc,
         ));
         let config = with_allowed_types(FilterConfig::permissive(), &[MammogramType::Tomo]);
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+        let selected = selections[&MammogramView::new(Laterality::Right, ViewPosition::Cc)]
+            .as_ref()
+            .expect("refined slice selected");
+
+        assert_eq!(selected.metadata.mammogram_type, MammogramType::Tomo);
+        assert_eq!(selected.metadata.dbt_object_kind, DbtObjectKind::Slice);
+    }
+
+    #[test]
+    fn dbt_localization_filter_selects_refined_tomo_slices() {
+        let mut records = make_ambiguous_series(
+            DEFAULT_STUDY_UID,
+            SPLIT_SLICE_SERIES_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+            MIN_SPLIT_SLICE_SERIES_COUNT,
+        );
+        records.push(make_ambiguous_dbt_record(
+            DEFAULT_STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID_RCC),
+            Laterality::Right,
+            ViewPosition::Cc,
+        ));
+        let config = with_allowed_dbt_object_kinds(
+            with_allowed_types(FilterConfig::permissive(), &[MammogramType::Tomo]),
+            &[DbtObjectKind::Volume, DbtObjectKind::Slice],
+        );
 
         let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
         let selected = selections[&MammogramView::new(Laterality::Right, ViewPosition::Cc)]

@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 use std::collections::HashSet;
 
-use super::enums::PyMammogramType;
+use super::enums::{PyDbtObjectKind, PyMammogramType};
 use crate::types::FilterConfig;
 
 #[pyclass(name = "FilterConfig", module = "mammocat")]
@@ -24,7 +24,8 @@ impl PyFilterConfig {
         exclude_non_mg_modality=true,
         require_common_modality=false,
         exclude_lossy_compressed=false,
-        deprioritize_lossy_compressed=true
+        deprioritize_lossy_compressed=true,
+        allowed_dbt_object_kinds=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -37,13 +38,21 @@ impl PyFilterConfig {
         require_common_modality: bool,
         exclude_lossy_compressed: bool,
         deprioritize_lossy_compressed: bool,
+        allowed_dbt_object_kinds: Option<Vec<PyDbtObjectKind>>,
     ) -> Self {
         let rust_allowed =
             allowed_types.map(|types| types.into_iter().map(|t| t.inner).collect::<HashSet<_>>());
+        let rust_allowed_dbt_object_kinds = allowed_dbt_object_kinds.map(|kinds| {
+            kinds
+                .into_iter()
+                .map(|kind| kind.inner)
+                .collect::<HashSet<_>>()
+        });
 
         Self {
             inner: FilterConfig {
                 allowed_types: rust_allowed,
+                allowed_dbt_object_kinds: rust_allowed_dbt_object_kinds,
                 exclude_implants,
                 exclude_non_standard_views,
                 exclude_for_processing,
@@ -76,6 +85,16 @@ impl PyFilterConfig {
             .allowed_types
             .as_ref()
             .map(|types| types.iter().map(|t| PyMammogramType::from(*t)).collect())
+    }
+
+    #[getter]
+    fn allowed_dbt_object_kinds(&self) -> Option<Vec<PyDbtObjectKind>> {
+        self.inner.allowed_dbt_object_kinds.as_ref().map(|kinds| {
+            kinds
+                .iter()
+                .map(|kind| PyDbtObjectKind::from(*kind))
+                .collect()
+        })
     }
 
     #[getter]
