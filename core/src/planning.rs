@@ -237,7 +237,7 @@ fn build_mammography_plan(
     };
 
     let dbt = if options.selection.include_dbt {
-        Some(build_dbt_plan(&refined_records, dbt_scan))
+        Some(build_dbt_plan(input, &refined_records, dbt_scan))
     } else {
         None
     };
@@ -361,7 +361,11 @@ fn build_views_plan(
     })
 }
 
-fn build_dbt_plan(records: &[MammogramRecord], dbt_scan: Option<DbtScanReport>) -> DbtPlan {
+fn build_dbt_plan(
+    input: &Path,
+    records: &[MammogramRecord],
+    dbt_scan: Option<DbtScanReport>,
+) -> DbtPlan {
     let mut composition_inputs = Vec::new();
     let mut volume_candidates = Vec::new();
     let mut fallback_slice_paths = BTreeSet::new();
@@ -382,14 +386,32 @@ fn build_dbt_plan(records: &[MammogramRecord], dbt_scan: Option<DbtScanReport>) 
 
     let mut seen_volume_sources: BTreeSet<Vec<String>> = volume_candidates
         .iter()
-        .map(|candidate| candidate.source_paths.clone())
+        .map(|candidate| normalized_source_paths(input, &candidate.source_paths))
+        .collect();
+    let seen_volume_series: BTreeSet<(Option<String>, Option<String>)> = volume_candidates
+        .iter()
+        .filter(|candidate| candidate.series_instance_uid.is_some())
+        .map(|candidate| {
+            (
+                candidate.study_instance_uid.clone(),
+                candidate.series_instance_uid.clone(),
+            )
+        })
         .collect();
     for record in records
         .iter()
         .filter(|record| record.metadata.dbt_object_kind == DbtObjectKind::Volume)
     {
+        let series_seen = record.series_instance_uid.is_some()
+            && seen_volume_series.contains(&(
+                record.study_instance_uid.clone(),
+                record.series_instance_uid.clone(),
+            ));
+        if series_seen {
+            continue;
+        }
         let source_paths = vec![record.file_path.display().to_string()];
-        if seen_volume_sources.insert(source_paths.clone()) {
+        if seen_volume_sources.insert(normalized_source_paths(input, &source_paths)) {
             volume_candidates.push(volume_candidate_from_record(record, source_paths));
         }
     }
@@ -401,6 +423,21 @@ fn build_dbt_plan(records: &[MammogramRecord], dbt_scan: Option<DbtScanReport>) 
         unsupported_series,
         skipped_files,
     }
+}
+
+fn normalized_source_paths(input: &Path, source_paths: &[String]) -> Vec<String> {
+    source_paths
+        .iter()
+        .map(|source_path| normalized_source_path(input, Path::new(source_path)))
+        .collect()
+}
+
+fn normalized_source_path(input: &Path, source_path: &Path) -> String {
+    source_path
+        .strip_prefix(input)
+        .unwrap_or(source_path)
+        .display()
+        .to_string()
 }
 
 fn composition_input_from_series(series: DbtSeriesFinding) -> DbtCompositionInput {
@@ -832,6 +869,61 @@ mod tests {
         let dbt = plan.dbt.expect("dbt plan");
         assert_eq!(dbt.multiframe_volume_candidates.len(), 1);
         assert_eq!(dbt.multiframe_volume_candidates[0].frame_count, 50);
+    }
+
+    #[test]
+    fn multiframe_scan_and_record_paths_deduplicate_volume_candidates() {
+        let input = Path::new("study");
+        let series_uid = "1.2.826.0.1.volume";
+        let records = vec![make_record(
+            "study/volume.dcm",
+            Laterality::Left,
+            ViewPosition::Mlo,
+            MammogramType::Tomo,
+            DbtObjectKind::Volume,
+        )];
+        let dbt_scan = DbtScanReport {
+            input_path: input.display().to_string(),
+            summary: crate::DbtScanSummary {
+                total_files: 1,
+                dicom_files: 1,
+                conversion_needed_series: 0,
+                already_multiframe_dbt_series: 1,
+                copy_through_files: 0,
+                unsupported_series: 0,
+                skipped_files: 0,
+            },
+            conversion_needed_series: Vec::new(),
+            already_multiframe_dbt_series: vec![DbtSeriesFinding {
+                study_instance_uid: STUDY_UID.to_string(),
+                series_instance_uid: series_uid.to_string(),
+                source_paths: vec!["volume.dcm".to_string()],
+                relative_parent: ".".to_string(),
+                frame_count: 50,
+                laterality: "L".to_string(),
+                view_position: "MLO".to_string(),
+                source_modality: "MG".to_string(),
+                series_description: Some("DBT volume".to_string()),
+            }],
+            copy_through_files: Vec::new(),
+            unsupported_series: Vec::new(),
+            skipped_files: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let plan = build_mammography_plan(
+            input,
+            records.len(),
+            records,
+            Some(dbt_scan),
+            Vec::new(),
+            test_options(MammographyPlanSelection::dbt_only()),
+        )
+        .unwrap();
+
+        let dbt = plan.dbt.expect("dbt plan");
+        assert_eq!(dbt.multiframe_volume_candidates.len(), 1);
+        assert_eq!(plan.summary.dbt_multiframe_volume_candidates, 1);
     }
 
     #[test]
