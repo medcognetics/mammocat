@@ -95,7 +95,7 @@ Build a collection-level input plan for 2D mammography views and DBT inputs:
 mammoplan /path/to/dicom_directory --format json
 
 # Plan only 2D mammography views
-mammoplan --include-2d-views /path/to/directory --format json
+mammoplan --include-2d /path/to/directory --format json
 
 # Plan only DBT composition inputs and volume candidates
 mammoplan --include-dbt /path/to/directory --format json
@@ -103,7 +103,7 @@ mammoplan --include-dbt /path/to/directory --format json
 
 If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
 When any include flag is supplied, only the requested groups are included. The
-JSON report includes `plan`, `two_d_views`, `dbt`, `source_objects`, `warnings`,
+JSON report includes `plan`, `views`, `dbt`, `source_objects`, `warnings`,
 and `summary`.
 
 ### mammovalidate - DICOM Validation
@@ -195,7 +195,7 @@ file_report = validate_dicom("mammogram.dcm")
 directory_report = validate_directory(Path("dicoms.zip"), profile="selection")
 input_plan = plan_mammography_collection(
     Path("dicoms"),
-    include_2d_views=True,
+    include_2d=True,
     include_dbt=True,
 )
 

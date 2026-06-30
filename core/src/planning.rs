@@ -23,20 +23,23 @@ use crate::types::{
 /// Input groups included in a collection-level mammography plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MammographyPlanSelection {
-    pub two_d_views: bool,
-    pub dbt: bool,
+    pub include_2d: bool,
+    pub include_dbt: bool,
 }
 
 impl MammographyPlanSelection {
-    pub const fn new(two_d_views: bool, dbt: bool) -> Self {
-        Self { two_d_views, dbt }
+    pub const fn new(include_2d: bool, include_dbt: bool) -> Self {
+        Self {
+            include_2d,
+            include_dbt,
+        }
     }
 
     pub const fn all() -> Self {
         Self::new(true, true)
     }
 
-    pub const fn two_d_views_only() -> Self {
+    pub const fn include_2d_only() -> Self {
         Self::new(true, false)
     }
 
@@ -45,7 +48,7 @@ impl MammographyPlanSelection {
     }
 
     fn is_empty(self) -> bool {
-        !self.two_d_views && !self.dbt
+        !self.include_2d && !self.include_dbt
     }
 }
 
@@ -79,7 +82,7 @@ pub struct MammographyPlanSummary {
     pub input_dicom_files: usize,
     pub mammogram_records: usize,
     pub source_objects: usize,
-    pub two_d_selected_views: usize,
+    pub views_selected: usize,
     pub dbt_composition_inputs: usize,
     pub dbt_multiframe_volume_candidates: usize,
     pub warnings: usize,
@@ -87,11 +90,11 @@ pub struct MammographyPlanSummary {
 
 /// Top-level collection input plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct MammographyInputPlan {
+pub struct MammographyPlan {
     pub input_path: String,
     pub plan: MammographyPlanSelection,
     pub summary: MammographyPlanSummary,
-    pub two_d_views: Option<TwoDViewsPlan>,
+    pub views: Option<ViewsPlan>,
     pub dbt: Option<DbtPlan>,
     pub source_objects: Vec<SourceObjectDiagnostic>,
     pub warnings: Vec<String>,
@@ -99,15 +102,15 @@ pub struct MammographyInputPlan {
 
 /// 2D mammography view input plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TwoDViewsPlan {
-    pub selected_views: BTreeMap<String, TwoDViewSelection>,
+pub struct ViewsPlan {
+    pub selected_views: BTreeMap<String, ViewSelection>,
     pub missing_views: Vec<String>,
     pub selection_warnings: Vec<String>,
 }
 
 /// One standard 2D view selection slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TwoDViewSelection {
+pub struct ViewSelection {
     pub view: String,
     pub selected: bool,
     pub source_path: Option<String>,
@@ -174,7 +177,7 @@ pub struct SourceObjectDiagnostic {
 pub fn plan_mammography_collection(
     input: impl AsRef<Path>,
     options: MammographyPlanOptions,
-) -> Result<MammographyInputPlan> {
+) -> Result<MammographyPlan> {
     validate_plan_selection(options.selection)?;
 
     let input = input.as_ref();
@@ -196,7 +199,7 @@ pub fn plan_mammography_collection(
         }
     }
 
-    let dbt_scan = if options.selection.dbt {
+    let dbt_scan = if options.selection.include_dbt {
         Some(scan_dbt_study(input, DbtScanOptions)?)
     } else {
         None
@@ -219,31 +222,27 @@ fn build_mammography_plan(
     dbt_scan: Option<DbtScanReport>,
     mut warnings: Vec<String>,
     options: MammographyPlanOptions,
-) -> Result<MammographyInputPlan> {
+) -> Result<MammographyPlan> {
     validate_plan_selection(options.selection)?;
 
     let mammogram_records = records.len();
     let (refined_records, refinement_diagnostics) =
         refine_dbt_object_classification_with_diagnostics(&records);
-    let two_d_filter = two_d_views_filter();
+    let views_filter = views_filter();
 
-    let two_d_views = if options.selection.two_d_views {
-        Some(build_two_d_views_plan(
-            &refined_records,
-            &two_d_filter,
-            &options,
-        )?)
+    let views = if options.selection.include_2d {
+        Some(build_views_plan(&refined_records, &views_filter, &options)?)
     } else {
         None
     };
 
-    let dbt = if options.selection.dbt {
+    let dbt = if options.selection.include_dbt {
         Some(build_dbt_plan(&refined_records, dbt_scan))
     } else {
         None
     };
 
-    if let Some(plan) = &two_d_views {
+    if let Some(plan) = &views {
         warnings.extend(plan.selection_warnings.iter().cloned());
     }
 
@@ -252,16 +251,16 @@ fn build_mammography_plan(
         &records,
         &refined_records,
         &refinement_diagnostics,
-        two_d_views.as_ref(),
+        views.as_ref(),
         dbt.as_ref(),
-        options.selection.two_d_views.then_some(&two_d_filter),
+        options.selection.include_2d.then_some(&views_filter),
     );
 
     let summary = MammographyPlanSummary {
         input_dicom_files,
         mammogram_records,
         source_objects: source_objects.len(),
-        two_d_selected_views: two_d_views.as_ref().map_or(0, |plan| {
+        views_selected: views.as_ref().map_or(0, |plan| {
             plan.selected_views
                 .values()
                 .filter(|view| view.selected)
@@ -274,11 +273,11 @@ fn build_mammography_plan(
         warnings: warnings.len(),
     };
 
-    Ok(MammographyInputPlan {
+    Ok(MammographyPlan {
         input_path: input.display().to_string(),
         plan: options.selection,
         summary,
-        two_d_views,
+        views,
         dbt,
         source_objects,
         warnings,
@@ -294,7 +293,7 @@ fn validate_plan_selection(selection: MammographyPlanSelection) -> Result<()> {
     Ok(())
 }
 
-fn two_d_views_filter() -> FilterConfig {
+fn views_filter() -> FilterConfig {
     let allowed_types = HashSet::from([
         MammogramType::Ffdm,
         MammogramType::Synth,
@@ -307,11 +306,11 @@ fn two_d_views_filter() -> FilterConfig {
         .with_allowed_dbt_object_kinds(allowed_dbt_object_kinds)
 }
 
-fn build_two_d_views_plan(
+fn build_views_plan(
     records: &[MammogramRecord],
     filter_config: &FilterConfig,
     options: &MammographyPlanOptions,
-) -> Result<TwoDViewsPlan> {
+) -> Result<ViewsPlan> {
     let (selection, warnings) = get_preferred_views_filtered_with_study_mode_and_warnings(
         records,
         filter_config,
@@ -327,7 +326,7 @@ fn build_two_d_views_plan(
         if let Some(record) = selected {
             selected_views.insert(
                 view_name.clone(),
-                TwoDViewSelection {
+                ViewSelection {
                     view: view_name,
                     selected: true,
                     source_path: Some(record.file_path.display().to_string()),
@@ -340,7 +339,7 @@ fn build_two_d_views_plan(
             missing_views.push(view_name.clone());
             selected_views.insert(
                 view_name.clone(),
-                TwoDViewSelection {
+                ViewSelection {
                     view: view_name,
                     selected: false,
                     source_path: None,
@@ -352,7 +351,7 @@ fn build_two_d_views_plan(
         }
     }
 
-    Ok(TwoDViewsPlan {
+    Ok(ViewsPlan {
         selected_views,
         missing_views,
         selection_warnings: warnings
@@ -451,9 +450,9 @@ fn build_source_diagnostics(
     original_records: &[MammogramRecord],
     refined_records: &[MammogramRecord],
     refinement_diagnostics: &[DbtRefinementDiagnostic],
-    two_d_views: Option<&TwoDViewsPlan>,
+    views: Option<&ViewsPlan>,
     dbt: Option<&DbtPlan>,
-    two_d_filter: Option<&FilterConfig>,
+    views_filter: Option<&FilterConfig>,
 ) -> Vec<SourceObjectDiagnostic> {
     let refinement_by_path: HashMap<PathBuf, &DbtRefinementDiagnostic> = refinement_diagnostics
         .iter()
@@ -463,7 +462,7 @@ fn build_source_diagnostics(
         .iter()
         .map(|record| (record.file_path.clone(), record))
         .collect();
-    let two_d_roles = two_d_roles_by_path(two_d_views);
+    let view_roles = view_roles_by_path(views);
     let dbt_roles = dbt_roles_by_source(dbt);
 
     let mut diagnostics = Vec::new();
@@ -475,7 +474,7 @@ fn build_source_diagnostics(
             .unwrap_or(original);
         let mut selected_as = Vec::new();
         let source_path = original.file_path.display().to_string();
-        if let Some(role) = two_d_roles.get(&source_path) {
+        if let Some(role) = view_roles.get(&source_path) {
             selected_as.push(role.clone());
         }
         for key in source_lookup_keys(input, &original.file_path) {
@@ -487,7 +486,7 @@ fn build_source_diagnostics(
 
         selected_as.sort();
         selected_as.dedup();
-        let filtered_by = two_d_filter
+        let filtered_by = views_filter
             .map(|config| filter_reasons(refined, config))
             .unwrap_or_default();
         let refinement = refinement_by_path.get(&original.file_path).copied();
@@ -532,12 +531,12 @@ fn build_source_diagnostics(
     diagnostics
 }
 
-fn two_d_roles_by_path(two_d_views: Option<&TwoDViewsPlan>) -> HashMap<String, String> {
+fn view_roles_by_path(views: Option<&ViewsPlan>) -> HashMap<String, String> {
     let mut roles = HashMap::new();
-    if let Some(plan) = two_d_views {
+    if let Some(plan) = views {
         for (view, selection) in &plan.selected_views {
             if let Some(source_path) = &selection.source_path {
-                roles.insert(source_path.clone(), format!("two_d_view:{view}"));
+                roles.insert(source_path.clone(), format!("view:{view}"));
             }
         }
     }
@@ -745,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn two_d_views_plan_excludes_tomo_slice_records() {
+    fn views_plan_excludes_tomo_slice_records() {
         let records = vec![
             make_record(
                 "2d.dcm",
@@ -769,7 +768,7 @@ mod tests {
             records,
             None,
             Vec::new(),
-            test_options(MammographyPlanSelection::two_d_views_only()),
+            test_options(MammographyPlanSelection::include_2d_only()),
         )
         .unwrap();
 
@@ -785,7 +784,7 @@ mod tests {
             .filtered_by
             .contains(&"allowed_dbt_object_kinds".to_string()));
         assert_eq!(slice_diag.status, "excluded");
-        assert_eq!(plan.summary.two_d_selected_views, 1);
+        assert_eq!(plan.summary.views_selected, 1);
     }
 
     #[test]
@@ -855,8 +854,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(plan.two_d_views.is_some());
-        assert_eq!(plan.summary.two_d_selected_views, 1);
+        assert!(plan.views.is_some());
+        assert_eq!(plan.summary.views_selected, 1);
         assert_eq!(plan.summary.dbt_composition_inputs, 1);
     }
 
@@ -873,7 +872,7 @@ mod tests {
             records,
             None,
             Vec::new(),
-            test_options(MammographyPlanSelection::two_d_views_only()),
+            test_options(MammographyPlanSelection::include_2d_only()),
         )
         .unwrap();
 

@@ -2085,7 +2085,7 @@ mod tests {
     }
 
     #[test]
-    fn two_d_filter_uses_refined_singleton_synth_and_excludes_refined_slices() {
+    fn view_filter_uses_refined_singleton_synth_and_excludes_refined_slices() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,
@@ -2121,7 +2121,7 @@ mod tests {
     }
 
     #[test]
-    fn two_d_filter_can_require_non_dbt_object_kind() {
+    fn view_filter_can_require_non_dbt_object_kind() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,

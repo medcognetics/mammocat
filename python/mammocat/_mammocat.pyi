@@ -419,7 +419,7 @@ def get_preferred_views_filtered(
 
 def plan_mammography_collection(
     path: str | Path,
-    include_2d_views: bool = True,
+    include_2d: bool = True,
     include_dbt: bool = True,
     preference_order: PreferenceOrder | None = None,
     strict: bool = False,

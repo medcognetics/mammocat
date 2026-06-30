@@ -12,19 +12,19 @@ use super::utils::path_to_pathbuf;
 #[pyfunction]
 #[pyo3(
     name = "plan_mammography_collection",
-    signature = (path, include_2d_views=true, include_dbt=true, preference_order=None, strict=false)
+    signature = (path, include_2d=true, include_dbt=true, preference_order=None, strict=false)
 )]
 pub fn py_plan_mammography_collection(
     py: Python,
     path: &Bound<'_, PyAny>,
-    include_2d_views: bool,
+    include_2d: bool,
     include_dbt: bool,
     preference_order: Option<&PyPreferenceOrder>,
     strict: bool,
 ) -> PyResult<PyObject> {
     let path = path_to_pathbuf(path)?;
     let options = crate::MammographyPlanOptions {
-        selection: crate::MammographyPlanSelection::new(include_2d_views, include_dbt),
+        selection: crate::MammographyPlanSelection::new(include_2d, include_dbt),
         preference_order: preference_order
             .map(|order| order.inner)
             .unwrap_or(crate::PreferenceOrder::Default),

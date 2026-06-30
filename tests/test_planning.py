@@ -45,10 +45,10 @@ def test_plan_mammography_collection_combines_2d_views_and_dbt(tmp_path: Path) -
 
     report = plan_mammography_collection(tmp_path)
 
-    assert report["plan"] == {"two_d_views": True, "dbt": True}
-    assert report["summary"]["two_d_selected_views"] == 1
+    assert report["plan"] == {"include_2d": True, "include_dbt": True}
+    assert report["summary"]["views_selected"] == 1
     assert report["summary"]["dbt_composition_inputs"] == 1
-    selected_views = report["two_d_views"]["selected_views"].values()
+    selected_views = report["views"]["selected_views"].values()
     assert any(view["selected"] for view in selected_views)
     composition = report["dbt"]["composition_inputs"][0]
     assert composition["frame_count"] == 3
@@ -66,12 +66,12 @@ def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None
 
     report = plan_mammography_collection(
         tmp_path,
-        include_2d_views=False,
+        include_2d=False,
         include_dbt=True,
     )
 
-    assert report["plan"] == {"two_d_views": False, "dbt": True}
-    assert report["two_d_views"] is None
+    assert report["plan"] == {"include_2d": False, "include_dbt": True}
+    assert report["views"] is None
     assert report["dbt"]["composition_inputs"]
 
 
@@ -88,7 +88,7 @@ def test_mammoplan_json_output(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["plan"] == {"two_d_views": True, "dbt": True}
+    assert report["plan"] == {"include_2d": True, "include_dbt": True}
     assert report["summary"]["dbt_composition_inputs"] == 1
 
 
@@ -106,15 +106,15 @@ def test_mammoplan_include_flags_select_exact_input_groups(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["plan"] == {"two_d_views": False, "dbt": True}
-    assert report["two_d_views"] is None
+    assert report["plan"] == {"include_2d": False, "include_dbt": True}
+    assert report["views"] is None
     assert report["dbt"]["composition_inputs"]
 
 
 def test_mammoselect_no_longer_accepts_plan_flag(tmp_path: Path) -> None:
     _write_ffdm(tmp_path / "l_mlo.dcm")
 
-    result = _run_cli("mammoselect", str(tmp_path), "--plan", "2d-views")
+    result = _run_cli("mammoselect", str(tmp_path), "--plan", "2d")
 
     assert result.returncode != 0
     assert "unexpected argument '--plan'" in result.stderr

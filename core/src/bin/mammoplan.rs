@@ -1,8 +1,8 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info};
 use mammocat_core::{
-    plan_mammography_collection, MammographyInputPlan, MammographyPlanOptions,
-    MammographyPlanSelection, PreferenceOrder, StudySelectionMode,
+    plan_mammography_collection, MammographyPlan, MammographyPlanOptions, MammographyPlanSelection,
+    PreferenceOrder, StudySelectionMode,
 };
 use std::path::PathBuf;
 use std::process;
@@ -22,8 +22,8 @@ struct Cli {
     format: OutputFormat,
 
     /// Include selected 2D mammography views. If no include flags are set, all input groups are included.
-    #[arg(long = "include-2d-views")]
-    include_two_d_views: bool,
+    #[arg(long = "include-2d")]
+    include_2d: bool,
 
     /// Include DBT composition inputs and volume candidates. If no include flags are set, all input groups are included.
     #[arg(long = "include-dbt")]
@@ -116,14 +116,14 @@ fn setup_logging(verbose: bool) {
 }
 
 fn selection_from_cli(cli: &Cli) -> MammographyPlanSelection {
-    if cli.include_two_d_views || cli.include_dbt {
-        MammographyPlanSelection::new(cli.include_two_d_views, cli.include_dbt)
+    if cli.include_2d || cli.include_dbt {
+        MammographyPlanSelection::new(cli.include_2d, cli.include_dbt)
     } else {
         MammographyPlanSelection::all()
     }
 }
 
-fn output_plan(plan: &MammographyInputPlan, format: &OutputFormat) -> Result<(), String> {
+fn output_plan(plan: &MammographyPlan, format: &OutputFormat) -> Result<(), String> {
     match format {
         OutputFormat::Text => {
             print_plan_text(plan);
@@ -145,7 +145,7 @@ fn output_plan(plan: &MammographyInputPlan, format: &OutputFormat) -> Result<(),
     }
 }
 
-fn print_plan_text(plan: &MammographyInputPlan) {
+fn print_plan_text(plan: &MammographyPlan) {
     println!("Mammography Input Plan");
     println!("======================");
     println!();
@@ -153,7 +153,7 @@ fn print_plan_text(plan: &MammographyInputPlan) {
     println!("Plan inputs: {}", plan_inputs(plan.plan));
     println!("DICOM files: {}", plan.summary.input_dicom_files);
     println!("Mammogram records: {}", plan.summary.mammogram_records);
-    println!("2D selected views: {}", plan.summary.two_d_selected_views);
+    println!("Selected views: {}", plan.summary.views_selected);
     println!(
         "DBT composition inputs: {}",
         plan.summary.dbt_composition_inputs
@@ -163,11 +163,11 @@ fn print_plan_text(plan: &MammographyInputPlan) {
         plan.summary.dbt_multiframe_volume_candidates
     );
 
-    if let Some(two_d_views) = &plan.two_d_views {
+    if let Some(views) = &plan.views {
         println!();
-        println!("2D Mammography Views");
-        println!("--------------------");
-        for selection in two_d_views.selected_views.values() {
+        println!("Views");
+        println!("-----");
+        for selection in views.selected_views.values() {
             let source = selection.source_path.as_deref().unwrap_or("not found");
             println!("{}: {}", selection.view, source);
         }
@@ -210,10 +210,10 @@ fn print_plan_text(plan: &MammographyInputPlan) {
 
 fn plan_inputs(selection: MammographyPlanSelection) -> String {
     let mut inputs = Vec::new();
-    if selection.two_d_views {
-        inputs.push("2d-views");
+    if selection.include_2d {
+        inputs.push("2d");
     }
-    if selection.dbt {
+    if selection.include_dbt {
         inputs.push("dbt");
     }
     inputs.join(", ")

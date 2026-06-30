@@ -120,7 +120,7 @@ make quality-fix
 ./target/release/mammoplan /path/to/dicom_directory --format json
 
 # Plan only 2D mammography views
-./target/release/mammoplan --include-2d-views /path/to/directory --format json
+./target/release/mammoplan --include-2d /path/to/directory --format json
 
 # Plan only DBT composition inputs and volume candidates
 ./target/release/mammoplan --include-dbt /path/to/directory --format json
@@ -205,7 +205,7 @@ The codebase follows a clear separation of concerns:
 
 **`planning.rs`** - Collection-level input planning
 - `plan_mammography_collection()`: Builds 2D mammography view and/or DBT input plans from one directory.
-- `MammographyPlanSelection`: Boolean input-group selection for `two_d_views` and `dbt`.
+- `MammographyPlanSelection`: Boolean input-group selection for `include_2d` and `include_dbt`.
 
 **`validation.rs`** - File and collection validation reports
 - `validate_path()`: Validates a single DICOM file, non-recursive directory, or ZIP archive.
