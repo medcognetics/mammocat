@@ -9,7 +9,7 @@ use crate::dbt::{
     scan_dbt_study, DbtScanOptions, DbtScanReport, DbtSeriesFinding, DbtSkippedFile,
     DbtUnsupportedSeries,
 };
-use crate::dicom_files::collect_dicom_files;
+use crate::dicom_files::collect_dicom_files_recursively;
 use crate::error::{MammocatError, Result};
 use crate::selection::{
     get_preferred_views_filtered_with_study_mode_and_warnings,
@@ -225,7 +225,7 @@ pub fn plan_mammography_collection(
         )));
     }
 
-    let dicom_files = collect_dicom_files(input)?;
+    let dicom_files = collect_dicom_files_recursively(input)?;
     let input_dicom_files = dicom_files.len();
     let mut records = Vec::new();
     let mut warnings = Vec::new();

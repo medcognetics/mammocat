@@ -79,6 +79,24 @@ def test_plan_mammography_collection_combines_2d_views_and_dbt(tmp_path: Path) -
     )
 
 
+def test_plan_mammography_collection_recurses_into_series_directories(tmp_path: Path) -> None:
+    views_dir = tmp_path / "2d"
+    dbt_dir = tmp_path / "dbt"
+    views_dir.mkdir()
+    dbt_dir.mkdir()
+    _write_ffdm(views_dir / "l_mlo.dcm")
+    create_old_format_dbt_series(dbt_dir)
+
+    report = plan_mammography_collection(tmp_path)
+
+    assert report["summary"]["input_dicom_files"] == 4
+    assert report["summary"]["mammogram_records"] == 1
+    assert report["summary"]["source_objects"] == 4
+    assert report["summary"]["views_selected"] == 1
+    assert report["summary"]["dbt_composition_inputs"] == 1
+    assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("2d/l_mlo.dcm")
+
+
 def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None:
     _write_ffdm(tmp_path / "l_mlo.dcm")
     create_old_format_dbt_series(tmp_path)

@@ -17,19 +17,45 @@ pub fn collect_dicom_files(directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext.eq_ignore_ascii_case("dcm") || ext.eq_ignore_ascii_case("dicom") {
-                    files.push(path);
-                }
-            } else if is_dicom_file(&path) {
-                files.push(path);
-            }
+        if path.is_file() && is_dicom_candidate(&path) {
+            files.push(path);
         }
     }
 
     files.sort();
     Ok(files)
+}
+
+/// Collect DICOM file candidates recursively from a directory.
+///
+/// This is used by collection-level planning, where callers commonly pass a
+/// study root containing per-series subdirectories.
+pub fn collect_dicom_files_recursively(directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+    fn visit(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, files)?;
+            } else if path.is_file() && is_dicom_candidate(&path) {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(directory, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn is_dicom_candidate(path: &Path) -> bool {
+    if let Some(ext) = path.extension() {
+        ext.eq_ignore_ascii_case("dcm") || ext.eq_ignore_ascii_case("dicom")
+    } else {
+        is_dicom_file(path)
+    }
 }
 
 /// Check whether a file has the standard DICOM preamble and DICM magic bytes.

@@ -21,7 +21,7 @@ pub use dbt::{
     DbtScanOptions, DbtScanReport, DbtScanSummary, DbtSeriesFinding, DbtSkippedFile,
     DbtUnsupportedSeries, BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
 };
-pub use dicom_files::{collect_dicom_files, is_dicom_file};
+pub use dicom_files::{collect_dicom_files, collect_dicom_files_recursively, is_dicom_file};
 pub use error::{MammocatError, Result};
 pub use planning::{
     plan_mammography_collection, DbtCompositionInput, DbtPlan, DbtVolumeCandidate, MammographyPlan,
