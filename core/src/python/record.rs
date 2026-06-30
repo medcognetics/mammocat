@@ -95,6 +95,12 @@ impl PyMammogramRecord {
         option_string_to_py(py, self.inner.study_instance_uid.clone())
     }
 
+    /// Series Instance UID (if available)
+    #[getter]
+    fn series_instance_uid(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.series_instance_uid.clone())
+    }
+
     /// SOP Instance UID (if available)
     #[getter]
     fn sop_instance_uid(&self, py: Python) -> PyObject {
@@ -213,6 +219,7 @@ impl PyMammogramRecord {
         dict.set_item("file_path", self.file_path())?;
         dict.set_item("metadata", self.metadata().to_dict(py)?)?;
         dict.set_item("study_instance_uid", self.study_instance_uid(py))?;
+        dict.set_item("series_instance_uid", self.series_instance_uid(py))?;
         dict.set_item("sop_instance_uid", self.sop_instance_uid(py))?;
         dict.set_item("rows", self.rows(py))?;
         dict.set_item("columns", self.columns(py))?;

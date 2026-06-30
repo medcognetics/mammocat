@@ -1,6 +1,7 @@
 """Tests for mammocat enum types."""
 
 from mammocat import (
+    DbtObjectKind,
     ImageType,
     Laterality,
     MammogramType,
@@ -51,6 +52,27 @@ class TestMammogramType:
         assert MammogramType.TOMO.is_preferred_to(MammogramType.FFDM)
         assert MammogramType.FFDM.is_preferred_to(MammogramType.SYNTH)
         assert not MammogramType.SYNTH.is_preferred_to(MammogramType.FFDM)
+
+
+class TestDbtObjectKind:
+    def test_enum_values(self):
+        """Test DbtObjectKind enum values."""
+        assert DbtObjectKind.NONE.value == "none"
+        assert DbtObjectKind.VOLUME.value == "volume"
+        assert DbtObjectKind.SLICE.value == "slice"
+        assert DbtObjectKind.UNKNOWN.value == "unknown"
+
+    def test_string_representation(self):
+        """Test string representation."""
+        assert str(DbtObjectKind.NONE) == "none"
+        assert str(DbtObjectKind.VOLUME) == "volume"
+        assert str(DbtObjectKind.SLICE) == "slice"
+        assert str(DbtObjectKind.UNKNOWN) == "unknown"
+
+    def test_equality(self):
+        """Test equality comparison."""
+        assert DbtObjectKind.SLICE == DbtObjectKind.SLICE
+        assert DbtObjectKind.SLICE != DbtObjectKind.VOLUME
 
 
 class TestLaterality:

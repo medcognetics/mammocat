@@ -3,7 +3,9 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use super::enums::{PyImageType, PyLaterality, PyMammogramType, PyMammogramView, PyViewPosition};
+use super::enums::{
+    PyDbtObjectKind, PyImageType, PyLaterality, PyMammogramType, PyMammogramView, PyViewPosition,
+};
 use super::utils::option_string_to_py;
 
 /// Python wrapper for MammogramMetadata
@@ -19,6 +21,12 @@ impl PyMammogramMetadata {
     #[getter]
     fn mammogram_type(&self) -> PyMammogramType {
         self.inner.mammogram_type.into()
+    }
+
+    /// DBT object representation
+    #[getter]
+    fn dbt_object_kind(&self) -> PyDbtObjectKind {
+        self.inner.dbt_object_kind.into()
     }
 
     /// Laterality (left/right/bilateral)
@@ -87,6 +95,21 @@ impl PyMammogramMetadata {
         self.inner.number_of_frames
     }
 
+    /// DICOM ConcatenationUID, when present
+    #[getter]
+    fn concatenation_uid(&self, py: Python) -> PyObject {
+        option_string_to_py(py, self.inner.concatenation_uid.clone())
+    }
+
+    /// DICOM SOPInstanceUIDOfConcatenationSource, when present
+    #[getter]
+    fn sop_instance_uid_of_concatenation_source(&self, py: Python) -> PyObject {
+        option_string_to_py(
+            py,
+            self.inner.sop_instance_uid_of_concatenation_source.clone(),
+        )
+    }
+
     /// Whether this is a secondary capture image
     #[getter]
     fn is_secondary_capture(&self) -> bool {
@@ -127,7 +150,7 @@ impl PyMammogramMetadata {
         self.inner.is_standard_view()
     }
 
-    /// Checks if this is a 2D mammogram (not tomosynthesis)
+    /// Checks if this belongs to the explicit 2D mammogram group.
     fn is_2d(&self) -> bool {
         self.inner.is_2d()
     }
@@ -136,6 +159,7 @@ impl PyMammogramMetadata {
     pub fn to_dict(&self, py: Python) -> PyResult<Py<PyDict>> {
         let dict = PyDict::new_bound(py);
         dict.set_item("mammogram_type", self.mammogram_type().simple_name())?;
+        dict.set_item("dbt_object_kind", self.dbt_object_kind().simple_name())?;
         dict.set_item("laterality", self.laterality().simple_name())?;
         dict.set_item("view_position", self.view_position().simple_name())?;
         dict.set_item("image_type", format!("{}", self.inner.image_type))?;
@@ -147,6 +171,11 @@ impl PyMammogramMetadata {
         dict.set_item("manufacturer", self.manufacturer(py))?;
         dict.set_item("model", self.model(py))?;
         dict.set_item("number_of_frames", self.number_of_frames())?;
+        dict.set_item("concatenation_uid", self.concatenation_uid(py))?;
+        dict.set_item(
+            "sop_instance_uid_of_concatenation_source",
+            self.sop_instance_uid_of_concatenation_source(py),
+        )?;
         dict.set_item("is_secondary_capture", self.is_secondary_capture())?;
         dict.set_item("modality", self.modality(py))?;
         dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid(py))?;

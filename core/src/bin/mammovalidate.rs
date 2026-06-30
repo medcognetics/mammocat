@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use mammocat_core::{
-    validate_path, CheckStatus, FilterConfig, MammogramType, PreferenceOrder, Severity,
-    ValidationOptions, ValidationProfile, ValidationReport, ValidationRuntimeError,
+    validate_path, CheckStatus, DbtObjectKind, FilterConfig, MammogramType, PreferenceOrder,
+    Severity, ValidationOptions, ValidationProfile, ValidationReport, ValidationRuntimeError,
     ValidationStatus,
 };
 
@@ -80,6 +80,10 @@ struct Args {
     /// Allowed mammogram types for directory readiness, comma-separated
     #[arg(long, value_delimiter = ',')]
     allowed_types: Option<Vec<MammogramTypeArg>>,
+
+    /// Allowed DBT object kinds for directory readiness, comma-separated
+    #[arg(long, value_delimiter = ',')]
+    allowed_dbt_object_kinds: Option<Vec<DbtObjectKindArg>>,
 
     /// Exclude views with breast implants
     #[arg(long)]
@@ -168,6 +172,25 @@ impl From<MammogramTypeArg> for MammogramType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DbtObjectKindArg {
+    None,
+    Volume,
+    Slice,
+    Unknown,
+}
+
+impl From<DbtObjectKindArg> for DbtObjectKind {
+    fn from(value: DbtObjectKindArg) -> Self {
+        match value {
+            DbtObjectKindArg::None => DbtObjectKind::None,
+            DbtObjectKindArg::Volume => DbtObjectKind::Volume,
+            DbtObjectKindArg::Slice => DbtObjectKind::Slice,
+            DbtObjectKindArg::Unknown => DbtObjectKind::Unknown,
+        }
+    }
+}
+
 fn main() {
     let args = Args::parse();
     let mut stdout = std::io::stdout().lock();
@@ -224,6 +247,11 @@ fn build_validation_options(args: &Args) -> ValidationOptions {
         let allowed_types: HashSet<MammogramType> =
             type_args.iter().copied().map(MammogramType::from).collect();
         filter_config = filter_config.with_allowed_types(allowed_types);
+    }
+    if let Some(kind_args) = &args.allowed_dbt_object_kinds {
+        let allowed_kinds: HashSet<DbtObjectKind> =
+            kind_args.iter().copied().map(DbtObjectKind::from).collect();
+        filter_config = filter_config.with_allowed_dbt_object_kinds(allowed_kinds);
     }
     filter_config = filter_config.exclude_implants(args.exclude_implants);
     filter_config = filter_config.exclude_non_standard_views(args.only_standard_views);
@@ -354,10 +382,11 @@ fn render_text_report(
                 .file_path
                 .as_ref()
                 .map(|path| {
+                    let mammogram_type = view.mammogram_type.as_deref().unwrap_or("unknown");
+                    let dbt_object_kind = view.dbt_object_kind.as_deref().unwrap_or("unknown");
                     format!(
-                        "{} ({})",
-                        path,
-                        view.mammogram_type.as_deref().unwrap_or("unknown")
+                        "{} (type={}, dbt_object_kind={})",
+                        path, mammogram_type, dbt_object_kind
                     )
                 })
                 .unwrap_or_else(|| "missing".to_string());
@@ -480,6 +509,7 @@ mod tests {
             verbose: false,
             preference: PreferenceOrderArg::Default,
             allowed_types: None,
+            allowed_dbt_object_kinds: None,
             exclude_implants: false,
             only_standard_views: false,
             include_for_processing: false,
@@ -507,6 +537,27 @@ mod tests {
             true,
             true
         ));
+    }
+
+    #[test]
+    fn build_validation_options_allows_dbt_object_kinds() {
+        let args = Args::try_parse_from([
+            TOOL_NAME,
+            "--allowed-dbt-object-kinds",
+            "volume,slice",
+            "/tmp",
+        ])
+        .unwrap();
+
+        let options = build_validation_options(&args);
+        let allowed = options
+            .filter_config
+            .allowed_dbt_object_kinds
+            .expect("allowed DBT object kinds");
+
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&DbtObjectKind::Volume));
+        assert!(allowed.contains(&DbtObjectKind::Slice));
     }
 
     #[test]

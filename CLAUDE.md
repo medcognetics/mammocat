@@ -168,7 +168,7 @@ and 26 copy-through DICOM files.
 The codebase follows a clear separation of concerns:
 
 **`types/`** - Core type system and domain models
-- `enums.rs`: MammogramType, Laterality, ViewPosition, PhotometricInterpretation, PreferenceOrder
+- `enums.rs`: MammogramType, DbtObjectKind, Laterality, ViewPosition, PhotometricInterpretation, PreferenceOrder
 - `filter.rs`: FilterConfig struct for record filtering during view selection
 - `image_type.rs`: ImageType struct for decomposed DICOM ImageType field
 - `view.rs`: MammogramView combining laterality + view position
@@ -179,7 +179,7 @@ The codebase follows a clear separation of concerns:
   - `get_string_value()`, `get_int_value()`: Read tag values from DICOM
   - `get_lowercase_string()`: Get normalized lowercase string (reduces boilerplate)
   - `PIXEL_DATA_TAG`, `DICOM_MAGIC_BYTES`: Shared constants
-- `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection)
+- `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection) plus DBT object-kind detection
 - `laterality.rs`: Laterality extraction with fallback hierarchy
 - `view_position.rs`: View position parsing with helper functions (`match_strict_patterns`, `match_loose_patterns`)
 - `view_modifiers.rs`: Spot compression, magnification, implant displaced detection
@@ -196,7 +196,7 @@ The codebase follows a clear separation of concerns:
 
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
-- `MammogramMetadata`: Complete extracted metadata structure (includes manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
+- `MammogramMetadata`: Complete extracted metadata structure (includes dbt_object_kind, manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
 
 **`python/`** - PyO3 bindings (enabled with `--features python`)
 - `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)
@@ -230,7 +230,8 @@ MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the se
 2. Laterality
 3. FrameLaterality in SharedFunctionalGroupsSequence
 
-**Rule-Based Classification**: Mammogram type classification follows a strict order of rules (see core/src/extraction/mammo_type.rs:26-50 for algorithm). Rules are categorized as "very solid", "ok", and "not good" matching Python implementation. Defaults to FFDM when ImageType fields are missing.
+**Rule-Based Classification**: Mammogram type classification follows the ordered algorithm documented in `core/src/extraction/mammo_type.rs`. Rules are applied from strongest evidence to fallback rules, preserving Python-compatible behavior where applicable. Defaults to FFDM when ImageType fields are missing.
+Exact `ImageType` component `TOMO_2D` remains `Synth`; exact component `TOMO` is `Tomo` even for single-frame slice-per-file DBT. `TOMO_PROJ` is not treated as `TOMO`. Fuji-like single-frame `DERIVED\PRIMARY` objects with `VolumetricProperties=VOLUME`, allowed/absent `VolumeBasedCalculationTechnique`, concatenation/source-volume tags, and supporting tomosynthesis evidence are ambiguous in single-file extraction because vendors may copy those fields onto singleton synthetic 2D objects. Single-file `mammocat` reports those as `Unknown`/`DbtObjectKind::Unknown`; collection-aware selection and directory validation refine only large same-series ambiguous groups to `Tomo`/`Slice`, and leave ambiguous singleton objects unknown even when paired with a split-slice series. Tomosynthesis acquisition tags alone are not enough because Fuji FFDM and synthetic objects can carry them. `DbtObjectKind` records whether DBT is a multi-frame volume, single-frame slice, unknown DBT representation, or non-DBT.
 
 **Enum Combinators**: Laterality has a `reduce()` method for combining lateralities (e.g., LEFT + RIGHT → BILATERAL). ViewPosition has helper methods like `is_standard_view()`, `is_mlo_like()`, `is_cc_like()`.
 
@@ -244,10 +245,11 @@ Hard filtering is used - records that don't pass filters are completely excluded
 
 Filtering flow:
 1. Load all DICOM files into MammogramRecord collection
-2. Apply FilterConfig to remove unwanted records via `apply_filters()`
-3. Choose one study from filtered usable candidates, or fail in strict study mode
-4. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
-5. Return best views from remaining candidates
+2. Refine ambiguous DBT/SYN2D classifications using collection context
+3. Apply FilterConfig to remove unwanted records via `apply_filters()`
+4. Choose one study from filtered usable candidates, or fail in strict study mode
+5. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
+6. Return best views from remaining candidates
 
 ### Validation Architecture
 
@@ -279,7 +281,7 @@ This implementation maintains behavioral compatibility with the Python `dicom-ut
 
 ## Testing Strategy
 
-Tests are embedded in module files using `#[cfg(test)]`. Current coverage: 60+ Rust unit tests + 48 Python tests.
+Tests are embedded in module files using `#[cfg(test)]`, with additional Python tests under `tests/`.
 
 Test categories:
 - Enum behavior and ordering (types/enums.rs)

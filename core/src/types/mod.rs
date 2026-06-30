@@ -2,6 +2,7 @@
 //!
 //! This module provides the fundamental types used throughout the mammocat library:
 //! - [`MammogramType`]: Classification of mammogram imaging types (FFDM, TOMO, SYNTH, SFM)
+//! - [`DbtObjectKind`]: DBT storage representation (volume, slice, unknown, or none)
 //! - [`Laterality`]: Breast laterality (Left, Right, Bilateral)
 //! - [`ViewPosition`]: View positions (CC, MLO, etc.)
 //! - [`MammogramView`]: Combined laterality and view position
@@ -16,7 +17,8 @@ mod pixel_spacing;
 mod view;
 
 pub use enums::{
-    Laterality, MammogramType, PhotometricInterpretation, PreferenceOrder, ViewPosition,
+    DbtObjectKind, Laterality, MammogramType, PhotometricInterpretation, PreferenceOrder,
+    ViewPosition,
 };
 pub use filter::FilterConfig;
 pub use image_type::ImageType;

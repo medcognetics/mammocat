@@ -4,7 +4,7 @@
 //! metadata, implementing the same algorithms as the Python dicom-utils library.
 //!
 //! - [`laterality`]: Laterality extraction with fallback hierarchy
-//! - [`mammo_type`]: Mammogram type classification (TOMO/FFDM/SYNTH/SFM)
+//! - [`mammo_type`]: Mammogram type and DBT object classification
 //! - [`view_position`]: View position parsing from multiple DICOM fields
 //! - [`view_modifiers`]: Spot compression, magnification, and implant displaced detection
 //! - [`tags`]: DICOM tag constants and helper functions
@@ -16,7 +16,7 @@ pub mod view_modifiers;
 pub mod view_position;
 
 pub use laterality::extract_laterality;
-pub use mammo_type::{extract_image_type, extract_mammogram_type};
+pub use mammo_type::{extract_dbt_object_kind, extract_image_type, extract_mammogram_type};
 pub use tags::*;
 pub use view_modifiers::{
     extract_view_modifier_meanings, is_implant_displaced, is_magnified, is_spot_compression,

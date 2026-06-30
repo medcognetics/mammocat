@@ -43,10 +43,49 @@ impl PreferenceOrder {
     }
 }
 
-/// Mammogram type classification with preference ordering
+/// DBT object representation for tomosynthesis metadata.
 ///
-/// Preference order: TOMO < FFDM < SYNTH < SFM < UNKNOWN
-/// (Lower values are MORE preferred for deduplication/selection)
+/// This is orthogonal to [`MammogramType`]: confidently identified or refined
+/// DBT volumes and split slice-per-file objects use [`MammogramType::Tomo`],
+/// while ambiguous single-file DBT evidence can remain [`MammogramType::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", serde(rename_all = "lowercase"))]
+pub enum DbtObjectKind {
+    /// Not a DBT object.
+    #[default]
+    None,
+    /// Multi-frame DBT volume object.
+    Volume,
+    /// Single-frame DBT slice object.
+    Slice,
+    /// DBT object whose storage representation could not be determined.
+    Unknown,
+}
+
+impl DbtObjectKind {
+    /// Returns simple name for display and dictionary output.
+    pub fn simple_name(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Volume => "volume",
+            Self::Slice => "slice",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for DbtObjectKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.simple_name())
+    }
+}
+
+/// Mammogram type classification with intrinsic ordering.
+///
+/// Intrinsic order: TOMO < FFDM < SYNTH < SFM < UNKNOWN. This powers
+/// [`Ord`] and [`MammogramType::is_preferred_to`]; preferred-view selection can
+/// override type ranking with [`PreferenceOrder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "lowercase"))]
@@ -88,7 +127,7 @@ impl MammogramType {
         }
     }
 
-    /// Returns numeric value for preference ordering (lower = more preferred)
+    /// Returns numeric value for intrinsic ordering (lower = more preferred)
     fn value(&self) -> i32 {
         match self {
             MammogramType::Tomo => 1,
@@ -432,6 +471,14 @@ impl fmt::Display for PhotometricInterpretation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dbt_object_kind_display() {
+        assert_eq!(DbtObjectKind::None.simple_name(), "none");
+        assert_eq!(DbtObjectKind::Volume.to_string(), "volume");
+        assert_eq!(DbtObjectKind::Slice.to_string(), "slice");
+        assert_eq!(DbtObjectKind::Unknown.to_string(), "unknown");
+    }
 
     #[test]
     fn test_mammogram_type_ordering() {

@@ -1,6 +1,6 @@
 //! Validation reports for mammocat and mammoselect readiness.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,9 @@ use crate::extraction::tags::{
     PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL, SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID,
     STUDY_INSTANCE_UID, VIEW_POSITION,
 };
-use crate::selection::{get_preferred_views_filtered, MammogramRecord};
+use crate::selection::{
+    get_preferred_views_filtered, refine_dbt_object_classification, MammogramRecord,
+};
 use crate::types::{
     FilterConfig, Laterality, MammogramType, PreferenceOrder, ViewPosition, STANDARD_MAMMO_VIEWS,
 };
@@ -355,6 +357,7 @@ pub struct PixelValidationReport {
 pub struct MammographyValidationReport {
     pub modality: Option<String>,
     pub mammogram_type: Option<String>,
+    pub dbt_object_kind: Option<String>,
     pub laterality: Option<String>,
     pub view_position: Option<String>,
     pub image_type: Option<String>,
@@ -366,6 +369,8 @@ pub struct MammographyValidationReport {
     pub is_secondary_capture: Option<bool>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
+    pub concatenation_uid: Option<String>,
+    pub sop_instance_uid_of_concatenation_source: Option<String>,
     pub pixel_spacing: Option<String>,
 }
 
@@ -541,6 +546,7 @@ pub struct SelectedViewReport {
     pub selected: bool,
     pub file_path: Option<String>,
     pub mammogram_type: Option<String>,
+    pub dbt_object_kind: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -804,11 +810,33 @@ fn validate_file_collection(
         return report;
     }
 
+    let records_for_refinement: Vec<MammogramRecord> = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome.report.is_valid() || has_only_unknown_mammogram_type_error(&outcome.report)
+        })
+        .filter_map(|outcome| outcome.record.clone())
+        .collect();
+    let refined_records = refine_dbt_object_classification(&records_for_refinement);
+    let refined_records_by_path: HashMap<PathBuf, MammogramRecord> = refined_records
+        .into_iter()
+        .map(|record| (record.file_path.clone(), record))
+        .collect();
+
     let mut valid_records = Vec::new();
-    for outcome in outcomes {
-        if outcome.report.is_valid() {
-            if let Some(record) = outcome.record {
-                valid_records.push(record);
+    for mut outcome in outcomes {
+        if let Some(record) = outcome
+            .record
+            .as_ref()
+            .and_then(|record| refined_records_by_path.get(&record.file_path))
+        {
+            apply_refined_record_to_file_report(
+                &mut outcome.report,
+                record,
+                &options.filter_config,
+            );
+            if outcome.report.is_valid() {
+                valid_records.push(record.clone());
             }
         }
         report.files.push(outcome.report);
@@ -832,6 +860,7 @@ fn validate_file_collection(
                     selected: true,
                     file_path: Some(record.file_path.display().to_string()),
                     mammogram_type: Some(record.metadata.mammogram_type.to_string()),
+                    dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
                 },
             );
         } else {
@@ -843,6 +872,7 @@ fn validate_file_collection(
                     selected: false,
                     file_path: None,
                     mammogram_type: None,
+                    dbt_object_kind: None,
                 },
             );
         }
@@ -881,6 +911,67 @@ fn validate_file_collection(
     });
     report.finalize();
     report
+}
+
+fn has_only_unknown_mammogram_type_error(report: &FileValidationReport) -> bool {
+    !report.errors.is_empty()
+        && report
+            .errors
+            .iter()
+            .all(|message| message.code == "unknown_mammogram_type")
+}
+
+fn apply_refined_record_to_file_report(
+    report: &mut FileValidationReport,
+    record: &MammogramRecord,
+    filter_config: &FilterConfig,
+) {
+    let metadata = &record.metadata;
+    let resolved_unknown_type = report
+        .mammography
+        .mammogram_type
+        .as_deref()
+        .is_some_and(|mammogram_type| mammogram_type == MammogramType::Unknown.to_string())
+        && !metadata.mammogram_type.is_unknown();
+
+    report.mammography.mammogram_type = Some(metadata.mammogram_type.to_string());
+    report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
+    report.mammography.concatenation_uid = metadata.concatenation_uid.clone();
+    report.mammography.sop_instance_uid_of_concatenation_source =
+        metadata.sop_instance_uid_of_concatenation_source.clone();
+
+    if resolved_unknown_type {
+        report
+            .errors
+            .retain(|message| message.code != "unknown_mammogram_type");
+        report
+            .warnings
+            .retain(|message| message.code != "unknown_mammogram_type");
+        report.checks.retain(|check| check.name != "MammogramType");
+        report.pass(
+            "MammogramType",
+            "mammogram type resolved from collection context".to_string(),
+            None,
+            Some(metadata.mammogram_type.to_string()),
+        );
+    }
+
+    reset_selection_eligibility(report);
+    validate_selection_eligibility(report, Some(metadata), filter_config);
+    report.finalize();
+}
+
+fn reset_selection_eligibility(report: &mut FileValidationReport) {
+    report
+        .warnings
+        .retain(|message| message.code != "selection_filter_warning");
+    report
+        .checks
+        .retain(|check| check.name != "Selection eligibility");
+    report.selection = SelectionEligibilityReport {
+        eligible: false,
+        ..SelectionEligibilityReport::default()
+    };
 }
 
 fn validate_file_source(path: &Path, options: &ValidationOptions) -> ValidationReport {
@@ -1321,6 +1412,7 @@ fn collect_mammography_metadata(
     profile: ValidationProfile,
 ) {
     report.mammography.mammogram_type = Some(metadata.mammogram_type.to_string());
+    report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
     report.mammography.laterality = Some(metadata.laterality.to_string());
     report.mammography.view_position = Some(metadata.view_position.to_string());
     report.mammography.image_type = Some(metadata.image_type.to_string());
@@ -1332,6 +1424,9 @@ fn collect_mammography_metadata(
     report.mammography.is_secondary_capture = Some(metadata.is_secondary_capture);
     report.mammography.manufacturer = metadata.manufacturer.clone();
     report.mammography.model = metadata.model.clone();
+    report.mammography.concatenation_uid = metadata.concatenation_uid.clone();
+    report.mammography.sop_instance_uid_of_concatenation_source =
+        metadata.sop_instance_uid_of_concatenation_source.clone();
     report.mammography.pixel_spacing = get_string_value(dcm, PIXEL_SPACING);
 
     validate_image_type(report, dcm, profile);
@@ -1380,6 +1475,11 @@ fn validate_selection_eligibility(
     if let Some(allowed_types) = &filter_config.allowed_types {
         if !allowed_types.contains(&metadata.mammogram_type) {
             filtered_by.push("allowed_types".to_string());
+        }
+    }
+    if let Some(allowed_dbt_object_kinds) = &filter_config.allowed_dbt_object_kinds {
+        if !allowed_dbt_object_kinds.contains(&metadata.dbt_object_kind) {
+            filtered_by.push("allowed_dbt_object_kinds".to_string());
         }
     }
     if filter_config.exclude_implants && metadata.has_implant {
@@ -1953,13 +2053,20 @@ mod tests {
     use std::io::Write;
 
     use crate::extraction::tags::{
-        LATERALITY, PRESENTATION_INTENT_TYPE, VIEW_CODE_SEQUENCE, VIEW_MODIFIER_CODE_SEQUENCE,
+        ACQUISITION_DEVICE_PROCESSING_DESCRIPTION, CONCATENATION_UID, LATERALITY,
+        NUMBER_OF_TOMOSYNTHESIS_SOURCE_IMAGES, PRESENTATION_INTENT_TYPE,
+        SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE, TOMO_CLASS, VIEW_CODE_SEQUENCE,
+        VIEW_MODIFIER_CODE_SEQUENCE, VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
     };
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_object::InMemDicomObject;
 
     fn put_str(dcm: &mut InMemDicomObject, tag: Tag, value: &str) {
         dcm.put(DataElement::new(tag, VR::CS, PrimitiveValue::from(value)));
+    }
+
+    fn put_str_with_vr(dcm: &mut InMemDicomObject, tag: Tag, vr: VR, value: &str) {
+        dcm.put(DataElement::new(tag, vr, PrimitiveValue::from(value)));
     }
 
     fn put_u16(dcm: &mut InMemDicomObject, tag: Tag, value: u16) {
@@ -2015,6 +2122,55 @@ mod tests {
                 .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.9"),
         )
         .unwrap()
+    }
+
+    fn ambiguous_dbt_object_with(
+        study_uid: &str,
+        series_uid: &str,
+        sop_uid: &str,
+        source_sop_uid: Option<&str>,
+        laterality: &str,
+        view_position: &str,
+    ) -> FileDicomObject<InMemDicomObject> {
+        let mut dcm = valid_metadata_object_with(laterality, view_position);
+        put_str_with_vr(&mut dcm, STUDY_INSTANCE_UID, VR::UI, study_uid);
+        put_str_with_vr(&mut dcm, SERIES_INSTANCE_UID, VR::UI, series_uid);
+        put_str_with_vr(&mut dcm, SOP_INSTANCE_UID, VR::UI, sop_uid);
+        dcm.put(DataElement::new(
+            IMAGE_TYPE,
+            VR::CS,
+            PrimitiveValue::Strs(vec!["DERIVED".to_string(), "PRIMARY".to_string()].into()),
+        ));
+        put_str(&mut dcm, VOLUMETRIC_PROPERTIES, "VOLUME");
+        put_str(&mut dcm, VOLUME_BASED_CALCULATION_TECHNIQUE, "NONE");
+        put_str_with_vr(
+            &mut dcm,
+            CONCATENATION_UID,
+            VR::UI,
+            &format!("{series_uid}.1"),
+        );
+        if let Some(source_sop_uid) = source_sop_uid {
+            put_str_with_vr(
+                &mut dcm,
+                SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
+                VR::UI,
+                source_sop_uid,
+            );
+        }
+        put_str(&mut dcm, TOMO_CLASS, "TOMOSYNTHESIS");
+        put_str_with_vr(
+            &mut dcm,
+            NUMBER_OF_TOMOSYNTHESIS_SOURCE_IMAGES,
+            VR::IS,
+            "15",
+        );
+        put_str_with_vr(
+            &mut dcm,
+            ACQUISITION_DEVICE_PROCESSING_DESCRIPTION,
+            VR::LO,
+            "TOMO R MAMMOGRAPHY,CC",
+        );
+        dcm
     }
 
     fn validate_object(
@@ -2215,6 +2371,140 @@ mod tests {
             .files
             .iter()
             .all(|file| warning_codes(file).contains("non_mg_modality")));
+    }
+
+    #[test]
+    fn directory_validation_uses_collection_refined_dbt_classification() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        const STUDY_UID: &str = "1.2.826.0.1";
+        const SPLIT_SLICE_SERIES_UID: &str = "1.2.826.0.1.10";
+        const SYNTH_SINGLETON_SERIES_UID: &str = "1.2.826.0.1.20";
+        const SOURCE_SOP_UID: &str = "1.2.826.0.1.30";
+        const SYNTH_SINGLETON_SOP_UID: &str = "1.2.826.0.1.40";
+        for index in 0..13 {
+            let path = temp_dir.path().join(format!("slice_{index}.dcm"));
+            ambiguous_dbt_object_with(
+                STUDY_UID,
+                SPLIT_SLICE_SERIES_UID,
+                &format!("{SPLIT_SLICE_SERIES_UID}.{index}"),
+                Some(SOURCE_SOP_UID),
+                "R",
+                "CC",
+            )
+            .write_to_file(path)
+            .unwrap();
+        }
+        let syn2d_path = temp_dir.path().join("syn2d.dcm");
+        ambiguous_dbt_object_with(
+            STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID),
+            "R",
+            "CC",
+        )
+        .write_to_file(&syn2d_path)
+        .unwrap();
+
+        let mut allowed_types = HashSet::new();
+        allowed_types.insert(MammogramType::Ffdm);
+        allowed_types.insert(MammogramType::Synth);
+        allowed_types.insert(MammogramType::Sfm);
+        let options = ValidationOptions {
+            filter_config: FilterConfig::permissive().with_allowed_types(allowed_types),
+            ..ValidationOptions::default()
+        };
+
+        let report = validate_directory_path(temp_dir.path(), &options).unwrap();
+        let selected_views = &report.directory.as_ref().unwrap().selected_views;
+        let selected_rcc = selected_views.get("rcc").expect("rcc report");
+
+        assert!(selected_rcc.file_path.is_none());
+        assert!(selected_rcc.mammogram_type.is_none());
+        assert!(selected_rcc.dbt_object_kind.is_none());
+        let singleton_report = report
+            .files
+            .iter()
+            .find(|file| file.file.path == syn2d_path.display().to_string())
+            .expect("singleton report");
+        assert_eq!(
+            singleton_report.mammography.mammogram_type.as_deref(),
+            Some("unknown")
+        );
+        assert_eq!(
+            singleton_report.mammography.dbt_object_kind.as_deref(),
+            Some("unknown")
+        );
+        assert!(report
+            .files
+            .iter()
+            .filter(|file| file.file.path.contains("slice_"))
+            .all(|file| !error_codes(file).contains("unknown_mammogram_type")));
+        assert!(error_codes(singleton_report).contains("unknown_mammogram_type"));
+    }
+
+    #[test]
+    fn extraction_directory_validation_clears_refined_unknown_type_warnings() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        const STUDY_UID: &str = "1.2.826.0.2";
+        const SPLIT_SLICE_SERIES_UID: &str = "1.2.826.0.2.10";
+        const SYNTH_SINGLETON_SERIES_UID: &str = "1.2.826.0.2.20";
+        const SOURCE_SOP_UID: &str = "1.2.826.0.2.30";
+        const SYNTH_SINGLETON_SOP_UID: &str = "1.2.826.0.2.40";
+        for index in 0..13 {
+            let path = temp_dir.path().join(format!("slice_{index}.dcm"));
+            ambiguous_dbt_object_with(
+                STUDY_UID,
+                SPLIT_SLICE_SERIES_UID,
+                &format!("{SPLIT_SLICE_SERIES_UID}.{index}"),
+                Some(SOURCE_SOP_UID),
+                "R",
+                "CC",
+            )
+            .write_to_file(path)
+            .unwrap();
+        }
+        ambiguous_dbt_object_with(
+            STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID),
+            "R",
+            "CC",
+        )
+        .write_to_file(temp_dir.path().join("syn2d.dcm"))
+        .unwrap();
+
+        let options = ValidationOptions {
+            profile: ValidationProfile::Extraction,
+            ..ValidationOptions::default()
+        };
+
+        let report = validate_directory_path(temp_dir.path(), &options).unwrap();
+
+        assert!(report
+            .files
+            .iter()
+            .filter(|file| file.file.path.contains("slice_"))
+            .all(|file| {
+                !warning_codes(file).contains("unknown_mammogram_type")
+                    && !error_codes(file).contains("unknown_mammogram_type")
+            }));
+        let singleton_report = report
+            .files
+            .iter()
+            .find(|file| file.file.path.ends_with("syn2d.dcm"))
+            .expect("singleton report");
+        assert!(warning_codes(singleton_report).contains("unknown_mammogram_type"));
+        assert!(!error_codes(singleton_report).contains("unknown_mammogram_type"));
+        assert_eq!(
+            singleton_report.mammography.mammogram_type.as_deref(),
+            Some("unknown")
+        );
+        assert!(report
+            .files
+            .iter()
+            .any(|file| file.mammography.mammogram_type.as_deref() == Some("unknown")));
     }
 
     #[test]
