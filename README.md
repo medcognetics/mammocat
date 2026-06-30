@@ -108,7 +108,9 @@ If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
 When any include flag is supplied, only the requested groups are included. The
 JSON report includes `plan`, `views`, `dbt`, `source_objects`, `warnings`,
 and `summary`. Unlike `mammoselect`, `mammoplan` searches recursively so a study
-root with per-series subdirectories can be planned in one call.
+root with per-series subdirectories can be planned in one call. Text output
+summarizes warnings by default; pass `--verbose` to include per-file warning
+details.
 
 ### mammovalidate - DICOM Validation
 

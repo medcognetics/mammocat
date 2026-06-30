@@ -132,7 +132,9 @@ make quality-fix
 If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
 When any include flag is supplied, only the requested groups are included.
 `mammoplan` searches recursively so study roots with per-series subdirectories
-can be planned directly; `mammoselect` remains non-recursive.
+can be planned directly; `mammoselect` remains non-recursive. Text output
+summarizes warnings by default; pass `--verbose` to include per-file warning
+details.
 
 #### mammovalidate - DICOM Validation
 ```bash
