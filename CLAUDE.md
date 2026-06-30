@@ -114,6 +114,28 @@ make quality-fix
 ./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
 
+#### mammoplan - Mammography Input Planning
+```bash
+# Plan both 2D mammography views and DBT inputs
+./target/release/mammoplan /path/to/dicom_directory --format json
+
+# Plan only 2D mammography views
+./target/release/mammoplan --include-2d /path/to/directory --format json
+
+# Plan only DBT composition inputs and volume candidates
+./target/release/mammoplan --include-dbt /path/to/directory --format json
+
+# Prefer synthetic 2D views over FFDM when both exist for the same view
+./target/release/mammoplan --prefer-synthetic-2d /path/to/directory --format json
+```
+
+If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
+When any include flag is supplied, only the requested groups are included.
+`mammoplan` searches recursively so study roots with per-series subdirectories
+can be planned directly; `mammoselect` remains non-recursive. Text output
+summarizes warnings by default; pass `--verbose` to include per-file warning
+details.
+
 #### mammovalidate - DICOM Validation
 ```bash
 # Validate a single DICOM file for mammoselect readiness
@@ -188,6 +210,10 @@ The codebase follows a clear separation of concerns:
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
 - `views.rs`: get_preferred_views, get_preferred_views_with_order, and get_preferred_views_filtered for selecting best views
 
+**`planning.rs`** - Collection-level input planning
+- `plan_mammography_collection()`: Builds 2D mammography view and/or DBT input plans from one directory.
+- `MammographyPlanSelection`: Boolean input-group selection for `include_2d` and `include_dbt`.
+
 **`validation.rs`** - File and collection validation reports
 - `validate_path()`: Validates a single DICOM file, non-recursive directory, or ZIP archive.
 - `validate_dicom_file()`: File-only validation helper used by Python bindings.
@@ -204,6 +230,7 @@ The codebase follows a clear separation of concerns:
 - `metadata.rs`: PyMammogramMetadata wrapper
 - `record.rs`: PyMammogramRecord wrapper
 - `selection.rs`: Python wrappers for selection functions (get_preferred_views_filtered, etc.)
+- `planning.rs`: Python wrapper for `plan_mammography_collection()`; returns the same planner schema as `mammoplan --format json`
 - `validation.rs`: Python wrappers for `validate_dicom()` and `validate_directory()`; returns the same report schema as `mammovalidate --format json`
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
@@ -295,7 +322,7 @@ When adding features that affect metadata extraction, add corresponding unit tes
 
 ## Binary Locations
 
-Three CLI binaries are defined in core/Cargo.toml:
+Five CLI binaries are defined in core/Cargo.toml:
 
 **mammocat** - Metadata extraction from individual DICOM files
 ```toml
@@ -311,6 +338,13 @@ name = "mammoselect"
 path = "src/bin/mammoselect.rs"
 ```
 
+**mammoplan** - 2D mammography view and DBT input planning from directories
+```toml
+[[bin]]
+name = "mammoplan"
+path = "src/bin/mammoplan.rs"
+```
+
 **mammovalidate** - Validation for files, directories, or ZIP archives
 ```toml
 [[bin]]
@@ -318,7 +352,13 @@ name = "mammovalidate"
 path = "src/bin/mammovalidate.rs"
 ```
 
+**dbt-combine** - Old-format DBT conversion
+```toml
+[[bin]]
+name = "dbt-combine"
+path = "src/bin/dbt-combine.rs"
+```
+
 After building, binaries are at:
-- `./target/release/mammocat` and `./target/release/mammoselect` (release)
-- `./target/release/mammovalidate` (release)
-- `./target/debug/mammocat`, `./target/debug/mammoselect`, and `./target/debug/mammovalidate` (debug)
+- `./target/release/mammocat`, `./target/release/mammoselect`, `./target/release/mammoplan`, `./target/release/mammovalidate`, and `./target/release/dbt-combine` (release)
+- `./target/debug/mammocat`, `./target/debug/mammoselect`, `./target/debug/mammoplan`, `./target/debug/mammovalidate`, and `./target/debug/dbt-combine` (debug)

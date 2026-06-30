@@ -27,7 +27,7 @@ cd mammocat
 cargo build --release
 ```
 
-The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, and `target/release/mammovalidate`.
+The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, `target/release/mammoplan`, `target/release/mammovalidate`, and `target/release/dbt-combine`.
 
 ## Usage
 
@@ -68,6 +68,7 @@ mammoselect --format json /path/to/directory
 
 # Output file paths only (useful for scripting)
 mammoselect --format paths /path/to/directory
+
 ```
 
 `mammoselect` never mixes studies in its output. After filtering, it groups usable
@@ -84,6 +85,32 @@ the most complete study was selected.
 Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any
 usable candidate is missing `StudyInstanceUID`.
+
+### mammoplan - Mammography Input Planning
+
+Build a collection-level input plan for 2D mammography views and DBT inputs:
+
+```bash
+# Plan both 2D mammography views and DBT inputs
+mammoplan /path/to/dicom_directory --format json
+
+# Plan only 2D mammography views
+mammoplan --include-2d /path/to/directory --format json
+
+# Plan only DBT composition inputs and volume candidates
+mammoplan --include-dbt /path/to/directory --format json
+
+# Prefer synthetic 2D views over FFDM when both exist for the same view
+mammoplan --prefer-synthetic-2d /path/to/directory --format json
+```
+
+If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
+When any include flag is supplied, only the requested groups are included. The
+JSON report includes `plan`, `views`, `dbt`, `source_objects`, `warnings`,
+and `summary`. Unlike `mammoselect`, `mammoplan` searches recursively so a study
+root with per-series subdirectories can be planned in one call. Text output
+summarizes warnings by default; pass `--verbose` to include per-file warning
+details.
 
 ### mammovalidate - DICOM Validation
 
@@ -168,10 +195,16 @@ The validation bindings return the same dictionary schema as `mammovalidate --fo
 ```python
 from pathlib import Path
 
-from mammocat import validate_dicom, validate_directory
+from mammocat import plan_mammography_collection, validate_dicom, validate_directory
 
 file_report = validate_dicom("mammogram.dcm")
 directory_report = validate_directory(Path("dicoms.zip"), profile="selection")
+input_plan = plan_mammography_collection(
+    Path("dicoms"),
+    include_2d=True,
+    include_dbt=True,
+    prefer_synthetic_2d=False,
+)
 
 if not file_report["summary"]["valid"]:
     print(file_report["files"][0]["errors"])
@@ -244,7 +277,9 @@ mammocat/
 │   │   ├── error.rs                # Error types
 │   │   ├── main.rs                 # mammocat CLI entry point
 │   │   └── bin/
+│   │       ├── dbt-combine.rs      # DBT conversion CLI entry point
 │   │       ├── mammoselect.rs      # mammoselect CLI entry point
+│   │       ├── mammoplan.rs        # input planning CLI entry point
 │   │       └── mammovalidate.rs    # validation CLI entry point
 ```
 

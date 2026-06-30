@@ -153,11 +153,13 @@ class TestPreferenceOrder:
         """Test PreferenceOrder enum values."""
         assert PreferenceOrder.DEFAULT.value == "default"
         assert PreferenceOrder.TOMO_FIRST.value == "tomo-first"
+        assert PreferenceOrder.SYNTHETIC_2D_FIRST.value == "synthetic-2d-first"
 
     def test_string_representation(self):
         """Test string representation."""
         assert str(PreferenceOrder.DEFAULT) == "default"
         assert str(PreferenceOrder.TOMO_FIRST) == "tomo-first"
+        assert str(PreferenceOrder.SYNTHETIC_2D_FIRST) == "synthetic-2d-first"
 
 
 class TestPhotometricInterpretation:

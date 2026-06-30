@@ -123,6 +123,7 @@ class PreferenceOrder:
 
     DEFAULT: PreferenceOrder
     TOMO_FIRST: PreferenceOrder
+    SYNTHETIC_2D_FIRST: PreferenceOrder
 
     @property
     def value(self) -> str: ...
@@ -416,6 +417,15 @@ def get_preferred_views_filtered(
     Returns:
         Dictionary mapping MammogramView to MammogramRecord (or None if not found)
     """
+
+def plan_mammography_collection(
+    path: str | Path,
+    include_2d: bool = True,
+    include_dbt: bool = True,
+    prefer_synthetic_2d: bool = False,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Plan 2D mammography view and/or DBT inputs from a DICOM directory."""
 
 def scan_dbt_study(input_dir: str | Path) -> dict[str, Any]:
     """Scan a study directory for old-format DBT series needing conversion."""

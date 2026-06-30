@@ -6,6 +6,7 @@ use crate::types::{
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 
 const MIXED_STUDY_WARNING_PREFIX: &str = "mixed study input detected";
 const SPLIT_SLICE_SERIES_COUNT_THRESHOLD: usize = 12;
@@ -48,6 +49,36 @@ pub type PreferredViewSelection = HashMap<MammogramView, Option<MammogramRecord>
 
 /// Preferred-view selection result with non-fatal warnings.
 pub type PreferredViewSelectionWithWarnings = (PreferredViewSelection, Vec<SelectionWarning>);
+
+/// Collection-context reason for DBT classification refinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbtRefinementReason {
+    /// A same-series ambiguous group exceeded the split-slice cardinality threshold.
+    SplitSliceSeriesCardinality,
+}
+
+impl DbtRefinementReason {
+    /// Stable diagnostic code for reports and JSON output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SplitSliceSeriesCardinality => "split_slice_series_cardinality",
+        }
+    }
+}
+
+/// Diagnostic emitted when collection context changes a DBT classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbtRefinementDiagnostic {
+    pub file_path: PathBuf,
+    pub study_instance_uid: Option<String>,
+    pub series_instance_uid: Option<String>,
+    pub sop_instance_uid: Option<String>,
+    pub original_mammogram_type: MammogramType,
+    pub original_dbt_object_kind: DbtObjectKind,
+    pub refined_mammogram_type: MammogramType,
+    pub refined_dbt_object_kind: DbtObjectKind,
+    pub reason: DbtRefinementReason,
+}
 
 #[derive(Debug, Clone)]
 struct StudyGroup {
@@ -277,7 +308,16 @@ pub fn get_preferred_views_filtered_with_study_mode_and_warnings(
 /// singleton objects remain unknown even when they are paired with a split-slice
 /// series, because the same per-object evidence can also appear on synthetic views.
 pub fn refine_dbt_object_classification(records: &[MammogramRecord]) -> Vec<MammogramRecord> {
+    let (records, _) = refine_dbt_object_classification_with_diagnostics(records);
+    records
+}
+
+/// Refines ambiguous DBT classifications and reports why records changed.
+pub fn refine_dbt_object_classification_with_diagnostics(
+    records: &[MammogramRecord],
+) -> (Vec<MammogramRecord>, Vec<DbtRefinementDiagnostic>) {
     let mut refined_records = records.to_vec();
+    let mut diagnostics = Vec::new();
     let series_infos = build_series_infos(records);
     let split_slice_series = split_slice_series_keys_from_cardinality(&series_infos);
 
@@ -290,15 +330,17 @@ pub fn refine_dbt_object_classification(records: &[MammogramRecord]) -> Vec<Mamm
         };
 
         if split_slice_series.contains(&series_key) {
-            refine_record(
+            refine_record_with_diagnostic(
                 &mut refined_records[index],
                 MammogramType::Tomo,
                 DbtObjectKind::Slice,
+                DbtRefinementReason::SplitSliceSeriesCardinality,
+                &mut diagnostics,
             );
         }
     }
 
-    refined_records
+    (refined_records, diagnostics)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -355,6 +397,29 @@ fn refine_record(
 ) {
     record.metadata.mammogram_type = mammogram_type;
     record.metadata.dbt_object_kind = dbt_object_kind;
+}
+
+fn refine_record_with_diagnostic(
+    record: &mut MammogramRecord,
+    mammogram_type: MammogramType,
+    dbt_object_kind: DbtObjectKind,
+    reason: DbtRefinementReason,
+    diagnostics: &mut Vec<DbtRefinementDiagnostic>,
+) {
+    let original_mammogram_type = record.metadata.mammogram_type;
+    let original_dbt_object_kind = record.metadata.dbt_object_kind;
+    refine_record(record, mammogram_type, dbt_object_kind);
+    diagnostics.push(DbtRefinementDiagnostic {
+        file_path: record.file_path.clone(),
+        study_instance_uid: record.study_instance_uid.clone(),
+        series_instance_uid: record.series_instance_uid.clone(),
+        sop_instance_uid: record.sop_instance_uid.clone(),
+        original_mammogram_type,
+        original_dbt_object_kind,
+        refined_mammogram_type: mammogram_type,
+        refined_dbt_object_kind: dbt_object_kind,
+        reason,
+    });
 }
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
@@ -1628,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clinical_2d_allowed_types_excludes_tomo_slice() {
+    fn test_view_allowed_types_excludes_tomo_slice() {
         let config = with_allowed_types(
             FilterConfig::permissive(),
             &[
@@ -1851,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn clinical_2d_filter_excludes_refined_slices_and_ambiguous_singletons() {
+    fn view_filter_excludes_refined_slices_and_ambiguous_singletons() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,
@@ -1882,7 +1947,7 @@ mod tests {
     }
 
     #[test]
-    fn clinical_2d_filter_can_require_non_dbt_object_kind() {
+    fn view_filter_can_require_non_dbt_object_kind() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,
@@ -1951,7 +2016,7 @@ mod tests {
     }
 
     #[test]
-    fn dbt_localization_filter_selects_refined_tomo_slices() {
+    fn dbt_filter_selects_refined_tomo_slices() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,
