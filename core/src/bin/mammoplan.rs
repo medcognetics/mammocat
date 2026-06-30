@@ -52,7 +52,7 @@ enum OutputFormat {
 }
 
 /// Preference ordering for 2D mammography view selection.
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum PreferenceOrderArg {
     /// Default ordering: FFDM > SYNTH > TOMO > SFM
     Default,
@@ -84,7 +84,7 @@ fn main() {
     info!("Planning directory: {}", cli.directory.display());
     let options = MammographyPlanOptions {
         selection: selection_from_cli(&cli),
-        preference_order: cli.preference.clone().into(),
+        preference_order: cli.preference.into(),
         study_selection_mode: StudySelectionMode::from_strict(cli.strict),
     };
 

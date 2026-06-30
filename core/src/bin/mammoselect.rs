@@ -89,7 +89,7 @@ enum OutputFormat {
 }
 
 /// Preference ordering for mammogram type selection
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum PreferenceOrderArg {
     /// Default ordering: FFDM > SYNTH > TOMO > SFM (prefers 2D for inference)
     Default,
@@ -168,7 +168,7 @@ fn main() {
 
     info!("Processing directory: {}", cli.directory.display());
 
-    let preference_order: PreferenceOrder = cli.preference.clone().into();
+    let preference_order: PreferenceOrder = cli.preference.into();
 
     // Collect all .dcm files
     let dicom_files = match collect_dicom_files(&cli.directory) {

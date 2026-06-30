@@ -20,6 +20,25 @@ use crate::types::{
     DbtObjectKind, FilterConfig, MammogramType, PreferenceOrder, STANDARD_MAMMO_VIEWS,
 };
 
+const SELECTED_2D_VIEW_REASON: &str = "selected_2d_view";
+const NO_ELIGIBLE_2D_VIEW_CANDIDATE_REASON: &str = "no_eligible_2d_view_candidate";
+const DBT_COMPOSITION_REASON: &str = "split_slice_series_needs_composition";
+const DBT_SCAN_VOLUME_REASON: &str = "already_multiframe_dbt_series";
+const DBT_RECORD_VOLUME_REASON: &str = "refined_or_extracted_multiframe_dbt_volume";
+const DBT_VOLUME_CANDIDATE_ROLE: &str = "dbt_volume_candidate";
+const SOURCE_STATUS_SELECTED: &str = "selected";
+const SOURCE_STATUS_EXCLUDED: &str = "excluded";
+const SOURCE_STATUS_UNUSED: &str = "unused";
+const FILTER_REASON_ALLOWED_TYPES: &str = "allowed_types";
+const FILTER_REASON_ALLOWED_DBT_OBJECT_KINDS: &str = "allowed_dbt_object_kinds";
+const FILTER_REASON_EXCLUDE_IMPLANTS: &str = "exclude_implants";
+const FILTER_REASON_ONLY_STANDARD_VIEWS: &str = "only_standard_views";
+const FILTER_REASON_EXCLUDE_FOR_PROCESSING: &str = "exclude_for_processing";
+const FILTER_REASON_EXCLUDE_SECONDARY_CAPTURE: &str = "exclude_secondary_capture";
+const FILTER_REASON_EXCLUDE_NON_MG: &str = "exclude_non_mg";
+const FILTER_REASON_MISSING_MODALITY: &str = "missing_modality";
+const FILTER_REASON_EXCLUDE_LOSSY_COMPRESSED: &str = "exclude_lossy_compressed";
+
 /// Input groups included in a collection-level mammography plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MammographyPlanSelection {
@@ -332,7 +351,7 @@ fn build_views_plan(
                     source_path: Some(record.file_path.display().to_string()),
                     mammogram_type: Some(record.metadata.mammogram_type.to_string()),
                     dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
-                    reason: Some("selected_2d_view".to_string()),
+                    reason: Some(SELECTED_2D_VIEW_REASON.to_string()),
                 },
             );
         } else {
@@ -345,7 +364,7 @@ fn build_views_plan(
                     source_path: None,
                     mammogram_type: None,
                     dbt_object_kind: None,
-                    reason: Some("no_eligible_2d_view_candidate".to_string()),
+                    reason: Some(NO_ELIGIBLE_2D_VIEW_CANDIDATE_REASON.to_string()),
                 },
             );
         }
@@ -388,26 +407,18 @@ fn build_dbt_plan(
         .iter()
         .map(|candidate| normalized_source_paths(input, &candidate.source_paths))
         .collect();
-    let seen_volume_series: BTreeSet<(Option<String>, Option<String>)> = volume_candidates
+    let seen_volume_series: BTreeSet<VolumeSeriesKey> = volume_candidates
         .iter()
-        .filter(|candidate| candidate.series_instance_uid.is_some())
-        .map(|candidate| {
-            (
-                candidate.study_instance_uid.clone(),
-                candidate.series_instance_uid.clone(),
-            )
-        })
+        .filter_map(volume_series_key_from_candidate)
         .collect();
     for record in records
         .iter()
         .filter(|record| record.metadata.dbt_object_kind == DbtObjectKind::Volume)
     {
-        let series_seen = record.series_instance_uid.is_some()
-            && seen_volume_series.contains(&(
-                record.study_instance_uid.clone(),
-                record.series_instance_uid.clone(),
-            ));
-        if series_seen {
+        if volume_series_key_from_record(record)
+            .as_ref()
+            .is_some_and(|key| seen_volume_series.contains(key))
+        {
             continue;
         }
         let source_paths = vec![record.file_path.display().to_string()];
@@ -423,6 +434,26 @@ fn build_dbt_plan(
         unsupported_series,
         skipped_files,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct VolumeSeriesKey {
+    study_instance_uid: Option<String>,
+    series_instance_uid: String,
+}
+
+fn volume_series_key_from_candidate(candidate: &DbtVolumeCandidate) -> Option<VolumeSeriesKey> {
+    Some(VolumeSeriesKey {
+        study_instance_uid: candidate.study_instance_uid.clone(),
+        series_instance_uid: candidate.series_instance_uid.clone()?,
+    })
+}
+
+fn volume_series_key_from_record(record: &MammogramRecord) -> Option<VolumeSeriesKey> {
+    Some(VolumeSeriesKey {
+        study_instance_uid: record.study_instance_uid.clone(),
+        series_instance_uid: record.series_instance_uid.clone()?,
+    })
 }
 
 fn normalized_source_paths(input: &Path, source_paths: &[String]) -> Vec<String> {
@@ -451,7 +482,7 @@ fn composition_input_from_series(series: DbtSeriesFinding) -> DbtCompositionInpu
         view_position: series.view_position,
         source_modality: series.source_modality,
         series_description: series.series_description,
-        reason: "split_slice_series_needs_composition".to_string(),
+        reason: DBT_COMPOSITION_REASON.to_string(),
     }
 }
 
@@ -463,7 +494,7 @@ fn volume_candidate_from_series(series: DbtSeriesFinding) -> DbtVolumeCandidate 
         frame_count: series.frame_count,
         laterality: Some(series.laterality),
         view_position: Some(series.view_position),
-        reason: "already_multiframe_dbt_series".to_string(),
+        reason: DBT_SCAN_VOLUME_REASON.to_string(),
     }
 }
 
@@ -478,7 +509,7 @@ fn volume_candidate_from_record(
         frame_count: usize::try_from(record.metadata.number_of_frames).unwrap_or_default(),
         laterality: Some(record.metadata.laterality.to_string()),
         view_position: Some(record.metadata.view_position.to_string()),
-        reason: "refined_or_extracted_multiframe_dbt_volume".to_string(),
+        reason: DBT_RECORD_VOLUME_REASON.to_string(),
     }
 }
 
@@ -560,7 +591,7 @@ fn build_source_diagnostics(
             refinement_reason: None,
             selected_as: roles,
             filtered_by: Vec::new(),
-            status: "selected".to_string(),
+            status: SOURCE_STATUS_SELECTED.to_string(),
         });
     }
 
@@ -596,7 +627,7 @@ fn dbt_roles_by_source(dbt: Option<&DbtPlan>) -> BTreeMap<String, Vec<String>> {
                 roles
                     .entry(source_path.clone())
                     .or_default()
-                    .push("dbt_volume_candidate".to_string());
+                    .push(DBT_VOLUME_CANDIDATE_ROLE.to_string());
             }
         }
     }
@@ -608,20 +639,22 @@ fn dbt_roles_by_source(dbt: Option<&DbtPlan>) -> BTreeMap<String, Vec<String>> {
 }
 
 fn source_lookup_keys(input: &Path, path: &Path) -> Vec<String> {
-    let mut keys = vec![path.display().to_string()];
-    if let Ok(relative) = path.strip_prefix(input) {
-        keys.push(relative.display().to_string());
+    let source_path = path.display().to_string();
+    let normalized_path = normalized_source_path(input, path);
+    if normalized_path == source_path {
+        vec![source_path]
+    } else {
+        vec![source_path, normalized_path]
     }
-    keys
 }
 
 fn source_status(selected_as: &[String], filtered_by: &[String]) -> String {
     if !selected_as.is_empty() {
-        "selected".to_string()
+        SOURCE_STATUS_SELECTED.to_string()
     } else if !filtered_by.is_empty() {
-        "excluded".to_string()
+        SOURCE_STATUS_EXCLUDED.to_string()
     } else {
-        "unused".to_string()
+        SOURCE_STATUS_UNUSED.to_string()
     }
 }
 
@@ -629,35 +662,35 @@ fn filter_reasons(record: &MammogramRecord, config: &FilterConfig) -> Vec<String
     let mut reasons = Vec::new();
     if let Some(allowed_types) = &config.allowed_types {
         if !allowed_types.contains(&record.metadata.mammogram_type) {
-            reasons.push("allowed_types".to_string());
+            reasons.push(FILTER_REASON_ALLOWED_TYPES.to_string());
         }
     }
     if let Some(allowed_dbt_object_kinds) = &config.allowed_dbt_object_kinds {
         if !allowed_dbt_object_kinds.contains(&record.metadata.dbt_object_kind) {
-            reasons.push("allowed_dbt_object_kinds".to_string());
+            reasons.push(FILTER_REASON_ALLOWED_DBT_OBJECT_KINDS.to_string());
         }
     }
     if config.exclude_implants && record.metadata.has_implant {
-        reasons.push("exclude_implants".to_string());
+        reasons.push(FILTER_REASON_EXCLUDE_IMPLANTS.to_string());
     }
     if config.exclude_non_standard_views && !record.metadata.is_standard_view() {
-        reasons.push("only_standard_views".to_string());
+        reasons.push(FILTER_REASON_ONLY_STANDARD_VIEWS.to_string());
     }
     if config.exclude_for_processing && record.metadata.is_for_processing {
-        reasons.push("exclude_for_processing".to_string());
+        reasons.push(FILTER_REASON_EXCLUDE_FOR_PROCESSING.to_string());
     }
     if config.exclude_secondary_capture && record.metadata.is_secondary_capture {
-        reasons.push("exclude_secondary_capture".to_string());
+        reasons.push(FILTER_REASON_EXCLUDE_SECONDARY_CAPTURE.to_string());
     }
     if config.exclude_non_mg_modality {
         match &record.metadata.modality {
             Some(modality) if modality.eq_ignore_ascii_case("MG") => {}
-            Some(_) => reasons.push("exclude_non_mg".to_string()),
-            None => reasons.push("missing_modality".to_string()),
+            Some(_) => reasons.push(FILTER_REASON_EXCLUDE_NON_MG.to_string()),
+            None => reasons.push(FILTER_REASON_MISSING_MODALITY.to_string()),
         }
     }
     if config.exclude_lossy_compressed && record.is_lossy_compressed {
-        reasons.push("exclude_lossy_compressed".to_string());
+        reasons.push(FILTER_REASON_EXCLUDE_LOSSY_COMPRESSED.to_string());
     }
     reasons
 }
@@ -816,11 +849,11 @@ mod tests {
             .expect("slice diagnostic");
         assert!(slice_diag
             .filtered_by
-            .contains(&"allowed_types".to_string()));
+            .contains(&FILTER_REASON_ALLOWED_TYPES.to_string()));
         assert!(slice_diag
             .filtered_by
-            .contains(&"allowed_dbt_object_kinds".to_string()));
-        assert_eq!(slice_diag.status, "excluded");
+            .contains(&FILTER_REASON_ALLOWED_DBT_OBJECT_KINDS.to_string()));
+        assert_eq!(slice_diag.status, SOURCE_STATUS_EXCLUDED);
         assert_eq!(plan.summary.views_selected, 1);
     }
 
@@ -843,7 +876,7 @@ mod tests {
         assert!(plan.source_objects.iter().any(|object| object
             .selected_as
             .iter()
-            .any(|role| { role.starts_with("dbt_composition_source:") })));
+            .any(|role| role.starts_with("dbt_composition_source:"))));
     }
 
     #[test]
