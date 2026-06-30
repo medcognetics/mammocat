@@ -2419,16 +2419,28 @@ mod tests {
         let selected_views = &report.directory.as_ref().unwrap().selected_views;
         let selected_rcc = selected_views.get("rcc").expect("rcc report");
 
+        assert!(selected_rcc.file_path.is_none());
+        assert!(selected_rcc.mammogram_type.is_none());
+        assert!(selected_rcc.dbt_object_kind.is_none());
+        let singleton_report = report
+            .files
+            .iter()
+            .find(|file| file.file.path == syn2d_path.display().to_string())
+            .expect("singleton report");
         assert_eq!(
-            selected_rcc.file_path.as_deref(),
-            Some(syn2d_path.to_str().unwrap())
+            singleton_report.mammography.mammogram_type.as_deref(),
+            Some("unknown")
         );
-        assert_eq!(selected_rcc.mammogram_type.as_deref(), Some("s-view"));
-        assert_eq!(selected_rcc.dbt_object_kind.as_deref(), Some("none"));
+        assert_eq!(
+            singleton_report.mammography.dbt_object_kind.as_deref(),
+            Some("unknown")
+        );
         assert!(report
             .files
             .iter()
+            .filter(|file| file.file.path.contains("slice_"))
             .all(|file| !error_codes(file).contains("unknown_mammogram_type")));
+        assert!(error_codes(singleton_report).contains("unknown_mammogram_type"));
     }
 
     #[test]
@@ -2470,14 +2482,29 @@ mod tests {
 
         let report = validate_directory_path(temp_dir.path(), &options).unwrap();
 
-        assert!(report.files.iter().all(|file| {
-            !warning_codes(file).contains("unknown_mammogram_type")
-                && !error_codes(file).contains("unknown_mammogram_type")
-        }));
         assert!(report
             .files
             .iter()
-            .all(|file| file.mammography.mammogram_type.as_deref() != Some("unknown")));
+            .filter(|file| file.file.path.contains("slice_"))
+            .all(|file| {
+                !warning_codes(file).contains("unknown_mammogram_type")
+                    && !error_codes(file).contains("unknown_mammogram_type")
+            }));
+        let singleton_report = report
+            .files
+            .iter()
+            .find(|file| file.file.path.ends_with("syn2d.dcm"))
+            .expect("singleton report");
+        assert!(warning_codes(singleton_report).contains("unknown_mammogram_type"));
+        assert!(!error_codes(singleton_report).contains("unknown_mammogram_type"));
+        assert_eq!(
+            singleton_report.mammography.mammogram_type.as_deref(),
+            Some("unknown")
+        );
+        assert!(report
+            .files
+            .iter()
+            .any(|file| file.mammography.mammogram_type.as_deref() == Some("unknown")));
     }
 
     #[test]
