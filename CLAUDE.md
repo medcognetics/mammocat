@@ -100,9 +100,6 @@ make quality-fix
 # Output file paths only
 ./target/release/mammoselect --format paths /path/to/directory
 
-# Return a comprehensive clinical 2D + DBT localization plan
-./target/release/mammoselect --plan clinical-2d-with-dbt-localization --format json /path/to/directory
-
 # Error if usable candidates contain multiple studies or missing StudyInstanceUID
 ./target/release/mammoselect --strict /path/to/directory
 
@@ -117,10 +114,20 @@ make quality-fix
 ./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
 
-`mammoselect --plan` is an opt-in collection planner. Without `--plan`, the CLI
-keeps the legacy preferred-view behavior. Plan modes are `clinical-2d`,
-`dbt-localization`, `clinical-2d-with-dbt-localization`, and `dbt-only-fallback`;
-plan output supports text and JSON, not paths.
+#### mammoplan - Mammography Input Planning
+```bash
+# Plan both 2D mammography views and DBT inputs
+./target/release/mammoplan /path/to/dicom_directory --format json
+
+# Plan only 2D mammography views
+./target/release/mammoplan --include-2d-views /path/to/directory --format json
+
+# Plan only DBT composition inputs and volume candidates
+./target/release/mammoplan --include-dbt /path/to/directory --format json
+```
+
+If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
+When any include flag is supplied, only the requested groups are included.
 
 #### mammovalidate - DICOM Validation
 ```bash
@@ -197,8 +204,8 @@ The codebase follows a clear separation of concerns:
 - `views.rs`: get_preferred_views, get_preferred_views_with_order, and get_preferred_views_filtered for selecting best views
 
 **`planning.rs`** - Collection-level input planning
-- `plan_mammography_collection()`: Builds clinical 2D and/or DBT localization input plans from one directory.
-- `MammographyPlanMode`: `Clinical2d`, `DbtLocalization`, `Clinical2dWithDbtLocalization`, and `DbtOnlyFallback`.
+- `plan_mammography_collection()`: Builds 2D mammography view and/or DBT input plans from one directory.
+- `MammographyPlanSelection`: Boolean input-group selection for `two_d_views` and `dbt`.
 
 **`validation.rs`** - File and collection validation reports
 - `validate_path()`: Validates a single DICOM file, non-recursive directory, or ZIP archive.
@@ -216,7 +223,7 @@ The codebase follows a clear separation of concerns:
 - `metadata.rs`: PyMammogramMetadata wrapper
 - `record.rs`: PyMammogramRecord wrapper
 - `selection.rs`: Python wrappers for selection functions (get_preferred_views_filtered, etc.)
-- `planning.rs`: Python wrapper for `plan_mammography_collection()`; returns the same planner schema as `mammoselect --plan --format json`
+- `planning.rs`: Python wrapper for `plan_mammography_collection()`; returns the same planner schema as `mammoplan --format json`
 - `validation.rs`: Python wrappers for `validate_dicom()` and `validate_directory()`; returns the same report schema as `mammovalidate --format json`
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
@@ -308,7 +315,7 @@ When adding features that affect metadata extraction, add corresponding unit tes
 
 ## Binary Locations
 
-Three CLI binaries are defined in core/Cargo.toml:
+Five CLI binaries are defined in core/Cargo.toml:
 
 **mammocat** - Metadata extraction from individual DICOM files
 ```toml
@@ -324,6 +331,13 @@ name = "mammoselect"
 path = "src/bin/mammoselect.rs"
 ```
 
+**mammoplan** - 2D mammography view and DBT input planning from directories
+```toml
+[[bin]]
+name = "mammoplan"
+path = "src/bin/mammoplan.rs"
+```
+
 **mammovalidate** - Validation for files, directories, or ZIP archives
 ```toml
 [[bin]]
@@ -331,7 +345,13 @@ name = "mammovalidate"
 path = "src/bin/mammovalidate.rs"
 ```
 
+**dbt-combine** - Old-format DBT conversion
+```toml
+[[bin]]
+name = "dbt-combine"
+path = "src/bin/dbt-combine.rs"
+```
+
 After building, binaries are at:
-- `./target/release/mammocat` and `./target/release/mammoselect` (release)
-- `./target/release/mammovalidate` (release)
-- `./target/debug/mammocat`, `./target/debug/mammoselect`, and `./target/debug/mammovalidate` (debug)
+- `./target/release/mammocat`, `./target/release/mammoselect`, `./target/release/mammoplan`, `./target/release/mammovalidate`, and `./target/release/dbt-combine` (release)
+- `./target/debug/mammocat`, `./target/debug/mammoselect`, `./target/debug/mammoplan`, `./target/debug/mammovalidate`, and `./target/debug/dbt-combine` (debug)

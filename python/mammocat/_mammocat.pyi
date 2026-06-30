@@ -419,16 +419,12 @@ def get_preferred_views_filtered(
 
 def plan_mammography_collection(
     path: str | Path,
-    plan: Literal[
-        "clinical-2d",
-        "dbt-localization",
-        "clinical-2d-with-dbt-localization",
-        "dbt-only-fallback",
-    ] = "clinical-2d-with-dbt-localization",
+    include_2d_views: bool = True,
+    include_dbt: bool = True,
     preference_order: PreferenceOrder | None = None,
     strict: bool = False,
 ) -> dict[str, Any]:
-    """Plan clinical 2D scoring and/or DBT localization inputs from a DICOM directory."""
+    """Plan 2D mammography view and/or DBT inputs from a DICOM directory."""
 
 def scan_dbt_study(input_dir: str | Path) -> dict[str, Any]:
     """Scan a study directory for old-format DBT series needing conversion."""

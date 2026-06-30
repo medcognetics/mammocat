@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use serde::Serialize;
 
@@ -21,69 +20,45 @@ use crate::types::{
     DbtObjectKind, FilterConfig, MammogramType, PreferenceOrder, STANDARD_MAMMO_VIEWS,
 };
 
-/// Mammography workflow represented by a collection-level input plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-pub enum MammographyPlanMode {
-    #[serde(rename = "clinical-2d")]
-    Clinical2d,
-    #[serde(rename = "dbt-localization")]
-    DbtLocalization,
-    #[serde(rename = "clinical-2d-with-dbt-localization")]
-    #[default]
-    Clinical2dWithDbtLocalization,
-    #[serde(rename = "dbt-only-fallback")]
-    DbtOnlyFallback,
+/// Input groups included in a collection-level mammography plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MammographyPlanSelection {
+    pub two_d_views: bool,
+    pub dbt: bool,
 }
 
-impl MammographyPlanMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Clinical2d => "clinical-2d",
-            Self::DbtLocalization => "dbt-localization",
-            Self::Clinical2dWithDbtLocalization => "clinical-2d-with-dbt-localization",
-            Self::DbtOnlyFallback => "dbt-only-fallback",
-        }
+impl MammographyPlanSelection {
+    pub const fn new(two_d_views: bool, dbt: bool) -> Self {
+        Self { two_d_views, dbt }
     }
 
-    fn includes_clinical_2d(self) -> bool {
-        matches!(self, Self::Clinical2d | Self::Clinical2dWithDbtLocalization)
+    pub const fn all() -> Self {
+        Self::new(true, true)
     }
 
-    fn includes_dbt_localization(self) -> bool {
-        matches!(
-            self,
-            Self::DbtLocalization | Self::Clinical2dWithDbtLocalization | Self::DbtOnlyFallback
-        )
+    pub const fn two_d_views_only() -> Self {
+        Self::new(true, false)
     }
 
-    fn dbt_scoring_role(self) -> &'static str {
-        match self {
-            Self::DbtOnlyFallback => "dbt_only_fallback_scoring",
-            _ => "auxiliary_localization",
-        }
+    pub const fn dbt_only() -> Self {
+        Self::new(false, true)
+    }
+
+    fn is_empty(self) -> bool {
+        !self.two_d_views && !self.dbt
     }
 }
 
-impl FromStr for MammographyPlanMode {
-    type Err = MammocatError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "clinical-2d" => Ok(Self::Clinical2d),
-            "dbt-localization" => Ok(Self::DbtLocalization),
-            "clinical-2d-with-dbt-localization" => Ok(Self::Clinical2dWithDbtLocalization),
-            "dbt-only-fallback" => Ok(Self::DbtOnlyFallback),
-            _ => Err(MammocatError::InvalidValue(format!(
-                "unknown mammography plan mode: {value}"
-            ))),
-        }
+impl Default for MammographyPlanSelection {
+    fn default() -> Self {
+        Self::all()
     }
 }
 
 /// Options for collection-level mammography input planning.
 #[derive(Debug, Clone)]
 pub struct MammographyPlanOptions {
-    pub plan: MammographyPlanMode,
+    pub selection: MammographyPlanSelection,
     pub preference_order: PreferenceOrder,
     pub study_selection_mode: StudySelectionMode,
 }
@@ -91,7 +66,7 @@ pub struct MammographyPlanOptions {
 impl Default for MammographyPlanOptions {
     fn default() -> Self {
         Self {
-            plan: MammographyPlanMode::default(),
+            selection: MammographyPlanSelection::default(),
             preference_order: PreferenceOrder::Default,
             study_selection_mode: StudySelectionMode::MostComplete,
         }
@@ -104,7 +79,7 @@ pub struct MammographyPlanSummary {
     pub input_dicom_files: usize,
     pub mammogram_records: usize,
     pub source_objects: usize,
-    pub clinical_2d_selected_views: usize,
+    pub two_d_selected_views: usize,
     pub dbt_composition_inputs: usize,
     pub dbt_multiframe_volume_candidates: usize,
     pub warnings: usize,
@@ -114,25 +89,25 @@ pub struct MammographyPlanSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MammographyInputPlan {
     pub input_path: String,
-    pub plan: MammographyPlanMode,
+    pub plan: MammographyPlanSelection,
     pub summary: MammographyPlanSummary,
-    pub clinical_2d: Option<Clinical2dPlan>,
-    pub dbt_localization: Option<DbtLocalizationPlan>,
+    pub two_d_views: Option<TwoDViewsPlan>,
+    pub dbt: Option<DbtPlan>,
     pub source_objects: Vec<SourceObjectDiagnostic>,
     pub warnings: Vec<String>,
 }
 
-/// Clinical 2D/synthetic scoring input plan.
+/// 2D mammography view input plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Clinical2dPlan {
-    pub selected_views: BTreeMap<String, ClinicalViewSelection>,
+pub struct TwoDViewsPlan {
+    pub selected_views: BTreeMap<String, TwoDViewSelection>,
     pub missing_views: Vec<String>,
     pub selection_warnings: Vec<String>,
 }
 
-/// One standard clinical view selection slot.
+/// One standard 2D view selection slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ClinicalViewSelection {
+pub struct TwoDViewSelection {
     pub view: String,
     pub selected: bool,
     pub source_path: Option<String>,
@@ -141,10 +116,9 @@ pub struct ClinicalViewSelection {
     pub reason: Option<String>,
 }
 
-/// DBT localization input plan.
+/// DBT input plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DbtLocalizationPlan {
-    pub scoring_role: String,
+pub struct DbtPlan {
     pub composition_inputs: Vec<DbtCompositionInput>,
     pub multiframe_volume_candidates: Vec<DbtVolumeCandidate>,
     pub fallback_slice_paths: Vec<String>,
@@ -196,11 +170,13 @@ pub struct SourceObjectDiagnostic {
     pub status: String,
 }
 
-/// Plan clinical 2D scoring and/or DBT localization inputs from a DICOM directory.
+/// Plan 2D mammography view and/or DBT inputs from a DICOM directory.
 pub fn plan_mammography_collection(
     input: impl AsRef<Path>,
     options: MammographyPlanOptions,
 ) -> Result<MammographyInputPlan> {
+    validate_plan_selection(options.selection)?;
+
     let input = input.as_ref();
     if !input.is_dir() {
         return Err(MammocatError::IoError(std::io::Error::new(
@@ -220,7 +196,7 @@ pub fn plan_mammography_collection(
         }
     }
 
-    let dbt_scan = if options.plan.includes_dbt_localization() {
+    let dbt_scan = if options.selection.dbt {
         Some(scan_dbt_study(input, DbtScanOptions)?)
     } else {
         None
@@ -244,32 +220,30 @@ fn build_mammography_plan(
     mut warnings: Vec<String>,
     options: MammographyPlanOptions,
 ) -> Result<MammographyInputPlan> {
+    validate_plan_selection(options.selection)?;
+
     let mammogram_records = records.len();
     let (refined_records, refinement_diagnostics) =
         refine_dbt_object_classification_with_diagnostics(&records);
-    let clinical_filter = clinical_2d_filter();
+    let two_d_filter = two_d_views_filter();
 
-    let clinical_2d = if options.plan.includes_clinical_2d() {
-        Some(build_clinical_2d_plan(
+    let two_d_views = if options.selection.two_d_views {
+        Some(build_two_d_views_plan(
             &refined_records,
-            &clinical_filter,
+            &two_d_filter,
             &options,
         )?)
     } else {
         None
     };
 
-    let dbt_localization = if options.plan.includes_dbt_localization() {
-        Some(build_dbt_localization_plan(
-            options.plan,
-            &refined_records,
-            dbt_scan,
-        ))
+    let dbt = if options.selection.dbt {
+        Some(build_dbt_plan(&refined_records, dbt_scan))
     } else {
         None
     };
 
-    if let Some(plan) = &clinical_2d {
+    if let Some(plan) = &two_d_views {
         warnings.extend(plan.selection_warnings.iter().cloned());
     }
 
@@ -278,28 +252,23 @@ fn build_mammography_plan(
         &records,
         &refined_records,
         &refinement_diagnostics,
-        clinical_2d.as_ref(),
-        dbt_localization.as_ref(),
-        options
-            .plan
-            .includes_clinical_2d()
-            .then_some(&clinical_filter),
+        two_d_views.as_ref(),
+        dbt.as_ref(),
+        options.selection.two_d_views.then_some(&two_d_filter),
     );
 
     let summary = MammographyPlanSummary {
         input_dicom_files,
         mammogram_records,
         source_objects: source_objects.len(),
-        clinical_2d_selected_views: clinical_2d.as_ref().map_or(0, |plan| {
+        two_d_selected_views: two_d_views.as_ref().map_or(0, |plan| {
             plan.selected_views
                 .values()
                 .filter(|view| view.selected)
                 .count()
         }),
-        dbt_composition_inputs: dbt_localization
-            .as_ref()
-            .map_or(0, |plan| plan.composition_inputs.len()),
-        dbt_multiframe_volume_candidates: dbt_localization
+        dbt_composition_inputs: dbt.as_ref().map_or(0, |plan| plan.composition_inputs.len()),
+        dbt_multiframe_volume_candidates: dbt
             .as_ref()
             .map_or(0, |plan| plan.multiframe_volume_candidates.len()),
         warnings: warnings.len(),
@@ -307,16 +276,25 @@ fn build_mammography_plan(
 
     Ok(MammographyInputPlan {
         input_path: input.display().to_string(),
-        plan: options.plan,
+        plan: options.selection,
         summary,
-        clinical_2d,
-        dbt_localization,
+        two_d_views,
+        dbt,
         source_objects,
         warnings,
     })
 }
 
-fn clinical_2d_filter() -> FilterConfig {
+fn validate_plan_selection(selection: MammographyPlanSelection) -> Result<()> {
+    if selection.is_empty() {
+        return Err(MammocatError::InvalidValue(
+            "mammography plan must include at least one input group".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn two_d_views_filter() -> FilterConfig {
     let allowed_types = HashSet::from([
         MammogramType::Ffdm,
         MammogramType::Synth,
@@ -329,11 +307,11 @@ fn clinical_2d_filter() -> FilterConfig {
         .with_allowed_dbt_object_kinds(allowed_dbt_object_kinds)
 }
 
-fn build_clinical_2d_plan(
+fn build_two_d_views_plan(
     records: &[MammogramRecord],
     filter_config: &FilterConfig,
     options: &MammographyPlanOptions,
-) -> Result<Clinical2dPlan> {
+) -> Result<TwoDViewsPlan> {
     let (selection, warnings) = get_preferred_views_filtered_with_study_mode_and_warnings(
         records,
         filter_config,
@@ -349,32 +327,32 @@ fn build_clinical_2d_plan(
         if let Some(record) = selected {
             selected_views.insert(
                 view_name.clone(),
-                ClinicalViewSelection {
+                TwoDViewSelection {
                     view: view_name,
                     selected: true,
                     source_path: Some(record.file_path.display().to_string()),
                     mammogram_type: Some(record.metadata.mammogram_type.to_string()),
                     dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
-                    reason: Some("selected_clinical_2d_view".to_string()),
+                    reason: Some("selected_2d_view".to_string()),
                 },
             );
         } else {
             missing_views.push(view_name.clone());
             selected_views.insert(
                 view_name.clone(),
-                ClinicalViewSelection {
+                TwoDViewSelection {
                     view: view_name,
                     selected: false,
                     source_path: None,
                     mammogram_type: None,
                     dbt_object_kind: None,
-                    reason: Some("no_eligible_clinical_2d_candidate".to_string()),
+                    reason: Some("no_eligible_2d_view_candidate".to_string()),
                 },
             );
         }
     }
 
-    Ok(Clinical2dPlan {
+    Ok(TwoDViewsPlan {
         selected_views,
         missing_views,
         selection_warnings: warnings
@@ -384,11 +362,7 @@ fn build_clinical_2d_plan(
     })
 }
 
-fn build_dbt_localization_plan(
-    mode: MammographyPlanMode,
-    records: &[MammogramRecord],
-    dbt_scan: Option<DbtScanReport>,
-) -> DbtLocalizationPlan {
+fn build_dbt_plan(records: &[MammogramRecord], dbt_scan: Option<DbtScanReport>) -> DbtPlan {
     let mut composition_inputs = Vec::new();
     let mut volume_candidates = Vec::new();
     let mut fallback_slice_paths = BTreeSet::new();
@@ -421,8 +395,7 @@ fn build_dbt_localization_plan(
         }
     }
 
-    DbtLocalizationPlan {
-        scoring_role: mode.dbt_scoring_role().to_string(),
+    DbtPlan {
         composition_inputs,
         multiframe_volume_candidates: volume_candidates,
         fallback_slice_paths: fallback_slice_paths.into_iter().collect(),
@@ -478,9 +451,9 @@ fn build_source_diagnostics(
     original_records: &[MammogramRecord],
     refined_records: &[MammogramRecord],
     refinement_diagnostics: &[DbtRefinementDiagnostic],
-    clinical_2d: Option<&Clinical2dPlan>,
-    dbt_localization: Option<&DbtLocalizationPlan>,
-    clinical_filter: Option<&FilterConfig>,
+    two_d_views: Option<&TwoDViewsPlan>,
+    dbt: Option<&DbtPlan>,
+    two_d_filter: Option<&FilterConfig>,
 ) -> Vec<SourceObjectDiagnostic> {
     let refinement_by_path: HashMap<PathBuf, &DbtRefinementDiagnostic> = refinement_diagnostics
         .iter()
@@ -490,8 +463,8 @@ fn build_source_diagnostics(
         .iter()
         .map(|record| (record.file_path.clone(), record))
         .collect();
-    let clinical_roles = clinical_roles_by_path(clinical_2d);
-    let dbt_roles = dbt_roles_by_source(dbt_localization);
+    let two_d_roles = two_d_roles_by_path(two_d_views);
+    let dbt_roles = dbt_roles_by_source(dbt);
 
     let mut diagnostics = Vec::new();
     let mut seen_source_keys = BTreeSet::new();
@@ -502,7 +475,7 @@ fn build_source_diagnostics(
             .unwrap_or(original);
         let mut selected_as = Vec::new();
         let source_path = original.file_path.display().to_string();
-        if let Some(role) = clinical_roles.get(&source_path) {
+        if let Some(role) = two_d_roles.get(&source_path) {
             selected_as.push(role.clone());
         }
         for key in source_lookup_keys(input, &original.file_path) {
@@ -514,7 +487,7 @@ fn build_source_diagnostics(
 
         selected_as.sort();
         selected_as.dedup();
-        let filtered_by = clinical_filter
+        let filtered_by = two_d_filter
             .map(|config| filter_reasons(refined, config))
             .unwrap_or_default();
         let refinement = refinement_by_path.get(&original.file_path).copied();
@@ -559,23 +532,21 @@ fn build_source_diagnostics(
     diagnostics
 }
 
-fn clinical_roles_by_path(clinical_2d: Option<&Clinical2dPlan>) -> HashMap<String, String> {
+fn two_d_roles_by_path(two_d_views: Option<&TwoDViewsPlan>) -> HashMap<String, String> {
     let mut roles = HashMap::new();
-    if let Some(plan) = clinical_2d {
+    if let Some(plan) = two_d_views {
         for (view, selection) in &plan.selected_views {
             if let Some(source_path) = &selection.source_path {
-                roles.insert(source_path.clone(), format!("clinical_2d:{view}"));
+                roles.insert(source_path.clone(), format!("two_d_view:{view}"));
             }
         }
     }
     roles
 }
 
-fn dbt_roles_by_source(
-    dbt_localization: Option<&DbtLocalizationPlan>,
-) -> BTreeMap<String, Vec<String>> {
+fn dbt_roles_by_source(dbt: Option<&DbtPlan>) -> BTreeMap<String, Vec<String>> {
     let mut roles: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    if let Some(plan) = dbt_localization {
+    if let Some(plan) = dbt {
         for composition in &plan.composition_inputs {
             for source_path in &composition.source_paths {
                 roles.entry(source_path.clone()).or_default().push(format!(
@@ -664,9 +635,9 @@ mod tests {
     const STUDY_UID: &str = "1.2.826.0.1";
     const SERIES_UID: &str = "1.2.826.0.1.1";
 
-    fn test_options(plan: MammographyPlanMode) -> MammographyPlanOptions {
+    fn test_options(selection: MammographyPlanSelection) -> MammographyPlanOptions {
         MammographyPlanOptions {
-            plan,
+            selection,
             preference_order: PreferenceOrder::Default,
             study_selection_mode: StudySelectionMode::MostComplete,
         }
@@ -774,10 +745,10 @@ mod tests {
     }
 
     #[test]
-    fn clinical_2d_plan_excludes_tomo_slice_records() {
+    fn two_d_views_plan_excludes_tomo_slice_records() {
         let records = vec![
             make_record(
-                "clinical.dcm",
+                "2d.dcm",
                 Laterality::Left,
                 ViewPosition::Mlo,
                 MammogramType::Ffdm,
@@ -798,7 +769,7 @@ mod tests {
             records,
             None,
             Vec::new(),
-            test_options(MammographyPlanMode::Clinical2d),
+            test_options(MammographyPlanSelection::two_d_views_only()),
         )
         .unwrap();
 
@@ -814,7 +785,7 @@ mod tests {
             .filtered_by
             .contains(&"allowed_dbt_object_kinds".to_string()));
         assert_eq!(slice_diag.status, "excluded");
-        assert_eq!(plan.summary.clinical_2d_selected_views, 1);
+        assert_eq!(plan.summary.two_d_selected_views, 1);
     }
 
     #[test]
@@ -825,11 +796,11 @@ mod tests {
             Vec::new(),
             Some(split_series_scan_report()),
             Vec::new(),
-            test_options(MammographyPlanMode::DbtLocalization),
+            test_options(MammographyPlanSelection::dbt_only()),
         )
         .unwrap();
 
-        let dbt = plan.dbt_localization.expect("dbt localization plan");
+        let dbt = plan.dbt.expect("dbt plan");
         assert_eq!(dbt.composition_inputs.len(), 1);
         assert_eq!(dbt.composition_inputs[0].frame_count, 3);
         assert_eq!(dbt.fallback_slice_paths.len(), 3);
@@ -855,19 +826,19 @@ mod tests {
             records,
             None,
             Vec::new(),
-            test_options(MammographyPlanMode::DbtLocalization),
+            test_options(MammographyPlanSelection::dbt_only()),
         )
         .unwrap();
 
-        let dbt = plan.dbt_localization.expect("dbt localization plan");
+        let dbt = plan.dbt.expect("dbt plan");
         assert_eq!(dbt.multiframe_volume_candidates.len(), 1);
         assert_eq!(dbt.multiframe_volume_candidates[0].frame_count, 50);
     }
 
     #[test]
-    fn combined_plan_keeps_clinical_and_dbt_surfaces_separate() {
+    fn combined_plan_keeps_2d_views_and_dbt_surfaces_separate() {
         let records = vec![make_record(
-            "clinical.dcm",
+            "2d.dcm",
             Laterality::Left,
             ViewPosition::Mlo,
             MammogramType::Ffdm,
@@ -880,12 +851,12 @@ mod tests {
             records,
             Some(split_series_scan_report()),
             Vec::new(),
-            test_options(MammographyPlanMode::Clinical2dWithDbtLocalization),
+            test_options(MammographyPlanSelection::all()),
         )
         .unwrap();
 
-        assert!(plan.clinical_2d.is_some());
-        assert_eq!(plan.summary.clinical_2d_selected_views, 1);
+        assert!(plan.two_d_views.is_some());
+        assert_eq!(plan.summary.two_d_selected_views, 1);
         assert_eq!(plan.summary.dbt_composition_inputs, 1);
     }
 
@@ -902,7 +873,7 @@ mod tests {
             records,
             None,
             Vec::new(),
-            test_options(MammographyPlanMode::Clinical2d),
+            test_options(MammographyPlanSelection::two_d_views_only()),
         )
         .unwrap();
 

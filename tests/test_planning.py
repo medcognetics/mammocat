@@ -25,32 +25,32 @@ def _write_ffdm(path: Path) -> Path:
     return path
 
 
-def _run_mammoselect(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
     command = [
         "cargo",
         "run",
         "--quiet",
         "--all-features",
         "--bin",
-        "mammoselect",
+        binary,
         "--",
         *args,
     ]
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
-def test_plan_mammography_collection_combines_clinical_and_dbt(tmp_path: Path) -> None:
+def test_plan_mammography_collection_combines_2d_views_and_dbt(tmp_path: Path) -> None:
     _write_ffdm(tmp_path / "l_mlo.dcm")
     create_old_format_dbt_series(tmp_path)
 
     report = plan_mammography_collection(tmp_path)
 
-    assert report["plan"] == "clinical-2d-with-dbt-localization"
-    assert report["summary"]["clinical_2d_selected_views"] == 1
+    assert report["plan"] == {"two_d_views": True, "dbt": True}
+    assert report["summary"]["two_d_selected_views"] == 1
     assert report["summary"]["dbt_composition_inputs"] == 1
-    selected_views = report["clinical_2d"]["selected_views"].values()
+    selected_views = report["two_d_views"]["selected_views"].values()
     assert any(view["selected"] for view in selected_views)
-    composition = report["dbt_localization"]["composition_inputs"][0]
+    composition = report["dbt"]["composition_inputs"][0]
     assert composition["frame_count"] == 3
     assert len(composition["source_paths"]) == 3
     assert any(
@@ -60,34 +60,61 @@ def test_plan_mammography_collection_combines_clinical_and_dbt(tmp_path: Path) -
     )
 
 
-def test_mammoselect_plan_json_output(tmp_path: Path) -> None:
+def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None:
     _write_ffdm(tmp_path / "l_mlo.dcm")
     create_old_format_dbt_series(tmp_path)
 
-    result = _run_mammoselect(
+    report = plan_mammography_collection(
+        tmp_path,
+        include_2d_views=False,
+        include_dbt=True,
+    )
+
+    assert report["plan"] == {"two_d_views": False, "dbt": True}
+    assert report["two_d_views"] is None
+    assert report["dbt"]["composition_inputs"]
+
+
+def test_mammoplan_json_output(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+    create_old_format_dbt_series(tmp_path)
+
+    result = _run_cli(
+        "mammoplan",
         str(tmp_path),
-        "--plan",
-        "clinical-2d-with-dbt-localization",
         "--format",
         "json",
     )
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["plan"] == "clinical-2d-with-dbt-localization"
+    assert report["plan"] == {"two_d_views": True, "dbt": True}
     assert report["summary"]["dbt_composition_inputs"] == 1
 
 
-def test_mammoselect_plan_rejects_paths_format(tmp_path: Path) -> None:
+def test_mammoplan_include_flags_select_exact_input_groups(tmp_path: Path) -> None:
     _write_ffdm(tmp_path / "l_mlo.dcm")
+    create_old_format_dbt_series(tmp_path)
 
-    result = _run_mammoselect(
+    result = _run_cli(
+        "mammoplan",
         str(tmp_path),
-        "--plan",
-        "clinical-2d",
+        "--include-dbt",
         "--format",
-        "paths",
+        "json",
     )
 
-    assert result.returncode == 2
-    assert "--plan supports --format text or --format json" in result.stderr
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["plan"] == {"two_d_views": False, "dbt": True}
+    assert report["two_d_views"] is None
+    assert report["dbt"]["composition_inputs"]
+
+
+def test_mammoselect_no_longer_accepts_plan_flag(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+
+    result = _run_cli("mammoselect", str(tmp_path), "--plan", "2d-views")
+
+    assert result.returncode != 0
+    assert "unexpected argument '--plan'" in result.stderr

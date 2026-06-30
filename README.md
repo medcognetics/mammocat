@@ -27,7 +27,7 @@ cd mammocat
 cargo build --release
 ```
 
-The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, and `target/release/mammovalidate`.
+The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, `target/release/mammoplan`, `target/release/mammovalidate`, and `target/release/dbt-combine`.
 
 ## Usage
 
@@ -69,8 +69,6 @@ mammoselect --format json /path/to/directory
 # Output file paths only (useful for scripting)
 mammoselect --format paths /path/to/directory
 
-# Return a comprehensive clinical 2D + DBT localization plan
-mammoselect --plan clinical-2d-with-dbt-localization --format json /path/to/directory
 ```
 
 `mammoselect` never mixes studies in its output. After filtering, it groups usable
@@ -88,11 +86,25 @@ Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any
 usable candidate is missing `StudyInstanceUID`.
 
-When `--plan` is supplied, `mammoselect` returns a collection-level input plan
-instead of the legacy four-view output. Supported plans are `clinical-2d`,
-`dbt-localization`, `clinical-2d-with-dbt-localization`, and
-`dbt-only-fallback`. Plan mode supports `--format text` and `--format json`;
-`--format paths` remains limited to legacy view selection.
+### mammoplan - Mammography Input Planning
+
+Build a collection-level input plan for 2D mammography views and DBT inputs:
+
+```bash
+# Plan both 2D mammography views and DBT inputs
+mammoplan /path/to/dicom_directory --format json
+
+# Plan only 2D mammography views
+mammoplan --include-2d-views /path/to/directory --format json
+
+# Plan only DBT composition inputs and volume candidates
+mammoplan --include-dbt /path/to/directory --format json
+```
+
+If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
+When any include flag is supplied, only the requested groups are included. The
+JSON report includes `plan`, `two_d_views`, `dbt`, `source_objects`, `warnings`,
+and `summary`.
 
 ### mammovalidate - DICOM Validation
 
@@ -183,7 +195,8 @@ file_report = validate_dicom("mammogram.dcm")
 directory_report = validate_directory(Path("dicoms.zip"), profile="selection")
 input_plan = plan_mammography_collection(
     Path("dicoms"),
-    plan="clinical-2d-with-dbt-localization",
+    include_2d_views=True,
+    include_dbt=True,
 )
 
 if not file_report["summary"]["valid"]:
@@ -257,7 +270,9 @@ mammocat/
 │   │   ├── error.rs                # Error types
 │   │   ├── main.rs                 # mammocat CLI entry point
 │   │   └── bin/
+│   │       ├── dbt-combine.rs      # DBT conversion CLI entry point
 │   │       ├── mammoselect.rs      # mammoselect CLI entry point
+│   │       ├── mammoplan.rs        # input planning CLI entry point
 │   │       └── mammovalidate.rs    # validation CLI entry point
 ```
 

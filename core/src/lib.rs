@@ -24,9 +24,9 @@ pub use dbt::{
 pub use dicom_files::{collect_dicom_files, is_dicom_file};
 pub use error::{MammocatError, Result};
 pub use planning::{
-    plan_mammography_collection, Clinical2dPlan, ClinicalViewSelection, DbtCompositionInput,
-    DbtLocalizationPlan, DbtVolumeCandidate, MammographyInputPlan, MammographyPlanMode,
-    MammographyPlanOptions, MammographyPlanSummary, SourceObjectDiagnostic,
+    plan_mammography_collection, DbtCompositionInput, DbtPlan, DbtVolumeCandidate,
+    MammographyInputPlan, MammographyPlanOptions, MammographyPlanSelection, MammographyPlanSummary,
+    SourceObjectDiagnostic, TwoDViewSelection, TwoDViewsPlan,
 };
 pub use selection::{
     get_preferred_views, get_preferred_views_filtered,

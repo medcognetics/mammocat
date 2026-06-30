@@ -51,6 +51,10 @@ name = "mammoselect"
 path = "src/bin/mammoselect.rs"
 
 [[bin]]
+name = "mammoplan"
+path = "src/bin/mammoplan.rs"
+
+[[bin]]
 name = "mammovalidate"
 path = "src/bin/mammovalidate.rs"
 

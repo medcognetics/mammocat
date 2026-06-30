@@ -1862,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clinical_2d_allowed_types_excludes_tomo_slice() {
+    fn test_two_d_allowed_types_excludes_tomo_slice() {
         let config = with_allowed_types(
             FilterConfig::permissive(),
             &[
@@ -2085,7 +2085,7 @@ mod tests {
     }
 
     #[test]
-    fn clinical_2d_filter_uses_refined_singleton_synth_and_excludes_refined_slices() {
+    fn two_d_filter_uses_refined_singleton_synth_and_excludes_refined_slices() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,
@@ -2121,7 +2121,7 @@ mod tests {
     }
 
     #[test]
-    fn clinical_2d_filter_can_require_non_dbt_object_kind() {
+    fn two_d_filter_can_require_non_dbt_object_kind() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,
@@ -2194,7 +2194,7 @@ mod tests {
     }
 
     #[test]
-    fn dbt_localization_filter_selects_refined_tomo_slices() {
+    fn dbt_filter_selects_refined_tomo_slices() {
         let mut records = make_ambiguous_series(
             DEFAULT_STUDY_UID,
             SPLIT_SLICE_SERIES_UID,

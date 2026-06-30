@@ -1,11 +1,9 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::{
-    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings,
-    plan_mammography_collection, DbtObjectKind, FilterConfig, MammogramRecord, MammogramType,
-    MammogramView, MammographyInputPlan, MammographyPlanMode, MammographyPlanOptions,
-    PreferenceOrder, PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode,
-    STANDARD_MAMMO_VIEWS,
+    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, DbtObjectKind,
+    FilterConfig, MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
+    PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -29,10 +27,6 @@ struct Cli {
     /// Preference ordering strategy for selecting mammogram types
     #[arg(short, long, default_value = "default")]
     preference: PreferenceOrderArg,
-
-    /// Return a comprehensive collection-level input plan instead of legacy view selection
-    #[arg(long, value_enum)]
-    plan: Option<PlanModeArg>,
 
     /// Verbose logging
     #[arg(short, long)]
@@ -92,36 +86,6 @@ enum OutputFormat {
     Json,
     /// File paths only (one per line)
     Paths,
-}
-
-/// Collection-level input planning mode
-#[derive(Debug, Clone, ValueEnum)]
-enum PlanModeArg {
-    /// Select only clinical 2D/synthetic views for base scoring
-    #[value(name = "clinical-2d")]
-    Clinical2d,
-    /// Select DBT inputs for localization
-    #[value(name = "dbt-localization")]
-    DbtLocalization,
-    /// Select clinical 2D scoring inputs and auxiliary DBT localization inputs
-    #[value(name = "clinical-2d-with-dbt-localization")]
-    Clinical2dWithDbtLocalization,
-    /// Explicitly plan DBT-selected inputs for fallback scoring
-    #[value(name = "dbt-only-fallback")]
-    DbtOnlyFallback,
-}
-
-impl From<PlanModeArg> for MammographyPlanMode {
-    fn from(arg: PlanModeArg) -> Self {
-        match arg {
-            PlanModeArg::Clinical2d => MammographyPlanMode::Clinical2d,
-            PlanModeArg::DbtLocalization => MammographyPlanMode::DbtLocalization,
-            PlanModeArg::Clinical2dWithDbtLocalization => {
-                MammographyPlanMode::Clinical2dWithDbtLocalization
-            }
-            PlanModeArg::DbtOnlyFallback => MammographyPlanMode::DbtOnlyFallback,
-        }
-    }
 }
 
 /// Preference ordering for mammogram type selection
@@ -205,15 +169,6 @@ fn main() {
     info!("Processing directory: {}", cli.directory.display());
 
     let preference_order: PreferenceOrder = cli.preference.clone().into();
-    if cli.plan.is_some() {
-        match run_plan_mode(&cli, preference_order) {
-            Ok(()) => return,
-            Err(message) => {
-                eprintln!("Error: {message}");
-                process::exit(2);
-            }
-        }
-    }
 
     // Collect all .dcm files
     let dicom_files = match collect_dicom_files(&cli.directory) {
@@ -285,137 +240,6 @@ fn setup_logging(verbose: bool) {
         env_logger::Builder::from_default_env()
             .filter_level(log::LevelFilter::Info)
             .init();
-    }
-}
-
-fn run_plan_mode(cli: &Cli, preference_order: PreferenceOrder) -> Result<(), String> {
-    validate_plan_mode_args(cli)?;
-    let plan = cli.plan.clone().expect("plan mode is present").into();
-    let options = MammographyPlanOptions {
-        plan,
-        preference_order,
-        study_selection_mode: StudySelectionMode::from_strict(cli.strict),
-    };
-    let report = plan_mammography_collection(&cli.directory, options)
-        .map_err(|error| format!("planning failed: {error}"))?;
-    output_plan(&report, &cli.format)
-}
-
-fn validate_plan_mode_args(cli: &Cli) -> Result<(), String> {
-    if cli.format == OutputFormat::Paths {
-        return Err(
-            "--plan supports --format text or --format json, not --format paths".to_string(),
-        );
-    }
-    if cli.allowed_types.is_some() || cli.allowed_dbt_object_kinds.is_some() {
-        return Err(
-            "--plan cannot be combined with --allowed-types or --allowed-dbt-object-kinds"
-                .to_string(),
-        );
-    }
-    if cli.exclude_implants
-        || cli.only_standard_views
-        || cli.include_for_processing
-        || cli.include_secondary_capture
-        || cli.include_non_mg
-        || cli.exclude_lossy
-        || cli.no_deprioritize_lossy
-        || cli.require_common_modality
-    {
-        return Err("--plan cannot be combined with legacy selection filter flags".to_string());
-    }
-    Ok(())
-}
-
-fn output_plan(plan: &MammographyInputPlan, format: &OutputFormat) -> Result<(), String> {
-    match format {
-        OutputFormat::Text => {
-            print_plan_text(plan);
-            Ok(())
-        }
-        OutputFormat::Json => {
-            #[cfg(feature = "json")]
-            {
-                let json = serde_json::to_string_pretty(plan)
-                    .map_err(|error| format!("failed to serialize plan JSON: {error}"))?;
-                println!("{json}");
-                Ok(())
-            }
-            #[cfg(not(feature = "json"))]
-            {
-                Err("JSON output requires the 'json' feature; rebuild with: cargo build --features json".to_string())
-            }
-        }
-        OutputFormat::Paths => {
-            Err("--plan supports --format text or --format json, not --format paths".to_string())
-        }
-    }
-}
-
-fn print_plan_text(plan: &MammographyInputPlan) {
-    println!("Mammography Input Plan");
-    println!("======================");
-    println!();
-    println!("Input: {}", plan.input_path);
-    println!("Plan: {}", plan.plan.as_str());
-    println!("DICOM files: {}", plan.summary.input_dicom_files);
-    println!("Mammogram records: {}", plan.summary.mammogram_records);
-    println!(
-        "Clinical 2D selected views: {}",
-        plan.summary.clinical_2d_selected_views
-    );
-    println!(
-        "DBT composition inputs: {}",
-        plan.summary.dbt_composition_inputs
-    );
-    println!(
-        "DBT volume candidates: {}",
-        plan.summary.dbt_multiframe_volume_candidates
-    );
-
-    if let Some(clinical) = &plan.clinical_2d {
-        println!();
-        println!("Clinical 2D");
-        println!("-----------");
-        for selection in clinical.selected_views.values() {
-            let source = selection.source_path.as_deref().unwrap_or("not found");
-            println!("{}: {}", selection.view, source);
-        }
-    }
-
-    if let Some(dbt) = &plan.dbt_localization {
-        println!();
-        println!("DBT Localization");
-        println!("----------------");
-        println!("Role: {}", dbt.scoring_role);
-        for series in &dbt.composition_inputs {
-            println!(
-                "compose: series={} frames={} sources={}",
-                series.series_instance_uid,
-                series.frame_count,
-                series.source_paths.len()
-            );
-        }
-        for candidate in &dbt.multiframe_volume_candidates {
-            println!(
-                "volume: series={} frames={} sources={}",
-                candidate
-                    .series_instance_uid
-                    .as_deref()
-                    .unwrap_or("<missing>"),
-                candidate.frame_count,
-                candidate.source_paths.len()
-            );
-        }
-    }
-
-    if !plan.warnings.is_empty() {
-        println!();
-        println!("Warnings");
-        println!("--------");
-        for warning in &plan.warnings {
-            println!("{warning}");
-        }
     }
 }
 

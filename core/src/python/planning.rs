@@ -8,23 +8,23 @@ use super::enums::PyPreferenceOrder;
 use super::errors::convert_error;
 use super::utils::path_to_pathbuf;
 
-/// Plan clinical 2D scoring and/or DBT localization inputs from a DICOM directory.
+/// Plan 2D mammography view and/or DBT inputs from a DICOM directory.
 #[pyfunction]
 #[pyo3(
     name = "plan_mammography_collection",
-    signature = (path, plan="clinical-2d-with-dbt-localization", preference_order=None, strict=false)
+    signature = (path, include_2d_views=true, include_dbt=true, preference_order=None, strict=false)
 )]
 pub fn py_plan_mammography_collection(
     py: Python,
     path: &Bound<'_, PyAny>,
-    plan: &str,
+    include_2d_views: bool,
+    include_dbt: bool,
     preference_order: Option<&PyPreferenceOrder>,
     strict: bool,
 ) -> PyResult<PyObject> {
     let path = path_to_pathbuf(path)?;
-    let plan = plan.parse().map_err(convert_error)?;
     let options = crate::MammographyPlanOptions {
-        plan,
+        selection: crate::MammographyPlanSelection::new(include_2d_views, include_dbt),
         preference_order: preference_order
             .map(|order| order.inner)
             .unwrap_or(crate::PreferenceOrder::Default),
