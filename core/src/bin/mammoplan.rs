@@ -1,8 +1,8 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info};
 use mammocat_core::{
-    plan_mammography_collection, MammographyPlan, MammographyPlanOptions, MammographyPlanSelection,
-    PreferenceOrder, StudySelectionMode,
+    plan_mammography_collection, MammographyPlan, MammographyPlanConfig, MammographyPlanOptions,
+    MammographyPlanSelection, StudySelectionMode,
 };
 use std::path::PathBuf;
 use std::process;
@@ -29,9 +29,9 @@ struct Cli {
     #[arg(long = "include-dbt")]
     include_dbt: bool,
 
-    /// Preference ordering strategy for selecting 2D mammography views
-    #[arg(short, long, default_value = "default")]
-    preference: PreferenceOrderArg,
+    /// Prefer synthetic 2D views over FFDM when both are available for the same view.
+    #[arg(long = "prefer-synthetic-2d")]
+    prefer_synthetic_2d: bool,
 
     /// Error if usable 2D records contain multiple studies or missing StudyInstanceUID
     #[arg(long)]
@@ -51,24 +51,6 @@ enum OutputFormat {
     Json,
 }
 
-/// Preference ordering for 2D mammography view selection.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum PreferenceOrderArg {
-    /// Default ordering: FFDM > SYNTH > TOMO > SFM
-    Default,
-    /// Tomosynthesis first: TOMO > FFDM > SYNTH > SFM
-    TomoFirst,
-}
-
-impl From<PreferenceOrderArg> for PreferenceOrder {
-    fn from(arg: PreferenceOrderArg) -> Self {
-        match arg {
-            PreferenceOrderArg::Default => PreferenceOrder::Default,
-            PreferenceOrderArg::TomoFirst => PreferenceOrder::TomoFirst,
-        }
-    }
-}
-
 fn main() {
     let cli = Cli::parse();
     setup_logging(cli.verbose);
@@ -82,11 +64,7 @@ fn main() {
     }
 
     info!("Planning directory: {}", cli.directory.display());
-    let options = MammographyPlanOptions {
-        selection: selection_from_cli(&cli),
-        preference_order: cli.preference.into(),
-        study_selection_mode: StudySelectionMode::from_strict(cli.strict),
-    };
+    let options = options_from_cli(&cli);
 
     let report = match plan_mammography_collection(&cli.directory, options) {
         Ok(report) => report,
@@ -123,6 +101,14 @@ fn selection_from_cli(cli: &Cli) -> MammographyPlanSelection {
     }
 }
 
+fn options_from_cli(cli: &Cli) -> MammographyPlanOptions {
+    MammographyPlanOptions {
+        selection: selection_from_cli(cli),
+        prefer_synthetic_2d: cli.prefer_synthetic_2d,
+        study_selection_mode: StudySelectionMode::from_strict(cli.strict),
+    }
+}
+
 fn output_plan(plan: &MammographyPlan, format: &OutputFormat) -> Result<(), String> {
     match format {
         OutputFormat::Text => {
@@ -151,6 +137,7 @@ fn print_plan_text(plan: &MammographyPlan) {
     println!();
     println!("Input: {}", plan.input_path);
     println!("Plan inputs: {}", plan_inputs(plan.plan));
+    println!("Prefer synthetic 2D: {}", plan.plan.prefer_synthetic_2d);
     println!("DICOM files: {}", plan.summary.input_dicom_files);
     println!("Mammogram records: {}", plan.summary.mammogram_records);
     println!("Selected views: {}", plan.summary.views_selected);
@@ -208,7 +195,7 @@ fn print_plan_text(plan: &MammographyPlan) {
     }
 }
 
-fn plan_inputs(selection: MammographyPlanSelection) -> String {
+fn plan_inputs(selection: MammographyPlanConfig) -> String {
     let mut inputs = Vec::new();
     if selection.include_2d {
         inputs.push("2d");
@@ -238,5 +225,12 @@ mod tests {
             selection_from_cli(&cli),
             MammographyPlanSelection::dbt_only()
         );
+    }
+
+    #[test]
+    fn options_include_synthetic_2d_preference() {
+        let cli = Cli::try_parse_from(["mammoplan", "--prefer-synthetic-2d", "/tmp"]).unwrap();
+
+        assert!(options_from_cli(&cli).prefer_synthetic_2d);
     }
 }

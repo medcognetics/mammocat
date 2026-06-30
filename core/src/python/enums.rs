@@ -380,11 +380,16 @@ impl PyPreferenceOrder {
     const TOMO_FIRST: Self = Self {
         inner: PreferenceOrder::TomoFirst,
     };
+    #[classattr]
+    const SYNTHETIC_2D_FIRST: Self = Self {
+        inner: PreferenceOrder::Synthetic2dFirst,
+    };
 
     fn __str__(&self) -> &'static str {
         match self.inner {
             PreferenceOrder::Default => "default",
             PreferenceOrder::TomoFirst => "tomo-first",
+            PreferenceOrder::Synthetic2dFirst => "synthetic-2d-first",
         }
     }
 

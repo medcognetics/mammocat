@@ -17,6 +17,11 @@ pub enum PreferenceOrder {
     /// Tomosynthesis first: TOMO > FFDM > SYNTH > SFM
     /// Maximizes use of 3D imaging when available
     TomoFirst,
+
+    /// Synthetic 2D first: SYNTH > FFDM > TOMO > SFM
+    /// Preserves the default ordering except synthetic 2D views are preferred over FFDM.
+    #[cfg_attr(feature = "json", serde(rename = "synthetic-2d-first"))]
+    Synthetic2dFirst,
 }
 
 impl PreferenceOrder {
@@ -37,6 +42,13 @@ impl PreferenceOrder {
                 MammogramType::Tomo => 1,
                 MammogramType::Ffdm => 2,
                 MammogramType::Synth => 3,
+                MammogramType::Sfm => 4,
+            },
+            PreferenceOrder::Synthetic2dFirst => match mammo_type {
+                MammogramType::Unknown => 5,
+                MammogramType::Synth => 1,
+                MammogramType::Ffdm => 2,
+                MammogramType::Tomo => 3,
                 MammogramType::Sfm => 4,
             },
         }

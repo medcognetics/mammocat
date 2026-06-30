@@ -124,6 +124,9 @@ make quality-fix
 
 # Plan only DBT composition inputs and volume candidates
 ./target/release/mammoplan --include-dbt /path/to/directory --format json
+
+# Prefer synthetic 2D views over FFDM when both exist for the same view
+./target/release/mammoplan --prefer-synthetic-2d /path/to/directory --format json
 ```
 
 If no `--include-*` flags are supplied, `mammoplan` includes both input groups.

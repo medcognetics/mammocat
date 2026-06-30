@@ -4,7 +4,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use serde::Serialize;
 
-use super::enums::PyPreferenceOrder;
 use super::errors::convert_error;
 use super::utils::path_to_pathbuf;
 
@@ -12,22 +11,20 @@ use super::utils::path_to_pathbuf;
 #[pyfunction]
 #[pyo3(
     name = "plan_mammography_collection",
-    signature = (path, include_2d=true, include_dbt=true, preference_order=None, strict=false)
+    signature = (path, include_2d=true, include_dbt=true, prefer_synthetic_2d=false, strict=false)
 )]
 pub fn py_plan_mammography_collection(
     py: Python,
     path: &Bound<'_, PyAny>,
     include_2d: bool,
     include_dbt: bool,
-    preference_order: Option<&PyPreferenceOrder>,
+    prefer_synthetic_2d: bool,
     strict: bool,
 ) -> PyResult<PyObject> {
     let path = path_to_pathbuf(path)?;
     let options = crate::MammographyPlanOptions {
         selection: crate::MammographyPlanSelection::new(include_2d, include_dbt),
-        preference_order: preference_order
-            .map(|order| order.inner)
-            .unwrap_or(crate::PreferenceOrder::Default),
+        prefer_synthetic_2d,
         study_selection_mode: crate::StudySelectionMode::from_strict(strict),
     };
     let report = crate::plan_mammography_collection(path, options).map_err(convert_error)?;

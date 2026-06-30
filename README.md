@@ -99,6 +99,9 @@ mammoplan --include-2d /path/to/directory --format json
 
 # Plan only DBT composition inputs and volume candidates
 mammoplan --include-dbt /path/to/directory --format json
+
+# Prefer synthetic 2D views over FFDM when both exist for the same view
+mammoplan --prefer-synthetic-2d /path/to/directory --format json
 ```
 
 If no `--include-*` flags are supplied, `mammoplan` includes both input groups.
@@ -197,6 +200,7 @@ input_plan = plan_mammography_collection(
     Path("dicoms"),
     include_2d=True,
     include_dbt=True,
+    prefer_synthetic_2d=False,
 )
 
 if not file_report["summary"]["valid"]:

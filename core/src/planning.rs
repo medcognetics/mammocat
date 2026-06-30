@@ -81,7 +81,7 @@ impl Default for MammographyPlanSelection {
 #[derive(Debug, Clone)]
 pub struct MammographyPlanOptions {
     pub selection: MammographyPlanSelection,
-    pub preference_order: PreferenceOrder,
+    pub prefer_synthetic_2d: bool,
     pub study_selection_mode: StudySelectionMode,
 }
 
@@ -89,8 +89,26 @@ impl Default for MammographyPlanOptions {
     fn default() -> Self {
         Self {
             selection: MammographyPlanSelection::default(),
-            preference_order: PreferenceOrder::Default,
+            prefer_synthetic_2d: false,
             study_selection_mode: StudySelectionMode::MostComplete,
+        }
+    }
+}
+
+/// Planner configuration echoed in JSON output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MammographyPlanConfig {
+    pub include_2d: bool,
+    pub include_dbt: bool,
+    pub prefer_synthetic_2d: bool,
+}
+
+impl MammographyPlanConfig {
+    fn from_options(options: &MammographyPlanOptions) -> Self {
+        Self {
+            include_2d: options.selection.include_2d,
+            include_dbt: options.selection.include_dbt,
+            prefer_synthetic_2d: options.prefer_synthetic_2d,
         }
     }
 }
@@ -111,7 +129,7 @@ pub struct MammographyPlanSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MammographyPlan {
     pub input_path: String,
-    pub plan: MammographyPlanSelection,
+    pub plan: MammographyPlanConfig,
     pub summary: MammographyPlanSummary,
     pub views: Option<ViewsPlan>,
     pub dbt: Option<DbtPlan>,
@@ -294,7 +312,7 @@ fn build_mammography_plan(
 
     Ok(MammographyPlan {
         input_path: input.display().to_string(),
-        plan: options.selection,
+        plan: MammographyPlanConfig::from_options(&options),
         summary,
         views,
         dbt,
@@ -333,7 +351,7 @@ fn build_views_plan(
     let (selection, warnings) = get_preferred_views_filtered_with_study_mode_and_warnings(
         records,
         filter_config,
-        options.preference_order,
+        view_preference_order(options),
         options.study_selection_mode,
     )?;
 
@@ -378,6 +396,14 @@ fn build_views_plan(
             .map(|warning| warning.message().to_string())
             .collect(),
     })
+}
+
+fn view_preference_order(options: &MammographyPlanOptions) -> PreferenceOrder {
+    if options.prefer_synthetic_2d {
+        PreferenceOrder::Synthetic2dFirst
+    } else {
+        PreferenceOrder::Default
+    }
 }
 
 fn build_dbt_plan(
@@ -707,7 +733,17 @@ mod tests {
     fn test_options(selection: MammographyPlanSelection) -> MammographyPlanOptions {
         MammographyPlanOptions {
             selection,
-            preference_order: PreferenceOrder::Default,
+            prefer_synthetic_2d: false,
+            study_selection_mode: StudySelectionMode::MostComplete,
+        }
+    }
+
+    fn test_options_prefer_synthetic(
+        selection: MammographyPlanSelection,
+    ) -> MammographyPlanOptions {
+        MammographyPlanOptions {
+            selection,
+            prefer_synthetic_2d: true,
             study_selection_mode: StudySelectionMode::MostComplete,
         }
     }
@@ -982,6 +1018,54 @@ mod tests {
         assert!(plan.views.is_some());
         assert_eq!(plan.summary.views_selected, 1);
         assert_eq!(plan.summary.dbt_composition_inputs, 1);
+    }
+
+    #[test]
+    fn prefer_synthetic_2d_selects_synthetic_view_over_ffdm() {
+        let records = vec![
+            make_record(
+                "ffdm.dcm",
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                DbtObjectKind::None,
+            ),
+            make_record(
+                "synth.dcm",
+                Laterality::Left,
+                ViewPosition::Mlo,
+                MammogramType::Synth,
+                DbtObjectKind::None,
+            ),
+        ];
+
+        let default_plan = build_mammography_plan(
+            Path::new("."),
+            records.len(),
+            records.clone(),
+            None,
+            Vec::new(),
+            test_options(MammographyPlanSelection::include_2d_only()),
+        )
+        .unwrap();
+        let synthetic_plan = build_mammography_plan(
+            Path::new("."),
+            records.len(),
+            records,
+            None,
+            Vec::new(),
+            test_options_prefer_synthetic(MammographyPlanSelection::include_2d_only()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            default_plan.views.unwrap().selected_views["lmlo"].source_path,
+            Some("ffdm.dcm".to_string())
+        );
+        assert_eq!(
+            synthetic_plan.views.unwrap().selected_views["lmlo"].source_path,
+            Some("synth.dcm".to_string())
+        );
     }
 
     #[test]

@@ -123,6 +123,7 @@ class PreferenceOrder:
 
     DEFAULT: PreferenceOrder
     TOMO_FIRST: PreferenceOrder
+    SYNTHETIC_2D_FIRST: PreferenceOrder
 
     @property
     def value(self) -> str: ...
@@ -421,7 +422,7 @@ def plan_mammography_collection(
     path: str | Path,
     include_2d: bool = True,
     include_dbt: bool = True,
-    preference_order: PreferenceOrder | None = None,
+    prefer_synthetic_2d: bool = False,
     strict: bool = False,
 ) -> dict[str, Any]:
     """Plan 2D mammography view and/or DBT inputs from a DICOM directory."""

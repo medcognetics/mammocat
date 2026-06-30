@@ -25,6 +25,21 @@ def _write_ffdm(path: Path) -> Path:
     return path
 
 
+def _write_synth(path: Path) -> Path:
+    ds = create_mammogram_dicom(
+        mammogram_type="SYNTH",
+        laterality="L",
+        view_position="MLO",
+        study_instance_uid="1.2.826.0.1.3680043.10.700.1",
+        series_instance_uid="1.2.826.0.1.3680043.10.700.1.2",
+        sop_instance_uid="1.2.826.0.1.3680043.10.700.1.2.1",
+    )
+    ds.PresentationIntentType = "FOR PRESENTATION"
+    ds.ImageType = ["DERIVED", "PRIMARY", "TOMO_2D"]
+    ds.save_as(path, enforce_file_format=True)
+    return path
+
+
 def _run_cli(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
     command = [
         "cargo",
@@ -45,7 +60,11 @@ def test_plan_mammography_collection_combines_2d_views_and_dbt(tmp_path: Path) -
 
     report = plan_mammography_collection(tmp_path)
 
-    assert report["plan"] == {"include_2d": True, "include_dbt": True}
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
     assert report["summary"]["views_selected"] == 1
     assert report["summary"]["dbt_composition_inputs"] == 1
     selected_views = report["views"]["selected_views"].values()
@@ -70,7 +89,11 @@ def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None
         include_dbt=True,
     )
 
-    assert report["plan"] == {"include_2d": False, "include_dbt": True}
+    assert report["plan"] == {
+        "include_2d": False,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
     assert report["views"] is None
     assert report["dbt"]["composition_inputs"]
 
@@ -88,7 +111,11 @@ def test_mammoplan_json_output(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["plan"] == {"include_2d": True, "include_dbt": True}
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
     assert report["summary"]["dbt_composition_inputs"] == 1
 
 
@@ -106,9 +133,63 @@ def test_mammoplan_include_flags_select_exact_input_groups(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["plan"] == {"include_2d": False, "include_dbt": True}
+    assert report["plan"] == {
+        "include_2d": False,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
     assert report["views"] is None
     assert report["dbt"]["composition_inputs"]
+
+
+def test_plan_mammography_collection_can_prefer_synthetic_2d(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "ffdm.dcm")
+    _write_synth(tmp_path / "synth.dcm")
+
+    report = plan_mammography_collection(
+        tmp_path,
+        include_dbt=False,
+        prefer_synthetic_2d=True,
+    )
+
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": False,
+        "prefer_synthetic_2d": True,
+    }
+    assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("synth.dcm")
+
+
+def test_mammoplan_prefer_synthetic_2d_flag(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "ffdm.dcm")
+    _write_synth(tmp_path / "synth.dcm")
+
+    result = _run_cli(
+        "mammoplan",
+        str(tmp_path),
+        "--include-2d",
+        "--prefer-synthetic-2d",
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": False,
+        "prefer_synthetic_2d": True,
+    }
+    assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("synth.dcm")
+
+
+def test_mammoplan_no_longer_accepts_preference_flag(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+
+    result = _run_cli("mammoplan", str(tmp_path), "--preference", "tomo-first")
+
+    assert result.returncode != 0
+    assert "unexpected argument '--preference'" in result.stderr
 
 
 def test_mammoselect_no_longer_accepts_plan_flag(tmp_path: Path) -> None:
