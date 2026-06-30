@@ -944,10 +944,10 @@ fn apply_refined_record_to_file_report(
         report
             .errors
             .retain(|message| message.code != "unknown_mammogram_type");
-        report.checks.retain(|check| {
-            !(check.name == "MammogramType"
-                && check.message == "mammogram type must be known for preferred-view selection")
-        });
+        report
+            .warnings
+            .retain(|message| message.code != "unknown_mammogram_type");
+        report.checks.retain(|check| check.name != "MammogramType");
         report.pass(
             "MammogramType",
             "mammogram type resolved from collection context".to_string(),
@@ -2424,6 +2424,55 @@ mod tests {
             .files
             .iter()
             .all(|file| !error_codes(file).contains("unknown_mammogram_type")));
+    }
+
+    #[test]
+    fn extraction_directory_validation_clears_refined_unknown_type_warnings() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        const STUDY_UID: &str = "1.2.826.0.2";
+        const SPLIT_SLICE_SERIES_UID: &str = "1.2.826.0.2.10";
+        const SYNTH_SINGLETON_SERIES_UID: &str = "1.2.826.0.2.20";
+        const SOURCE_SOP_UID: &str = "1.2.826.0.2.30";
+        const SYNTH_SINGLETON_SOP_UID: &str = "1.2.826.0.2.40";
+        for index in 0..13 {
+            let path = temp_dir.path().join(format!("slice_{index}.dcm"));
+            ambiguous_dbt_object_with(
+                STUDY_UID,
+                SPLIT_SLICE_SERIES_UID,
+                &format!("{SPLIT_SLICE_SERIES_UID}.{index}"),
+                Some(SOURCE_SOP_UID),
+                "R",
+                "CC",
+            )
+            .write_to_file(path)
+            .unwrap();
+        }
+        ambiguous_dbt_object_with(
+            STUDY_UID,
+            SYNTH_SINGLETON_SERIES_UID,
+            SYNTH_SINGLETON_SOP_UID,
+            Some(SOURCE_SOP_UID),
+            "R",
+            "CC",
+        )
+        .write_to_file(temp_dir.path().join("syn2d.dcm"))
+        .unwrap();
+
+        let options = ValidationOptions {
+            profile: ValidationProfile::Extraction,
+            ..ValidationOptions::default()
+        };
+
+        let report = validate_directory_path(temp_dir.path(), &options).unwrap();
+
+        assert!(report.files.iter().all(|file| {
+            !warning_codes(file).contains("unknown_mammogram_type")
+                && !error_codes(file).contains("unknown_mammogram_type")
+        }));
+        assert!(report
+            .files
+            .iter()
+            .all(|file| file.mammography.mammogram_type.as_deref() != Some("unknown")));
     }
 
     #[test]
