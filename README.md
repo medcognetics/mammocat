@@ -68,6 +68,9 @@ mammoselect --format json /path/to/directory
 
 # Output file paths only (useful for scripting)
 mammoselect --format paths /path/to/directory
+
+# Return a comprehensive clinical 2D + DBT localization plan
+mammoselect --plan clinical-2d-with-dbt-localization --format json /path/to/directory
 ```
 
 `mammoselect` never mixes studies in its output. After filtering, it groups usable
@@ -84,6 +87,12 @@ the most complete study was selected.
 Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any
 usable candidate is missing `StudyInstanceUID`.
+
+When `--plan` is supplied, `mammoselect` returns a collection-level input plan
+instead of the legacy four-view output. Supported plans are `clinical-2d`,
+`dbt-localization`, `clinical-2d-with-dbt-localization`, and
+`dbt-only-fallback`. Plan mode supports `--format text` and `--format json`;
+`--format paths` remains limited to legacy view selection.
 
 ### mammovalidate - DICOM Validation
 
@@ -168,10 +177,14 @@ The validation bindings return the same dictionary schema as `mammovalidate --fo
 ```python
 from pathlib import Path
 
-from mammocat import validate_dicom, validate_directory
+from mammocat import plan_mammography_collection, validate_dicom, validate_directory
 
 file_report = validate_dicom("mammogram.dcm")
 directory_report = validate_directory(Path("dicoms.zip"), profile="selection")
+input_plan = plan_mammography_collection(
+    Path("dicoms"),
+    plan="clinical-2d-with-dbt-localization",
+)
 
 if not file_report["summary"]["valid"]:
     print(file_report["files"][0]["errors"])

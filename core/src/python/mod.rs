@@ -16,6 +16,7 @@ mod filter;
 #[macro_use]
 mod macros;
 mod metadata;
+mod planning;
 mod record;
 mod selection;
 mod utils;
@@ -27,6 +28,7 @@ pub use errors::*;
 pub use extractor::*;
 pub use filter::*;
 pub use metadata::*;
+pub use planning::*;
 pub use record::*;
 pub use selection::*;
 
@@ -77,6 +79,7 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register functions
     m.add_function(wrap_pyfunction!(py_scan_dbt_study, m)?)?;
     m.add_function(wrap_pyfunction!(py_convert_dbt_study, m)?)?;
+    m.add_function(wrap_pyfunction!(py_plan_mammography_collection, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views_with_order, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views_filtered, m)?)?;

@@ -12,6 +12,7 @@ pub use views::{
     get_preferred_views_filtered_with_study_mode,
     get_preferred_views_filtered_with_study_mode_and_warnings, get_preferred_views_with_order,
     get_preferred_views_with_order_and_warnings, refine_dbt_object_classification,
-    PreferredViewSelection, PreferredViewSelectionWithWarnings, SelectionWarning,
-    StudySelectionMode,
+    refine_dbt_object_classification_with_diagnostics, DbtRefinementDiagnostic,
+    DbtRefinementReason, PreferredViewSelection, PreferredViewSelectionWithWarnings,
+    SelectionWarning, StudySelectionMode,
 };

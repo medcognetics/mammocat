@@ -100,6 +100,9 @@ make quality-fix
 # Output file paths only
 ./target/release/mammoselect --format paths /path/to/directory
 
+# Return a comprehensive clinical 2D + DBT localization plan
+./target/release/mammoselect --plan clinical-2d-with-dbt-localization --format json /path/to/directory
+
 # Error if usable candidates contain multiple studies or missing StudyInstanceUID
 ./target/release/mammoselect --strict /path/to/directory
 
@@ -113,6 +116,11 @@ make quality-fix
 ./target/release/mammoselect --include-for-processing /path/to/directory
 ./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
+
+`mammoselect --plan` is an opt-in collection planner. Without `--plan`, the CLI
+keeps the legacy preferred-view behavior. Plan modes are `clinical-2d`,
+`dbt-localization`, `clinical-2d-with-dbt-localization`, and `dbt-only-fallback`;
+plan output supports text and JSON, not paths.
 
 #### mammovalidate - DICOM Validation
 ```bash
@@ -188,6 +196,10 @@ The codebase follows a clear separation of concerns:
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
 - `views.rs`: get_preferred_views, get_preferred_views_with_order, and get_preferred_views_filtered for selecting best views
 
+**`planning.rs`** - Collection-level input planning
+- `plan_mammography_collection()`: Builds clinical 2D and/or DBT localization input plans from one directory.
+- `MammographyPlanMode`: `Clinical2d`, `DbtLocalization`, `Clinical2dWithDbtLocalization`, and `DbtOnlyFallback`.
+
 **`validation.rs`** - File and collection validation reports
 - `validate_path()`: Validates a single DICOM file, non-recursive directory, or ZIP archive.
 - `validate_dicom_file()`: File-only validation helper used by Python bindings.
@@ -204,6 +216,7 @@ The codebase follows a clear separation of concerns:
 - `metadata.rs`: PyMammogramMetadata wrapper
 - `record.rs`: PyMammogramRecord wrapper
 - `selection.rs`: Python wrappers for selection functions (get_preferred_views_filtered, etc.)
+- `planning.rs`: Python wrapper for `plan_mammography_collection()`; returns the same planner schema as `mammoselect --plan --format json`
 - `validation.rs`: Python wrappers for `validate_dicom()` and `validate_directory()`; returns the same report schema as `mammovalidate --format json`
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
