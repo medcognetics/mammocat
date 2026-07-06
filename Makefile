@@ -34,7 +34,7 @@ test-cov:  ## Run Python tests with coverage
 
 # Node/TypeScript bindings
 node-install:  ## Install Node development dependencies
-	npm --prefix node ci
+	npm --prefix node ci --omit=optional
 
 node-build:  ## Build Node/TypeScript native bindings
 	npm --prefix node run build

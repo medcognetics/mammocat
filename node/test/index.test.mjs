@@ -194,16 +194,81 @@ test("directory selection reports unreadable DICOM-like files as input errors", 
   assert.equal(selection.inputErrors[0].code, "dicom_error")
 })
 
-test("package metadata matches the bundled native artifact", async () => {
+test("package metadata wires supported native packages", async () => {
   const packageJson = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8"),
   )
+  const supportedPackages = {
+    "@medcognetics/mammocat-darwin-arm64": {
+      cpu: ["arm64"],
+      directory: "darwin-arm64",
+      main: "mammocat.darwin-arm64.node",
+      os: ["darwin"],
+      target: "aarch64-apple-darwin",
+    },
+    "@medcognetics/mammocat-darwin-x64": {
+      cpu: ["x64"],
+      directory: "darwin-x64",
+      main: "mammocat.darwin-x64.node",
+      os: ["darwin"],
+      target: "x86_64-apple-darwin",
+    },
+    "@medcognetics/mammocat-linux-x64-gnu": {
+      cpu: ["x64"],
+      directory: "linux-x64-gnu",
+      libc: ["glibc"],
+      main: "mammocat.linux-x64-gnu.node",
+      os: ["linux"],
+      target: "x86_64-unknown-linux-gnu",
+    },
+    "@medcognetics/mammocat-win32-x64-msvc": {
+      cpu: ["x64"],
+      directory: "win32-x64-msvc",
+      main: "mammocat.win32-x64-msvc.node",
+      os: ["win32"],
+      target: "x86_64-pc-windows-msvc",
+    },
+  }
 
-  assert.deepEqual(packageJson.os, ["linux"])
-  assert.deepEqual(packageJson.cpu, ["x64"])
-  assert.deepEqual(packageJson.libc, ["glibc"])
-  assert.ok(packageJson.files.includes("mammocat.linux-x64-gnu.node"))
-  assert.ok(!packageJson.files.includes("*.node"))
+  assert.deepEqual(packageJson.files, [
+    "index.js",
+    "index.d.ts",
+    "LICENSE.md",
+    "README.md",
+    "package.json",
+  ])
+  assert.deepEqual(
+    Object.keys(packageJson.optionalDependencies).sort(),
+    Object.keys(supportedPackages).sort(),
+  )
+  assert.deepEqual(
+    [...packageJson.napi.targets].sort(),
+    Object.values(supportedPackages)
+      .map(({ target }) => target)
+      .sort(),
+  )
+
+  for (const [packageName, expected] of Object.entries(supportedPackages)) {
+    assert.equal(packageJson.optionalDependencies[packageName], packageJson.version)
+
+    const nativePackageJson = JSON.parse(
+      await readFile(
+        new URL(`../npm/${expected.directory}/package.json`, import.meta.url),
+        "utf8",
+      ),
+    )
+
+    assert.equal(nativePackageJson.name, packageName)
+    assert.equal(nativePackageJson.version, packageJson.version)
+    assert.equal(nativePackageJson.main, expected.main)
+    assert.deepEqual(nativePackageJson.files, [expected.main])
+    assert.deepEqual(nativePackageJson.os, expected.os)
+    assert.deepEqual(nativePackageJson.cpu, expected.cpu)
+    assert.deepEqual(nativePackageJson.libc, expected.libc)
+    assert.equal(nativePackageJson.description, packageJson.description)
+    assert.equal(nativePackageJson.license, packageJson.license)
+    assert.deepEqual(nativePackageJson.engines, packageJson.engines)
+  }
 })
 
 function tempDir() {

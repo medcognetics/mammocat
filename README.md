@@ -33,9 +33,12 @@ The binaries will be available at `target/release/mammocat`, `target/release/mam
 Build the local Node/TypeScript package:
 
 ```bash
-npm --prefix node ci
-npm --prefix node run build
+make node-install
+make node-build
+make node-pack
 ```
+
+The root npm package uses optional native packages for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. Local repository installs omit those optional packages until the platform packages have been published.
 
 ## Usage
 
@@ -222,6 +225,8 @@ console.log(bufferSelection.inputErrors)
 ```
 
 `PreferredViewSelection.views` always uses the fixed keys `rcc`, `lcc`, `rmlo`, and `lmlo`; missing slots are `null`. Bulk selection reports unreadable or unsupported DICOM inputs in `inputErrors`, while invalid API argument shapes throw. The default selection policy targets annotator-focused 2D standard views, excluding TOMO and DBT objects unless an explicit `preferenceOrder` override is supplied.
+
+The package is prepared for prebuilt native installs on Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. The root package stays platform-neutral and resolves the matching native package through optional dependencies.
 
 ### Python Validation API
 

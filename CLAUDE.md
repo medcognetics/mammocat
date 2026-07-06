@@ -251,8 +251,9 @@ The codebase follows a clear separation of concerns:
 **`node/`** - NAPI-RS Node/TypeScript bindings
 - `src/lib.rs`: Synchronous public API for `extractMetadata`, `selectPreferredViews`, and `selectPreferredViewsFromDirectory`
 - `index.js` and `index.d.ts`: Generated package loader and TypeScript declarations; keep these committed after `npm --prefix node run build`
+- `npm/`: Platform-specific optional native package metadata for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC
 - `test/`: Synthetic non-PHI DICOM fixture generation plus `node --test` API coverage
-- Native `node/*.node` artifacts are build outputs and stay ignored
+- Native `node/*.node` and `node/npm/**/*.node` artifacts are build outputs and stay ignored
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap

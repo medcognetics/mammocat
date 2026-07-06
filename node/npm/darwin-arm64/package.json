@@ -1,0 +1,19 @@
+{
+  "name": "@medcognetics/mammocat-darwin-arm64",
+  "version": "0.1.1",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "mammocat.darwin-arm64.node",
+  "files": [
+    "mammocat.darwin-arm64.node"
+  ],
+  "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin"
+  ]
+}

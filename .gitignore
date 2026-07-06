@@ -140,6 +140,7 @@ dmypy.json
 .pyre/
 node_modules/
 node/*.node
+node/npm/**/*.node
 
 **/*@neomake*.py
 
