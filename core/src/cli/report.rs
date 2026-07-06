@@ -40,6 +40,10 @@ impl<'a> fmt::Display for TextReport<'a> {
             self.metadata.model.as_deref().unwrap_or("unknown"),
         )?;
         write_field(f, "Frames", self.metadata.number_of_frames)?;
+        match self.metadata.pixel_spacing {
+            Some(pixel_spacing) => write_field(f, "Pixel Spacing", pixel_spacing)?,
+            None => write_field(f, "Pixel Spacing", "unknown")?,
+        }
         write_field(
             f,
             "Concatenation UID",
@@ -127,6 +131,7 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
+            pixel_spacing: None,
             concatenation_uid: None,
             sop_instance_uid_of_concatenation_source: None,
             is_secondary_capture: false,
@@ -151,6 +156,7 @@ mod tests {
         assert!(output.contains("Manufacturer"));
         assert!(output.contains("Model"));
         assert!(output.contains("Frames"));
+        assert!(output.contains("Pixel Spacing"));
         assert!(output.contains("Concatenation UID"));
         assert!(output.contains("Concat Source SOP UID"));
         assert!(output.contains("Transfer Syntax UID"));

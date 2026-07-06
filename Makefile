@@ -1,4 +1,5 @@
 .PHONY: help dev build build-release install test test-python test-rust test-cov
+.PHONY: node-install node-build node-test node-typecheck node-pack
 .PHONY: format format-check lint lint-fix typecheck quality quality-fix clean all
 
 help:  ## Show this help message
@@ -30,6 +31,22 @@ test-rust:  ## Run Rust tests only
 
 test-cov:  ## Run Python tests with coverage
 	uv run pytest tests/ --cov=mammocat --cov-report=html --cov-report=term
+
+# Node/TypeScript bindings
+node-install:  ## Install Node development dependencies
+	npm --prefix node ci
+
+node-build:  ## Build Node/TypeScript native bindings
+	npm --prefix node run build
+
+node-test:  ## Run Node/TypeScript binding tests
+	npm --prefix node test
+
+node-typecheck:  ## Type-check generated Node/TypeScript declarations
+	npm --prefix node run typecheck
+
+node-pack:  ## Verify Node package contents without publishing
+	npm --prefix node run pack:dry-run
 
 # Code formatting
 format:  ## Format both Rust and Python code
@@ -70,6 +87,7 @@ clean:  ## Clean build artifacts
 	rm -rf .basedpyright/
 	rm -rf htmlcov/
 	rm -rf .coverage
+	rm -rf node/node_modules/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 

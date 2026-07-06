@@ -3,7 +3,7 @@ version: 2.1
 jobs:
     quality:
         docker:
-            - image: cimg/python:3.12
+            - image: cimg/python:3.12-node
         steps:
             - checkout
             - run:
@@ -19,13 +19,16 @@ jobs:
                 command: curl -LsSf https://astral.sh/uv/install.sh | sh
             - restore_cache:
                 keys:
-                    - quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                    - quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
                     - quality-cache-v1-
             - run:
                 name: Install Python dependencies
                 command: |
                     export PATH="$HOME/.cargo/bin:$PATH"
                     make dev
+            - run:
+                name: Install Node dependencies
+                command: make node-install
             - run:
                 name: Check formatting
                 command: |
@@ -41,16 +44,25 @@ jobs:
                 command: |
                     export PATH="$HOME/.cargo/bin:$PATH"
                     make typecheck
+            - run:
+                name: Build Node bindings
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make node-build
+            - run:
+                name: Type-check Node bindings
+                command: make node-typecheck
             - save_cache:
-                key: quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                key: quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
                 paths:
                     - "~/.cargo"
                     - "./target"
                     - "./.venv"
+                    - "./node/node_modules"
 
     build:
         docker:
-            - image: cimg/python:3.12
+            - image: cimg/python:3.12-node
         steps:
             - checkout
             - run:
@@ -63,13 +75,16 @@ jobs:
                 command: curl -LsSf https://astral.sh/uv/install.sh | sh
             - restore_cache:
                 keys:
-                    - build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                    - build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
                     - build-cache-v1-
             - run:
                 name: Install Python dependencies
                 command: |
                     export PATH="$HOME/.cargo/bin:$PATH"
                     make dev
+            - run:
+                name: Install Node dependencies
+                command: make node-install
             - run:
                 name: Build Rust binaries
                 command: |
@@ -81,16 +96,28 @@ jobs:
                     export PATH="$HOME/.cargo/bin:$PATH"
                     make build
             - run:
+                name: Build Node bindings
+                command: |
+                    export PATH="$HOME/.cargo/bin:$PATH"
+                    make node-build
+            - run:
                 name: Run tests
                 command: |
                     export PATH="$HOME/.cargo/bin:$PATH"
                     make test
+            - run:
+                name: Run Node tests
+                command: make node-test
+            - run:
+                name: Verify Node package
+                command: make node-pack
             - save_cache:
-                key: build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}
+                key: build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
                 paths:
                     - "~/.cargo"
                     - "./target"
                     - "./.venv"
+                    - "./node/node_modules"
             - persist_to_workspace:
                 root: .
                 paths:

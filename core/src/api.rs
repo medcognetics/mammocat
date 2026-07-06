@@ -1,8 +1,9 @@
 use crate::error::Result;
 use crate::extraction::mammo_type::extract_mammogram_type_impl;
 use crate::extraction::tags::{
-    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, CONCATENATION_UID, MANUFACTURER,
-    MANUFACTURER_MODEL_NAME, MODALITY, NUMBER_OF_FRAMES, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
+    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, CONCATENATION_UID,
+    IMAGER_PIXEL_SPACING, MANUFACTURER, MANUFACTURER_MODEL_NAME, MODALITY, NUMBER_OF_FRAMES,
+    PIXEL_SPACING, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
     SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
 };
 use crate::extraction::{
@@ -10,7 +11,7 @@ use crate::extraction::{
     is_implant_displaced, is_magnified, is_spot_compression,
 };
 use crate::types::{
-    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, ViewPosition,
+    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, PixelSpacing, ViewPosition,
 };
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_object::{FileDicomObject, InMemDicomObject};
@@ -113,6 +114,7 @@ impl MammogramExtractor {
             manufacturer: get_string_value(dcm, MANUFACTURER),
             model: get_string_value(dcm, MANUFACTURER_MODEL_NAME),
             number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
+            pixel_spacing: Self::extract_pixel_spacing(dcm),
             concatenation_uid: get_string_value(dcm, CONCATENATION_UID),
             sop_instance_uid_of_concatenation_source: get_string_value(
                 dcm,
@@ -181,6 +183,13 @@ impl MammogramExtractor {
     /// Returns the DICOM Modality tag value (should be "MG" for mammography)
     fn extract_modality(dcm: &InMemDicomObject) -> Option<String> {
         get_string_value(dcm, MODALITY)
+    }
+
+    /// Extracts pixel spacing from PixelSpacing with ImagerPixelSpacing fallback.
+    fn extract_pixel_spacing(dcm: &InMemDicomObject) -> Option<PixelSpacing> {
+        get_string_value(dcm, PIXEL_SPACING)
+            .or_else(|| get_string_value(dcm, IMAGER_PIXEL_SPACING))
+            .and_then(|value| PixelSpacing::parse(&value).ok())
     }
 }
 
@@ -334,6 +343,9 @@ pub struct MammogramMetadata {
     /// Number of frames (for DBT/tomosynthesis)
     pub number_of_frames: i32,
 
+    /// Physical pixel spacing in millimeters, when available.
+    pub pixel_spacing: Option<PixelSpacing>,
+
     /// DICOM ConcatenationUID, when present
     pub concatenation_uid: Option<String>,
 
@@ -376,6 +388,33 @@ impl MammogramMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
+    use dicom_object::InMemDicomObject;
+
+    fn minimal_mammo_dicom() -> InMemDicomObject {
+        let mut dcm = InMemDicomObject::new_empty();
+        dcm.put(DataElement::new(
+            Tag(0x0008, 0x0060),
+            VR::CS,
+            PrimitiveValue::from("MG"),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0008, 0x0008),
+            VR::CS,
+            PrimitiveValue::Strs(vec!["ORIGINAL".to_string(), "PRIMARY".to_string()].into()),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0020, 0x0062),
+            VR::CS,
+            PrimitiveValue::from("L"),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0018, 0x5101),
+            VR::CS,
+            PrimitiveValue::from("MLO"),
+        ));
+        dcm
+    }
 
     #[test]
     fn test_mammogram_metadata_view() {
@@ -393,6 +432,7 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
+            pixel_spacing: None,
             concatenation_uid: None,
             sop_instance_uid_of_concatenation_source: None,
             is_secondary_capture: false,
@@ -425,6 +465,7 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 50,
+            pixel_spacing: Some(PixelSpacing::new(0.07, 0.08)),
             concatenation_uid: None,
             sop_instance_uid_of_concatenation_source: None,
             is_secondary_capture: false,
@@ -435,6 +476,38 @@ mod tests {
         };
 
         assert!(!metadata.is_2d());
+    }
+
+    #[test]
+    fn extracts_pixel_spacing() {
+        let mut dcm = minimal_mammo_dicom();
+        dcm.put(DataElement::new(
+            Tag(0x0028, 0x0030),
+            VR::DS,
+            PrimitiveValue::from("0.070\\0.071"),
+        ));
+
+        let metadata = MammogramExtractor::extract(&dcm).unwrap();
+        let pixel_spacing = metadata.pixel_spacing.unwrap();
+
+        assert_eq!(pixel_spacing.row, 0.070);
+        assert_eq!(pixel_spacing.col, 0.071);
+    }
+
+    #[test]
+    fn extracts_imager_pixel_spacing_fallback() {
+        let mut dcm = minimal_mammo_dicom();
+        dcm.put(DataElement::new(
+            Tag(0x0018, 0x1164),
+            VR::DS,
+            PrimitiveValue::from("0.090\\0.091"),
+        ));
+
+        let metadata = MammogramExtractor::extract(&dcm).unwrap();
+        let pixel_spacing = metadata.pixel_spacing.unwrap();
+
+        assert_eq!(pixel_spacing.row, 0.090);
+        assert_eq!(pixel_spacing.col, 0.091);
     }
 
     #[cfg(feature = "json")]
@@ -459,6 +532,7 @@ mod tests {
             manufacturer: None,
             model: None,
             number_of_frames: 1,
+            pixel_spacing: None,
             concatenation_uid: Some("1.2.826.0.1.100".to_string()),
             sop_instance_uid_of_concatenation_source: Some("1.2.826.0.1.101".to_string()),
             is_secondary_capture: false,
@@ -472,6 +546,8 @@ mod tests {
 
         assert_eq!(value["mammogram_type"], "tomo");
         assert_eq!(value["dbt_object_kind"], "slice");
+        assert_eq!(value["pixel_spacing"]["row"], 0.07);
+        assert_eq!(value["pixel_spacing"]["column"], 0.08);
         assert_eq!(value["concatenation_uid"], "1.2.826.0.1.100");
         assert_eq!(
             value["sop_instance_uid_of_concatenation_source"],

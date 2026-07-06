@@ -63,6 +63,7 @@ class TestMammogramExtractor:
         assert isinstance(metadata.is_magnified, bool)
         assert isinstance(metadata.is_implant_displaced, bool)
         assert isinstance(metadata.number_of_frames, int)
+        assert metadata.pixel_spacing == {"row": 0.07, "column": 0.07}
         assert metadata.concatenation_uid is None
         assert metadata.sop_instance_uid_of_concatenation_source is None
         assert metadata.transfer_syntax_uid == "1.2.840.10008.1.2.1"
@@ -106,6 +107,7 @@ class TestMammogramExtractor:
         assert "laterality" in d
         assert "view_position" in d
         assert "number_of_frames" in d
+        assert d["pixel_spacing"] == {"row": 0.07, "column": 0.07}
         assert "dbt_object_kind" in d
         assert "concatenation_uid" in d
         assert "sop_instance_uid_of_concatenation_source" in d

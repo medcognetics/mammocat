@@ -13,6 +13,7 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **Preferred View Selection**: Automatically selects the best mammogram for each standard view
 - **Validation Reports**: Checks whether files or directories are ready for metadata extraction or preferred-view selection
 - **Python Bindings**: Full Python API via PyO3 for seamless integration
+- **Node/TypeScript Bindings**: Synchronous NAPI-RS package for metadata extraction and preferred-view selection
 - **Clean API**: Easy-to-use library and command-line interface
 - **Type Safe**: Leverages Rust's type system for correctness
 - **Well Tested**: Comprehensive Rust and Python test coverage
@@ -28,6 +29,13 @@ cargo build --release
 ```
 
 The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, `target/release/mammoplan`, `target/release/mammovalidate`, and `target/release/dbt-combine`.
+
+Build the local Node/TypeScript package:
+
+```bash
+npm --prefix node ci
+npm --prefix node run build
+```
 
 ## Usage
 
@@ -180,6 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Type: {}", metadata.mammogram_type.simple_name());
     println!("Laterality: {}", metadata.laterality);
     println!("View: {}", metadata.view_position);
+    println!("Pixel spacing: {:?}", metadata.pixel_spacing);
     println!("Transfer syntax: {:?}", metadata.transfer_syntax_uid);
     println!("Compression: {:?}", metadata.compression_type);
     println!("Is standard view: {}", metadata.is_standard_view());
@@ -187,6 +196,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Node/TypeScript API
+
+The `node/` package builds `@medcognetics/mammocat`, a synchronous NAPI-RS API that returns JSON-safe camelCase objects.
+
+```ts
+import {
+  extractMetadata,
+  selectPreferredViews,
+  selectPreferredViewsFromDirectory,
+} from "@medcognetics/mammocat"
+
+const metadata = extractMetadata({ path: "study/R_CC.dcm" })
+const selection = selectPreferredViewsFromDirectory("study")
+
+const bufferSelection = selectPreferredViews([
+  { path: "study/R_CC.dcm" },
+  { bytes: new Uint8Array(dicomBytes), filename: "L_CC.dcm" },
+])
+
+console.log(metadata.pixelSpacing?.column)
+console.log(selection.views.rcc?.source)
+console.log(bufferSelection.inputErrors)
+```
+
+`PreferredViewSelection.views` always uses the fixed keys `rcc`, `lcc`, `rmlo`, and `lmlo`; missing slots are `null`. Bulk selection reports unreadable or unsupported DICOM inputs in `inputErrors`, while invalid API argument shapes throw. The default selection policy targets annotator-focused 2D standard views, excluding TOMO and DBT objects unless an explicit `preferenceOrder` override is supplied.
 
 ### Python Validation API
 
@@ -315,6 +350,7 @@ mammocat/
 - **thiserror** (1.0): Error handling
 - **regex** (1.10): Pattern matching
 - **serde/serde_json** (optional): JSON serialization
+- **napi/napi-derive** (Node package): NAPI-RS bindings
 
 ## Testing
 
@@ -348,6 +384,16 @@ Run specific Rust test:
 cargo test test_name
 ```
 
+Run Node package checks:
+
+```bash
+make node-install
+make node-build
+make node-test
+make node-typecheck
+make node-pack
+```
+
 Current test coverage includes Rust unit/integration tests and Python tests covering:
 - Enum behavior and ordering
 - String parsing and pattern matching
@@ -355,6 +401,7 @@ Current test coverage includes Rust unit/integration tests and Python tests cove
 - Data structure operations
 - Preferred view selection
 - Python bindings API (via pytest)
+- Node/TypeScript bindings API, JSON round trips, file/buffer parity, and directory selection
 
 ## Future Enhancements
 
