@@ -240,8 +240,8 @@ fn build_selection(
     input_errors: Vec<InputError>,
     options: Option<SelectionOptions>,
 ) -> Result<PreferredViewSelection> {
-    let filter_config = views_filter();
     let preference_order = preference_order_from_options(options.as_ref())?;
+    let filter_config = views_filter(preference_order);
     let study_selection_mode = StudySelectionMode::from_strict(
         options
             .as_ref()
@@ -315,13 +315,31 @@ fn empty_selection(
     }
 }
 
-fn views_filter() -> FilterConfig {
-    let allowed_types = HashSet::from([
-        MammogramType::Ffdm,
-        MammogramType::Synth,
-        MammogramType::Sfm,
-    ]);
-    let allowed_dbt_object_kinds = HashSet::from([DbtObjectKind::None]);
+fn views_filter(preference_order: PreferenceOrder) -> FilterConfig {
+    let allowed_types = match preference_order {
+        PreferenceOrder::TomoFirst => HashSet::from([
+            MammogramType::Ffdm,
+            MammogramType::Synth,
+            MammogramType::Sfm,
+            MammogramType::Tomo,
+        ]),
+        PreferenceOrder::Default | PreferenceOrder::Synthetic2dFirst => HashSet::from([
+            MammogramType::Ffdm,
+            MammogramType::Synth,
+            MammogramType::Sfm,
+        ]),
+    };
+    let allowed_dbt_object_kinds = match preference_order {
+        PreferenceOrder::TomoFirst => HashSet::from([
+            DbtObjectKind::None,
+            DbtObjectKind::Volume,
+            DbtObjectKind::Slice,
+            DbtObjectKind::Unknown,
+        ]),
+        PreferenceOrder::Default | PreferenceOrder::Synthetic2dFirst => {
+            HashSet::from([DbtObjectKind::None])
+        }
+    };
 
     FilterConfig::default()
         .with_allowed_types(allowed_types)

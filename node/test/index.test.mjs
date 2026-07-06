@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -114,6 +114,26 @@ test("TOMO inputs are excluded from default 2D annotation selection", () => {
   assert.ok(selection.candidates[0].filterReasons.includes("allowedDbtObjectKinds"))
 })
 
+test("tomo-first can select TOMO inputs explicitly", () => {
+  const selection = selectPreferredViews(
+    [
+      {
+        bytes: createMammogramBytes({
+          mammogramType: "TOMO",
+          laterality: "R",
+          viewPosition: "CC",
+        }),
+        filename: "rcc_tomo.dcm",
+      },
+    ],
+    { preferenceOrder: "tomo-first" },
+  )
+
+  assert.equal(selection.views.rcc?.source, "rcc_tomo.dcm")
+  assert.equal(selection.candidates[0].status, "selected")
+  assert.deepEqual(selection.candidates[0].filterReasons, [])
+})
+
 test("synthetic 2D preference can be selected explicitly", () => {
   const inputs = [
     {
@@ -172,6 +192,18 @@ test("directory selection reports unreadable DICOM-like files as input errors", 
 
   assert.equal(selection.inputErrors.length, 1)
   assert.equal(selection.inputErrors[0].code, "dicom_error")
+})
+
+test("package metadata matches the bundled native artifact", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  )
+
+  assert.deepEqual(packageJson.os, ["linux"])
+  assert.deepEqual(packageJson.cpu, ["x64"])
+  assert.deepEqual(packageJson.libc, ["glibc"])
+  assert.ok(packageJson.files.includes("mammocat.linux-x64-gnu.node"))
+  assert.ok(!packageJson.files.includes("*.node"))
 })
 
 function tempDir() {

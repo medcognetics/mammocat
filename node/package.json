@@ -3,12 +3,21 @@
   "version": "0.1.1",
   "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
   "license": "Apache-2.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
   "main": "index.js",
   "types": "index.d.ts",
   "files": [
     "index.js",
     "index.d.ts",
-    "*.node",
+    "mammocat.linux-x64-gnu.node",
     "LICENSE.md",
     "README.md",
     "package.json"
