@@ -95,6 +95,19 @@ impl PyMammogramMetadata {
         self.inner.number_of_frames
     }
 
+    /// Pixel spacing in millimeters, when available.
+    #[getter]
+    fn pixel_spacing(&self, py: Python) -> PyResult<PyObject> {
+        let Some(pixel_spacing) = self.inner.pixel_spacing else {
+            return Ok(py.None());
+        };
+
+        let dict = PyDict::new_bound(py);
+        dict.set_item("row", pixel_spacing.row)?;
+        dict.set_item("column", pixel_spacing.col)?;
+        Ok(dict.unbind().into())
+    }
+
     /// DICOM ConcatenationUID, when present
     #[getter]
     fn concatenation_uid(&self, py: Python) -> PyObject {
@@ -171,6 +184,7 @@ impl PyMammogramMetadata {
         dict.set_item("manufacturer", self.manufacturer(py))?;
         dict.set_item("model", self.model(py))?;
         dict.set_item("number_of_frames", self.number_of_frames())?;
+        dict.set_item("pixel_spacing", self.pixel_spacing(py)?)?;
         dict.set_item("concatenation_uid", self.concatenation_uid(py))?;
         dict.set_item(
             "sop_instance_uid_of_concatenation_source",

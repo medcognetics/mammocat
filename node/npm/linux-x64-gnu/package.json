@@ -1,0 +1,22 @@
+{
+  "name": "@medcognetics/mammocat-linux-x64-gnu",
+  "version": "0.1.1",
+  "cpu": [
+    "x64"
+  ],
+  "main": "mammocat.linux-x64-gnu.node",
+  "files": [
+    "mammocat.linux-x64-gnu.node"
+  ],
+  "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

@@ -780,6 +780,7 @@ mod tests {
                 } else {
                     1
                 },
+                pixel_spacing: None,
                 concatenation_uid: None,
                 sop_instance_uid_of_concatenation_source: None,
                 is_secondary_capture: false,

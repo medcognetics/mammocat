@@ -12,6 +12,9 @@ Mammocat is a Rust library and CLI tool for extracting mammography metadata from
 ```bash
 # Install Python development dependencies
 make dev
+
+# Install Node development dependencies
+make node-install
 ```
 
 ### Building
@@ -24,6 +27,9 @@ make build-release
 
 # Build Rust CLI binaries (standalone, no Python)
 cargo build --release
+
+# Build Node/TypeScript bindings
+make node-build
 ```
 
 ### Testing
@@ -39,6 +45,9 @@ make test-rust
 
 # Run Python tests with coverage
 make test-cov
+
+# Run Node/TypeScript binding tests
+make node-test
 
 # Run specific Rust test
 cargo test test_name
@@ -69,6 +78,10 @@ make quality
 
 # Auto-fix all quality issues
 make quality-fix
+
+# Type-check and package-check Node bindings
+make node-typecheck
+make node-pack
 ```
 
 ### Running the CLI
@@ -182,8 +195,9 @@ and 26 copy-through DICOM files.
 ## Architecture
 
 ### Workspace Structure
-- This is a Cargo workspace with a single member: `core/`
+- This is a Cargo workspace with two members: `core/` and `node/`
 - The `core/` crate contains both the library (`lib.rs`) and binary (`main.rs`)
+- The `node/` crate builds the NAPI-RS addon used by the local `@medcognetics/mammocat` package
 
 ### Module Organization
 
@@ -222,7 +236,7 @@ The codebase follows a clear separation of concerns:
 
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
-- `MammogramMetadata`: Complete extracted metadata structure (includes dbt_object_kind, manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
+- `MammogramMetadata`: Complete extracted metadata structure (includes dbt_object_kind, pixel_spacing, manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
 
 **`python/`** - PyO3 bindings (enabled with `--features python`)
 - `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)
@@ -233,6 +247,13 @@ The codebase follows a clear separation of concerns:
 - `planning.rs`: Python wrapper for `plan_mammography_collection()`; returns the same planner schema as `mammoplan --format json`
 - `validation.rs`: Python wrappers for `validate_dicom()` and `validate_directory()`; returns the same report schema as `mammovalidate --format json`
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
+
+**`node/`** - NAPI-RS Node/TypeScript bindings
+- `src/lib.rs`: Synchronous public API for `extractMetadata`, `selectPreferredViews`, and `selectPreferredViewsFromDirectory`
+- `index.js` and `index.d.ts`: Generated package loader and TypeScript declarations; keep these committed after `npm --prefix node run build`
+- `npm/`: Platform-specific optional native package metadata for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC
+- `test/`: Synthetic non-PHI DICOM fixture generation plus `node --test` API coverage
+- Native `node/*.node` and `node/npm/**/*.node` artifacts are build outputs and stay ignored
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap
@@ -278,6 +299,8 @@ Filtering flow:
 5. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
 6. Return best views from remaining candidates
 
+**Node Selection Defaults**: The Node API is annotator-focused by default. It selects only FFDM, synthesized 2D, and SFM records with `DbtObjectKind::None` for the standard CC/MLO slots, uses recursive directory discovery for `selectPreferredViewsFromDirectory()`, and returns JSON-safe camelCase DTOs with fixed `rcc`, `lcc`, `rmlo`, and `lmlo` keys. Unreadable inputs in bulk selection go to `inputErrors`; only invalid API argument shapes should throw.
+
 ### Validation Architecture
 
 `mammovalidate` and the Python validation functions use the same Rust report model. File validation records critical errors, warnings, info messages, and check details. Directory and ZIP validation aggregate per-file reports and run `get_preferred_views_filtered()` on valid records to verify standard-view coverage.
@@ -300,11 +323,12 @@ This implementation maintains behavioral compatibility with the Python `dicom-ut
 
 ## Dependencies
 
-- **dicom-rs (0.7)**: DICOM file parsing and tag reading
+- **dicom-rs (0.9)**: DICOM file parsing and tag reading
 - **clap (4.5)**: CLI argument parsing with derive macros
 - **thiserror (1.0)**: Error type definitions
 - **regex (1.10)**: Pattern matching for view positions and metadata
 - **serde/serde_json** (optional): JSON serialization behind `json` feature flag
+- **napi/napi-derive**: Node addon bindings under `node/`
 
 ## Testing Strategy
 
@@ -317,6 +341,7 @@ Test categories:
 - Classification algorithm logic
 - Preferred view selection (selection/record.rs, selection/views.rs)
 - Python bindings API (tests/test_enums.py, tests/test_api.py)
+- Node/TypeScript bindings API, generated declarations, file/buffer parity, selection diagnostics, and package dry-run
 
 When adding features that affect metadata extraction, add corresponding unit tests in the relevant module file.
 
