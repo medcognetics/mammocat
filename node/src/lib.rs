@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use mammocat_core::{
     collect_dicom_files_recursively, get_preferred_views_filtered_with_study_mode_and_warnings,
     DbtObjectKind, FilterConfig, Laterality, MammogramRecord as CoreMammogramRecord, MammogramType,
-    MammogramView, PreferenceOrder, StudySelectionMode, ViewPosition, STANDARD_MAMMO_VIEWS,
+    MammogramView, PreferenceOrder, StudySelectionMode, ViewPosition,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -298,17 +298,17 @@ fn empty_selection(
     warnings: Vec<String>,
     filter_config: &FilterConfig,
 ) -> PreferredViewSelection {
+    let views = PreferredViewSlots {
+        rcc: None,
+        lcc: None,
+        rmlo: None,
+        lmlo: None,
+    };
+    let missing_views = missing_views(&views);
+
     PreferredViewSelection {
-        views: PreferredViewSlots {
-            rcc: None,
-            lcc: None,
-            rmlo: None,
-            lmlo: None,
-        },
-        missing_views: STANDARD_MAMMO_VIEWS
-            .iter()
-            .map(|view| view.to_string())
-            .collect(),
+        views,
+        missing_views,
         warnings,
         input_errors,
         candidates: candidate_diagnostics(&records, &HashMap::new(), filter_config),

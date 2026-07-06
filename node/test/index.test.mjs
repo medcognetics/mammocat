@@ -100,6 +100,33 @@ test("missing views are reported without throwing", () => {
   assert.deepEqual(selection.missingViews.sort(), ["lcc", "rcc", "rmlo"])
 })
 
+test("selection failures report missing view slot keys", () => {
+  const selection = selectPreferredViews(
+    [
+      {
+        bytes: createMammogramBytes({
+          laterality: "R",
+          viewPosition: "CC",
+          studyInstanceUid: "1.2.826.0.1.3680043.10.543.30.1",
+        }),
+        filename: "study_a_rcc.dcm",
+      },
+      {
+        bytes: createMammogramBytes({
+          laterality: "L",
+          viewPosition: "MLO",
+          studyInstanceUid: "1.2.826.0.1.3680043.10.543.30.2",
+        }),
+        filename: "study_b_lmlo.dcm",
+      },
+    ],
+    { strict: true },
+  )
+
+  assert.deepEqual(selection.missingViews.sort(), ["lcc", "lmlo", "rcc", "rmlo"])
+  assert.ok(selection.warnings.some((warning) => warning.startsWith("Selection failed:")))
+})
+
 test("TOMO inputs are excluded from default 2D annotation selection", () => {
   const selection = selectPreferredViews([
     {

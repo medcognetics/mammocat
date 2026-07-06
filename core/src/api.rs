@@ -532,7 +532,7 @@ mod tests {
             manufacturer: None,
             model: None,
             number_of_frames: 1,
-            pixel_spacing: None,
+            pixel_spacing: Some(PixelSpacing::new(0.07, 0.08)),
             concatenation_uid: Some("1.2.826.0.1.100".to_string()),
             sop_instance_uid_of_concatenation_source: Some("1.2.826.0.1.101".to_string()),
             is_secondary_capture: false,
