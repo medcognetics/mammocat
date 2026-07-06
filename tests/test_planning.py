@@ -8,7 +8,14 @@ from pathlib import Path
 
 from mammocat import plan_mammography_collection
 
-from .conftest import create_mammogram_dicom, create_old_format_dbt_series
+from .conftest import (
+    create_mammogram_dicom,
+    create_old_format_dbt_series,
+    create_old_format_dbt_slice,
+)
+
+NONSTANDARD_EXTENSION_DBT_SERIES_UID = "1.2.826.0.1.3680043.10.700.2.1"
+NONSTANDARD_EXTENSION_DBT_FRAME_COUNT = 3
 
 
 def _write_ffdm(path: Path) -> Path:
@@ -38,6 +45,21 @@ def _write_synth(path: Path) -> Path:
     ds.ImageType = ["DERIVED", "PRIMARY", "TOMO_2D"]
     ds.save_as(path, enforce_file_format=True)
     return path
+
+
+def _write_old_format_dbt_series_with_suffix(directory: Path, suffix: str) -> list[Path]:
+    paths = []
+    for index in range(NONSTANDARD_EXTENSION_DBT_FRAME_COUNT):
+        instance_number = index + 1
+        path = directory / f"dbt_slice_{index}{suffix}"
+        ds = create_old_format_dbt_slice(
+            series_uid=NONSTANDARD_EXTENSION_DBT_SERIES_UID,
+            sop_uid=f"{NONSTANDARD_EXTENSION_DBT_SERIES_UID}.{instance_number}",
+            instance_number=instance_number,
+        )
+        ds.save_as(path, enforce_file_format=True)
+        paths.append(path)
+    return paths
 
 
 def _run_cli(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -97,6 +119,25 @@ def test_plan_mammography_collection_recurses_into_series_directories(tmp_path: 
     assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("2d/l_mlo.dcm")
 
 
+def test_plan_mammography_collection_scans_readable_dbt_non_dcm_files(
+    tmp_path: Path,
+) -> None:
+    _write_old_format_dbt_series_with_suffix(tmp_path, ".ima")
+
+    report = plan_mammography_collection(
+        tmp_path,
+        include_2d=False,
+        include_dbt=True,
+    )
+
+    assert report["summary"]["input_dicom_files"] == 0
+    assert report["summary"]["dbt_composition_inputs"] == 1
+    assert report["dbt"]["composition_inputs"][0]["frame_count"] == (
+        NONSTANDARD_EXTENSION_DBT_FRAME_COUNT
+    )
+    assert report["dbt"]["skipped_files"] == []
+
+
 def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None:
     _write_ffdm(tmp_path / "l_mlo.dcm")
     create_old_format_dbt_series(tmp_path)
@@ -114,6 +155,8 @@ def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None
     }
     assert report["views"] is None
     assert report["dbt"]["composition_inputs"]
+    assert report["summary"]["warnings"] == 0
+    assert report["warnings"] == []
 
 
 def test_mammoplan_json_output(tmp_path: Path) -> None:

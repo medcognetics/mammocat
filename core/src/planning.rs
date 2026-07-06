@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::dbt::{
-    scan_dbt_study, DbtScanOptions, DbtScanReport, DbtSeriesFinding, DbtSkippedFile,
+    scan_dbt_study_for_planning, DbtScanReport, DbtSeriesFinding, DbtSkippedFile,
     DbtUnsupportedSeries,
 };
-use crate::dicom_files::collect_dicom_files_recursively;
+use crate::dicom_files::{collect_dicom_files_recursively, collect_recursive_file_inventory};
 use crate::error::{MammocatError, Result};
 use crate::selection::{
-    get_preferred_views_filtered_with_study_mode_and_warnings,
+    get_preferred_views_filtered_refined_with_study_mode_and_warnings,
     refine_dbt_object_classification_with_diagnostics, DbtRefinementDiagnostic, MammogramRecord,
     StudySelectionMode,
 };
@@ -225,21 +225,29 @@ pub fn plan_mammography_collection(
         )));
     }
 
-    let dicom_files = collect_dicom_files_recursively(input)?;
-    let input_dicom_files = dicom_files.len();
-    let mut records = Vec::new();
-    let mut warnings = Vec::new();
-    for file_path in dicom_files {
-        match MammogramRecord::from_file(file_path.clone()) {
-            Ok(record) => records.push(record),
-            Err(error) => warnings.push(format!("skipping {}: {error}", file_path.display())),
-        }
-    }
-
-    let dbt_scan = if options.selection.include_dbt {
-        Some(scan_dbt_study(input, DbtScanOptions)?)
+    let (input_dicom_files, records, warnings, dbt_scan) = if options.selection.include_dbt {
+        let inventory = collect_recursive_file_inventory(input)?;
+        let input_dicom_files = inventory.dicom_files.len();
+        let planning_scan =
+            scan_dbt_study_for_planning(input, &inventory, options.selection.include_2d)?;
+        (
+            input_dicom_files,
+            planning_scan.records,
+            planning_scan.warnings,
+            Some(planning_scan.report),
+        )
     } else {
-        None
+        let dicom_files = collect_dicom_files_recursively(input)?;
+        let input_dicom_files = dicom_files.len();
+        let mut records = Vec::new();
+        let mut warnings = Vec::new();
+        for file_path in dicom_files {
+            match MammogramRecord::from_file(file_path.clone()) {
+                Ok(record) => records.push(record),
+                Err(error) => warnings.push(format!("skipping {}: {error}", file_path.display())),
+            }
+        }
+        (input_dicom_files, records, warnings, None)
     };
 
     build_mammography_plan(
@@ -348,7 +356,7 @@ fn build_views_plan(
     filter_config: &FilterConfig,
     options: &MammographyPlanOptions,
 ) -> Result<ViewsPlan> {
-    let (selection, warnings) = get_preferred_views_filtered_with_study_mode_and_warnings(
+    let (selection, warnings) = get_preferred_views_filtered_refined_with_study_mode_and_warnings(
         records,
         filter_config,
         view_preference_order(options),
@@ -418,6 +426,8 @@ fn build_dbt_plan(
     let mut skipped_files = Vec::new();
 
     if let Some(scan) = dbt_scan {
+        composition_inputs.reserve(scan.conversion_needed_series.len());
+        volume_candidates.reserve(scan.already_multiframe_dbt_series.len());
         for series in scan.conversion_needed_series {
             fallback_slice_paths.extend(series.source_paths.iter().cloned());
             composition_inputs.push(composition_input_from_series(series));
