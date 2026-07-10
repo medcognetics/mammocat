@@ -2,13 +2,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use dicom::parser::dataset::lazy_read::LazyDataSetReader;
+use dicom::parser::dataset::LazyDataToken;
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_core::header::HasLength;
 use dicom_core::{DataElement, DicomValue, Tag};
-use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
+use dicom_object::{open_file, FileDicomObject, FileMetaTable, InMemDicomObject, OpenFileOptions};
 
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::dicom_files::collect_dicom_files;
@@ -652,6 +654,88 @@ struct FileValidationOutcome {
     record: Option<MammogramRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PixelDataState {
+    Present(String),
+    Empty,
+    Missing,
+}
+
+fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> {
+    let file = File::open(path).map_err(|source| source.to_string())?;
+    let mut reader = BufReader::new(file);
+    let mut prefix = [0_u8; 132];
+    let prefix_len = reader
+        .read(&mut prefix)
+        .map_err(|source| source.to_string())?;
+    let dataset_start = if prefix_len >= prefix.len() && &prefix[128..] == b"DICM" {
+        128
+    } else {
+        0
+    };
+    reader
+        .seek(SeekFrom::Start(dataset_start))
+        .map_err(|source| source.to_string())?;
+
+    let meta = FileMetaTable::from_reader(&mut reader).map_err(|source| source.to_string())?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .ok_or_else(|| format!("unsupported transfer syntax: {}", meta.transfer_syntax()))?;
+    let mut dataset = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
+        .map_err(|source| source.to_string())?;
+
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(|source| source.to_string())?;
+        match token {
+            LazyDataToken::ElementHeader(header) if header.tag == PIXEL_DATA_TAG => {
+                return match header.len.get() {
+                    Some(0) => Ok(PixelDataState::Empty),
+                    Some(length) => Ok(PixelDataState::Present(format!("{length} bytes"))),
+                    None => Err("native PixelData has undefined length".to_string()),
+                };
+            }
+            LazyDataToken::PixelSequenceStart => return probe_pixel_sequence(&mut dataset),
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip().map_err(|source| source.to_string())?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(PixelDataState::Missing)
+}
+
+fn probe_pixel_sequence<S>(
+    dataset: &mut LazyDataSetReader<S>,
+) -> std::result::Result<PixelDataState, String>
+where
+    S: dicom::parser::stateful::decode::StatefulDecode,
+{
+    let mut item_count = 0_usize;
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(|source| source.to_string())?;
+        match token {
+            LazyDataToken::ItemStart { .. } => item_count += 1,
+            LazyDataToken::SequenceEnd => {
+                let fragment_count = item_count.saturating_sub(1);
+                return if fragment_count == 0 {
+                    Ok(PixelDataState::Empty)
+                } else {
+                    Ok(PixelDataState::Present(format!(
+                        "{fragment_count} fragments"
+                    )))
+                };
+            }
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip().map_err(|source| source.to_string())?;
+            }
+            _ => {}
+        }
+    }
+
+    Err("encapsulated PixelData ended before its sequence delimiter".to_string())
+}
+
 pub fn validate_path(
     path: &Path,
     options: &ValidationOptions,
@@ -998,7 +1082,19 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
         };
     }
 
-    validate_open_result_with_record(path.to_path_buf(), open_file(path), options)
+    match probe_pixel_data(path) {
+        Ok(pixel_data_state) => validate_open_result_with_record(
+            path.to_path_buf(),
+            OpenFileOptions::new()
+                .read_until(PIXEL_DATA_TAG)
+                .open_file(path),
+            options,
+            Some(pixel_data_state),
+        ),
+        Err(_) => {
+            validate_open_result_with_record(path.to_path_buf(), open_file(path), options, None)
+        }
+    }
 }
 
 fn validate_dicom_bytes_with_record(
@@ -1007,13 +1103,19 @@ fn validate_dicom_bytes_with_record(
     options: &ValidationOptions,
 ) -> FileValidationOutcome {
     let cursor = Cursor::new(bytes);
-    validate_open_result_with_record(source_path, FileDicomObject::from_reader(cursor), options)
+    validate_open_result_with_record(
+        source_path,
+        FileDicomObject::from_reader(cursor),
+        options,
+        None,
+    )
 }
 
 fn validate_open_result_with_record<E>(
     source_path: PathBuf,
     dcm: Result<FileDicomObject<InMemDicomObject>, E>,
     options: &ValidationOptions,
+    pixel_data_state: Option<PixelDataState>,
 ) -> FileValidationOutcome
 where
     E: std::fmt::Display,
@@ -1040,7 +1142,12 @@ where
     collect_file_meta(&mut report, &dcm);
     validate_identity(&mut report, &dcm, options.profile, allow_non_mg_modality);
     validate_image_fields(&mut report, &dcm, options.profile);
-    validate_pixel_fields(&mut report, &dcm, options.profile);
+    validate_pixel_fields(
+        &mut report,
+        &dcm,
+        options.profile,
+        pixel_data_state.as_ref(),
+    );
     let metadata = validate_extraction(&mut report, &dcm, options.profile, allow_non_mg_modality);
     let record = metadata.as_ref().and_then(|metadata| {
         MammogramRecord::from_dicom_with_metadata(source_path, &dcm, metadata.clone()).ok()
@@ -1340,6 +1447,7 @@ fn validate_pixel_fields(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
+    pixel_data_state: Option<&PixelDataState>,
 ) {
     let strict = profile == ValidationProfile::Selection;
     report.pixel.bits_allocated = validate_positive_u16(
@@ -1369,7 +1477,7 @@ fn validate_pixel_fields(
         strict,
     );
     validate_bit_relationships(report, strict);
-    validate_pixel_data(report, dcm, strict);
+    validate_pixel_data(report, dcm, strict, pixel_data_state);
 }
 
 fn validate_extraction(
@@ -1920,48 +2028,64 @@ fn validate_pixel_data(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     strict: bool,
+    pixel_data_state: Option<&PixelDataState>,
 ) {
+    if let Some(pixel_data_state) = pixel_data_state {
+        validate_pixel_data_state(report, strict, pixel_data_state);
+        return;
+    }
+
     match dcm.element(PIXEL_DATA_TAG) {
         Ok(element) if !element.is_empty() => {
-            report.pixel.pixel_data_present = true;
             let description = pixel_data_description(element);
+            validate_pixel_data_state(report, strict, &PixelDataState::Present(description));
+        }
+        Ok(_) => validate_pixel_data_state(report, strict, &PixelDataState::Empty),
+        Err(_) => validate_pixel_data_state(report, strict, &PixelDataState::Missing),
+    }
+}
+
+fn validate_pixel_data_state(
+    report: &mut FileValidationReport,
+    strict: bool,
+    pixel_data_state: &PixelDataState,
+) {
+    match pixel_data_state {
+        PixelDataState::Present(description) => {
+            report.pixel.pixel_data_present = true;
             report.pixel.pixel_data_description = Some(description.clone());
             report.pass(
                 "PixelData",
                 "PixelData is present".to_string(),
                 Some(PIXEL_DATA_TAG),
-                Some(description),
+                Some(description.clone()),
             );
         }
-        Ok(_) if strict => report.record_tag(
-            MessageKind::Error,
+        PixelDataState::Empty => report.record_tag(
+            if strict {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
             "empty_pixel_data",
             "PixelData",
             "PixelData is present but empty".to_string(),
             (PIXEL_DATA_TAG, "PixelData"),
             None,
         ),
-        Ok(_) => report.record_tag(
-            MessageKind::Warning,
-            "empty_pixel_data",
-            "PixelData",
-            "PixelData is present but empty".to_string(),
-            (PIXEL_DATA_TAG, "PixelData"),
-            None,
-        ),
-        Err(_) if strict => report.record_tag(
-            MessageKind::Error,
+        PixelDataState::Missing => report.record_tag(
+            if strict {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
             "missing_pixel_data",
             "PixelData",
-            "PixelData is required for selection readiness".to_string(),
-            (PIXEL_DATA_TAG, "PixelData"),
-            None,
-        ),
-        Err(_) => report.record_tag(
-            MessageKind::Warning,
-            "missing_pixel_data",
-            "PixelData",
-            "PixelData is absent; metadata extraction can still succeed".to_string(),
+            if strict {
+                "PixelData is required for selection readiness".to_string()
+            } else {
+                "PixelData is absent; metadata extraction can still succeed".to_string()
+            },
             (PIXEL_DATA_TAG, "PixelData"),
             None,
         ),
@@ -2058,6 +2182,10 @@ mod tests {
         SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE, TOMO_CLASS, VIEW_CODE_SEQUENCE,
         VIEW_MODIFIER_CODE_SEQUENCE, VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
     };
+    #[cfg(feature = "json")]
+    use dicom_core::value::PixelFragmentSequence;
+    #[cfg(feature = "json")]
+    use dicom_core::DicomValue;
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_object::InMemDicomObject;
 
@@ -2181,7 +2309,7 @@ mod tests {
         collect_file_meta(&mut report, dcm);
         validate_identity(&mut report, dcm, profile, false);
         validate_image_fields(&mut report, dcm, profile);
-        validate_pixel_fields(&mut report, dcm, profile);
+        validate_pixel_fields(&mut report, dcm, profile, None);
         let metadata = validate_extraction(&mut report, dcm, profile, false);
         validate_selection_eligibility(&mut report, metadata.as_ref(), &FilterConfig::default());
         report.finalize();
@@ -2212,6 +2340,64 @@ mod tests {
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.status, ValidationStatus::Pass);
         assert!(report.pixel.pixel_data_present);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn metadata_only_file_validation_matches_eager_report() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("synthetic.dcm");
+        valid_metadata_object().write_to_file(&path).unwrap();
+        let options = ValidationOptions::default();
+
+        let eager =
+            validate_open_result_with_record(path.clone(), open_file(&path), &options, None).report;
+        let metadata_only = validate_file_with_record(&path, &options).report;
+
+        assert_eq!(
+            serde_json::to_value(metadata_only).unwrap(),
+            serde_json::to_value(eager).unwrap()
+        );
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn metadata_only_validation_preserves_encapsulated_fragment_count() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("synthetic-encapsulated.dcm");
+        let mut inner = valid_metadata_object().into_inner();
+        inner.put(DataElement::new(
+            PIXEL_DATA_TAG,
+            VR::OB,
+            DicomValue::PixelSequence(PixelFragmentSequence::new_fragments(vec![
+                vec![1_u8, 2],
+                vec![3_u8, 4],
+            ])),
+        ));
+        inner
+            .with_meta(
+                dicom_object::FileMetaTableBuilder::new()
+                    .transfer_syntax("1.2.840.10008.1.2.4.50")
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.9"),
+            )
+            .unwrap()
+            .write_to_file(&path)
+            .unwrap();
+        let options = ValidationOptions::default();
+
+        let eager =
+            validate_open_result_with_record(path.clone(), open_file(&path), &options, None).report;
+        let metadata_only = validate_file_with_record(&path, &options).report;
+
+        assert_eq!(
+            metadata_only.pixel.pixel_data_description.as_deref(),
+            Some("2 fragments")
+        );
+        assert_eq!(
+            serde_json::to_value(metadata_only).unwrap(),
+            serde_json::to_value(eager).unwrap()
+        );
     }
 
     #[test]
