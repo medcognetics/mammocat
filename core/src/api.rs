@@ -1,14 +1,18 @@
 use crate::error::Result;
 use crate::extraction::mammo_type::extract_mammogram_type_impl;
 use crate::extraction::tags::{
-    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, MANUFACTURER, MANUFACTURER_MODEL_NAME,
-    MODALITY, NUMBER_OF_FRAMES, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
+    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, CONCATENATION_UID,
+    IMAGER_PIXEL_SPACING, MANUFACTURER, MANUFACTURER_MODEL_NAME, MODALITY, NUMBER_OF_FRAMES,
+    PIXEL_SPACING, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
+    SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
 };
 use crate::extraction::{
-    extract_image_type, extract_laterality, extract_view_position, is_implant_displaced,
-    is_magnified, is_spot_compression,
+    extract_dbt_object_kind, extract_image_type, extract_laterality, extract_view_position,
+    is_implant_displaced, is_magnified, is_spot_compression,
 };
-use crate::types::{ImageType, Laterality, MammogramType, MammogramView, ViewPosition};
+use crate::types::{
+    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, PixelSpacing, ViewPosition,
+};
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_object::{FileDicomObject, InMemDicomObject};
 
@@ -95,8 +99,10 @@ impl MammogramExtractor {
         is_sfm: bool,
         ignore_modality: bool,
     ) -> Result<MammogramMetadata> {
+        let mammogram_type = extract_mammogram_type_impl(dcm, is_sfm, ignore_modality)?;
         Ok(MammogramMetadata {
-            mammogram_type: extract_mammogram_type_impl(dcm, is_sfm, ignore_modality)?,
+            mammogram_type,
+            dbt_object_kind: extract_dbt_object_kind(dcm, mammogram_type),
             laterality: extract_laterality(dcm)?,
             view_position: extract_view_position(dcm)?,
             image_type: extract_image_type(dcm),
@@ -108,6 +114,12 @@ impl MammogramExtractor {
             manufacturer: get_string_value(dcm, MANUFACTURER),
             model: get_string_value(dcm, MANUFACTURER_MODEL_NAME),
             number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
+            pixel_spacing: Self::extract_pixel_spacing(dcm),
+            concatenation_uid: get_string_value(dcm, CONCATENATION_UID),
+            sop_instance_uid_of_concatenation_source: get_string_value(
+                dcm,
+                SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
+            ),
             is_secondary_capture: Self::extract_secondary_capture(dcm),
             modality: Self::extract_modality(dcm),
             transfer_syntax_uid: None,
@@ -171,6 +183,13 @@ impl MammogramExtractor {
     /// Returns the DICOM Modality tag value (should be "MG" for mammography)
     fn extract_modality(dcm: &InMemDicomObject) -> Option<String> {
         get_string_value(dcm, MODALITY)
+    }
+
+    /// Extracts pixel spacing from PixelSpacing with ImagerPixelSpacing fallback.
+    fn extract_pixel_spacing(dcm: &InMemDicomObject) -> Option<PixelSpacing> {
+        get_string_value(dcm, PIXEL_SPACING)
+            .or_else(|| get_string_value(dcm, IMAGER_PIXEL_SPACING))
+            .and_then(|value| PixelSpacing::parse(&value).ok())
     }
 }
 
@@ -285,8 +304,11 @@ fn compression_type_from_name(name: &str) -> &'static str {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json", derive(serde::Serialize))]
 pub struct MammogramMetadata {
-    /// Mammogram type (TOMO, FFDM, SYNTH, SFM)
+    /// Mammogram type (TOMO, FFDM, SYNTH, SFM, or UNKNOWN)
     pub mammogram_type: MammogramType,
+
+    /// DBT object representation (volume, slice, unknown, or none)
+    pub dbt_object_kind: DbtObjectKind,
 
     /// Laterality (Left, Right, Bilateral)
     pub laterality: Laterality,
@@ -321,6 +343,15 @@ pub struct MammogramMetadata {
     /// Number of frames (for DBT/tomosynthesis)
     pub number_of_frames: i32,
 
+    /// Physical pixel spacing in millimeters, when available.
+    pub pixel_spacing: Option<PixelSpacing>,
+
+    /// DICOM ConcatenationUID, when present
+    pub concatenation_uid: Option<String>,
+
+    /// SOPInstanceUIDOfConcatenationSource, when present
+    pub sop_instance_uid_of_concatenation_source: Option<String>,
+
     /// Whether this is a secondary capture image
     pub is_secondary_capture: bool,
 
@@ -348,20 +379,48 @@ impl MammogramMetadata {
         self.view_position.is_standard_view()
     }
 
-    /// Checks if this is a 2D mammogram (not tomosynthesis)
+    /// Checks if this belongs to the explicit 2D mammogram group.
     pub fn is_2d(&self) -> bool {
-        !matches!(self.mammogram_type, MammogramType::Tomo)
+        self.mammogram_type.is_2d_group()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
+    use dicom_object::InMemDicomObject;
+
+    fn minimal_mammo_dicom() -> InMemDicomObject {
+        let mut dcm = InMemDicomObject::new_empty();
+        dcm.put(DataElement::new(
+            Tag(0x0008, 0x0060),
+            VR::CS,
+            PrimitiveValue::from("MG"),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0008, 0x0008),
+            VR::CS,
+            PrimitiveValue::Strs(vec!["ORIGINAL".to_string(), "PRIMARY".to_string()].into()),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0020, 0x0062),
+            VR::CS,
+            PrimitiveValue::from("L"),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0018, 0x5101),
+            VR::CS,
+            PrimitiveValue::from("MLO"),
+        ));
+        dcm
+    }
 
     #[test]
     fn test_mammogram_metadata_view() {
         let metadata = MammogramMetadata {
             mammogram_type: MammogramType::Ffdm,
+            dbt_object_kind: DbtObjectKind::None,
             laterality: Laterality::Left,
             view_position: ViewPosition::Cc,
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
@@ -373,6 +432,9 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
+            pixel_spacing: None,
+            concatenation_uid: None,
+            sop_instance_uid_of_concatenation_source: None,
             is_secondary_capture: false,
             modality: Some("MG".to_string()),
             transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
@@ -391,6 +453,7 @@ mod tests {
     fn test_mammogram_metadata_tomo() {
         let metadata = MammogramMetadata {
             mammogram_type: MammogramType::Tomo,
+            dbt_object_kind: DbtObjectKind::Volume,
             laterality: Laterality::Right,
             view_position: ViewPosition::Mlo,
             image_type: ImageType::new("DERIVED".to_string(), "PRIMARY".to_string(), None, None),
@@ -402,6 +465,9 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 50,
+            pixel_spacing: Some(PixelSpacing::new(0.07, 0.08)),
+            concatenation_uid: None,
+            sop_instance_uid_of_concatenation_source: None,
             is_secondary_capture: false,
             modality: Some("MG".to_string()),
             transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
@@ -410,6 +476,83 @@ mod tests {
         };
 
         assert!(!metadata.is_2d());
+    }
+
+    #[test]
+    fn extracts_pixel_spacing() {
+        let mut dcm = minimal_mammo_dicom();
+        dcm.put(DataElement::new(
+            Tag(0x0028, 0x0030),
+            VR::DS,
+            PrimitiveValue::from("0.070\\0.071"),
+        ));
+
+        let metadata = MammogramExtractor::extract(&dcm).unwrap();
+        let pixel_spacing = metadata.pixel_spacing.unwrap();
+
+        assert_eq!(pixel_spacing.row, 0.070);
+        assert_eq!(pixel_spacing.col, 0.071);
+    }
+
+    #[test]
+    fn extracts_imager_pixel_spacing_fallback() {
+        let mut dcm = minimal_mammo_dicom();
+        dcm.put(DataElement::new(
+            Tag(0x0018, 0x1164),
+            VR::DS,
+            PrimitiveValue::from("0.090\\0.091"),
+        ));
+
+        let metadata = MammogramExtractor::extract(&dcm).unwrap();
+        let pixel_spacing = metadata.pixel_spacing.unwrap();
+
+        assert_eq!(pixel_spacing.row, 0.090);
+        assert_eq!(pixel_spacing.col, 0.091);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn test_mammogram_metadata_json_includes_dbt_object_kind() {
+        let metadata = MammogramMetadata {
+            mammogram_type: MammogramType::Tomo,
+            dbt_object_kind: DbtObjectKind::Slice,
+            laterality: Laterality::Right,
+            view_position: ViewPosition::Cc,
+            image_type: ImageType::new(
+                "DERIVED".to_string(),
+                "PRIMARY".to_string(),
+                Some("TOMO".to_string()),
+                None,
+            ),
+            is_for_processing: false,
+            has_implant: false,
+            is_spot_compression: false,
+            is_magnified: false,
+            is_implant_displaced: false,
+            manufacturer: None,
+            model: None,
+            number_of_frames: 1,
+            pixel_spacing: Some(PixelSpacing::new(0.07, 0.08)),
+            concatenation_uid: Some("1.2.826.0.1.100".to_string()),
+            sop_instance_uid_of_concatenation_source: Some("1.2.826.0.1.101".to_string()),
+            is_secondary_capture: false,
+            modality: Some("MG".to_string()),
+            transfer_syntax_uid: None,
+            transfer_syntax_name: None,
+            compression_type: None,
+        };
+
+        let value = serde_json::to_value(metadata).unwrap();
+
+        assert_eq!(value["mammogram_type"], "tomo");
+        assert_eq!(value["dbt_object_kind"], "slice");
+        assert_eq!(value["pixel_spacing"]["row"], 0.07);
+        assert_eq!(value["pixel_spacing"]["column"], 0.08);
+        assert_eq!(value["concatenation_uid"], "1.2.826.0.1.100");
+        assert_eq!(
+            value["sop_instance_uid_of_concatenation_source"],
+            "1.2.826.0.1.101"
+        );
     }
 
     #[test]

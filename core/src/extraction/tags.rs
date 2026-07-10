@@ -6,6 +6,8 @@ pub const IMAGE_TYPE: Tag = Tag(0x0008, 0x0008);
 pub const MODALITY: Tag = Tag(0x0008, 0x0060);
 pub const NUMBER_OF_FRAMES: Tag = Tag(0x0028, 0x0008);
 pub const PHOTOMETRIC_INTERPRETATION: Tag = Tag(0x0028, 0x0004);
+pub const VOLUMETRIC_PROPERTIES: Tag = Tag(0x0008, 0x9206);
+pub const VOLUME_BASED_CALCULATION_TECHNIQUE: Tag = Tag(0x0008, 0x9207);
 
 // Image Geometry Tags
 pub const ROWS: Tag = Tag(0x0028, 0x0010);
@@ -36,6 +38,9 @@ pub const PATIENT_ORIENTATION: Tag = Tag(0x0020, 0x0020);
 // Anatomical Tags
 pub const SHARED_FUNCTIONAL_GROUPS_SEQUENCE: Tag = Tag(0x5200, 0x9229);
 pub const BODY_PART_EXAMINED: Tag = Tag(0x0018, 0x0015);
+pub const ACQUISITION_DEVICE_PROCESSING_DESCRIPTION: Tag = Tag(0x0018, 0x1400);
+pub const TOMO_CLASS: Tag = Tag(0x0018, 0x1491);
+pub const NUMBER_OF_TOMOSYNTHESIS_SOURCE_IMAGES: Tag = Tag(0x0018, 0x1495);
 
 // Device/Manufacturer Tags
 pub const MANUFACTURER_MODEL_NAME: Tag = Tag(0x0008, 0x1090);
@@ -48,6 +53,8 @@ pub const STUDY_INSTANCE_UID: Tag = Tag(0x0020, 0x000D);
 pub const SERIES_INSTANCE_UID: Tag = Tag(0x0020, 0x000E);
 pub const SOP_INSTANCE_UID: Tag = Tag(0x0008, 0x0018);
 pub const SOP_CLASS_UID: Tag = Tag(0x0008, 0x0016);
+pub const SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE: Tag = Tag(0x0020, 0x0242);
+pub const CONCATENATION_UID: Tag = Tag(0x0020, 0x9161);
 pub const STUDY_DATE: Tag = Tag(0x0008, 0x0020);
 pub const CONTENT_DATE: Tag = Tag(0x0008, 0x0023);
 pub const ACQUISITION_DATE: Tag = Tag(0x0018, 0x1012);
@@ -148,6 +155,19 @@ mod tests {
         assert_eq!(IMAGE_TYPE, Tag(0x0008, 0x0008));
         assert_eq!(MODALITY, Tag(0x0008, 0x0060));
         assert_eq!(NUMBER_OF_FRAMES, Tag(0x0028, 0x0008));
+        assert_eq!(VOLUMETRIC_PROPERTIES, Tag(0x0008, 0x9206));
+        assert_eq!(VOLUME_BASED_CALCULATION_TECHNIQUE, Tag(0x0008, 0x9207));
+        assert_eq!(
+            ACQUISITION_DEVICE_PROCESSING_DESCRIPTION,
+            Tag(0x0018, 0x1400)
+        );
+        assert_eq!(TOMO_CLASS, Tag(0x0018, 0x1491));
+        assert_eq!(NUMBER_OF_TOMOSYNTHESIS_SOURCE_IMAGES, Tag(0x0018, 0x1495));
+        assert_eq!(
+            SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
+            Tag(0x0020, 0x0242)
+        );
+        assert_eq!(CONCATENATION_UID, Tag(0x0020, 0x9161));
         assert_eq!(LATERALITY, Tag(0x0020, 0x0060));
         assert_eq!(VIEW_POSITION, Tag(0x0018, 0x5101));
     }

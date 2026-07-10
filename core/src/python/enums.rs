@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 
 use super::macros::impl_py_from;
 use crate::types::{
-    ImageType, Laterality, MammogramType, MammogramView, PhotometricInterpretation,
+    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, PhotometricInterpretation,
     PreferenceOrder, ViewPosition,
 };
 
@@ -96,6 +96,65 @@ impl PyMammogramType {
 }
 
 impl_py_from!(PyMammogramType, MammogramType);
+
+// ============================================================================
+// DbtObjectKind
+// ============================================================================
+
+#[pyclass(name = "DbtObjectKind", module = "mammocat")]
+#[derive(Clone, Debug)]
+pub struct PyDbtObjectKind {
+    pub(crate) inner: DbtObjectKind,
+}
+
+#[pymethods]
+impl PyDbtObjectKind {
+    #[classattr]
+    const NONE: Self = Self {
+        inner: DbtObjectKind::None,
+    };
+    #[classattr]
+    const VOLUME: Self = Self {
+        inner: DbtObjectKind::Volume,
+    };
+    #[classattr]
+    const SLICE: Self = Self {
+        inner: DbtObjectKind::Slice,
+    };
+    #[classattr]
+    const UNKNOWN: Self = Self {
+        inner: DbtObjectKind::Unknown,
+    };
+
+    pub fn simple_name(&self) -> &'static str {
+        self.inner.simple_name()
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.simple_name().to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DbtObjectKind.{:?}", self.inner)
+    }
+
+    fn __eq__(&self, other: &PyDbtObjectKind) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[getter]
+    fn value(&self) -> &str {
+        self.inner.simple_name()
+    }
+}
+
+impl_py_from!(PyDbtObjectKind, DbtObjectKind);
 
 // ============================================================================
 // Laterality
@@ -321,11 +380,16 @@ impl PyPreferenceOrder {
     const TOMO_FIRST: Self = Self {
         inner: PreferenceOrder::TomoFirst,
     };
+    #[classattr]
+    const SYNTHETIC_2D_FIRST: Self = Self {
+        inner: PreferenceOrder::Synthetic2dFirst,
+    };
 
     fn __str__(&self) -> &'static str {
         match self.inner {
             PreferenceOrder::Default => "default",
             PreferenceOrder::TomoFirst => "tomo-first",
+            PreferenceOrder::Synthetic2dFirst => "synthetic-2d-first",
         }
     }
 

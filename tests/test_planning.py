@@ -1,0 +1,262 @@
+"""Tests for collection-level mammography input planning."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+from mammocat import plan_mammography_collection
+
+from .conftest import (
+    create_mammogram_dicom,
+    create_old_format_dbt_series,
+    create_old_format_dbt_slice,
+)
+
+NONSTANDARD_EXTENSION_DBT_SERIES_UID = "1.2.826.0.1.3680043.10.700.2.1"
+NONSTANDARD_EXTENSION_DBT_FRAME_COUNT = 3
+
+
+def _write_ffdm(path: Path) -> Path:
+    ds = create_mammogram_dicom(
+        mammogram_type="FFDM",
+        laterality="L",
+        view_position="MLO",
+        study_instance_uid="1.2.826.0.1.3680043.10.700.1",
+        series_instance_uid="1.2.826.0.1.3680043.10.700.1.1",
+        sop_instance_uid="1.2.826.0.1.3680043.10.700.1.1.1",
+    )
+    ds.PresentationIntentType = "FOR PRESENTATION"
+    ds.save_as(path, enforce_file_format=True)
+    return path
+
+
+def _write_synth(path: Path) -> Path:
+    ds = create_mammogram_dicom(
+        mammogram_type="SYNTH",
+        laterality="L",
+        view_position="MLO",
+        study_instance_uid="1.2.826.0.1.3680043.10.700.1",
+        series_instance_uid="1.2.826.0.1.3680043.10.700.1.2",
+        sop_instance_uid="1.2.826.0.1.3680043.10.700.1.2.1",
+    )
+    ds.PresentationIntentType = "FOR PRESENTATION"
+    ds.ImageType = ["DERIVED", "PRIMARY", "TOMO_2D"]
+    ds.save_as(path, enforce_file_format=True)
+    return path
+
+
+def _write_old_format_dbt_series_with_suffix(directory: Path, suffix: str) -> list[Path]:
+    paths = []
+    for index in range(NONSTANDARD_EXTENSION_DBT_FRAME_COUNT):
+        instance_number = index + 1
+        path = directory / f"dbt_slice_{index}{suffix}"
+        ds = create_old_format_dbt_slice(
+            series_uid=NONSTANDARD_EXTENSION_DBT_SERIES_UID,
+            sop_uid=f"{NONSTANDARD_EXTENSION_DBT_SERIES_UID}.{instance_number}",
+            instance_number=instance_number,
+        )
+        ds.save_as(path, enforce_file_format=True)
+        paths.append(path)
+    return paths
+
+
+def _run_cli(binary: str, *args: str) -> subprocess.CompletedProcess[str]:
+    command = [
+        "cargo",
+        "run",
+        "--quiet",
+        "--all-features",
+        "--bin",
+        binary,
+        "--",
+        *args,
+    ]
+    return subprocess.run(command, check=False, capture_output=True, text=True)
+
+
+def test_plan_mammography_collection_combines_2d_views_and_dbt(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+    create_old_format_dbt_series(tmp_path)
+
+    report = plan_mammography_collection(tmp_path)
+
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
+    assert report["summary"]["views_selected"] == 1
+    assert report["summary"]["dbt_composition_inputs"] == 1
+    selected_views = report["views"]["selected_views"].values()
+    assert any(view["selected"] for view in selected_views)
+    composition = report["dbt"]["composition_inputs"][0]
+    assert composition["frame_count"] == 3
+    assert len(composition["source_paths"]) == 3
+    assert any(
+        "dbt_composition_source" in role
+        for source in report["source_objects"]
+        for role in source["selected_as"]
+    )
+
+
+def test_plan_mammography_collection_recurses_into_series_directories(tmp_path: Path) -> None:
+    views_dir = tmp_path / "2d"
+    dbt_dir = tmp_path / "dbt"
+    views_dir.mkdir()
+    dbt_dir.mkdir()
+    _write_ffdm(views_dir / "l_mlo.dcm")
+    create_old_format_dbt_series(dbt_dir)
+
+    report = plan_mammography_collection(tmp_path)
+
+    assert report["summary"]["input_dicom_files"] == 4
+    assert report["summary"]["mammogram_records"] == 1
+    assert report["summary"]["source_objects"] == 4
+    assert report["summary"]["views_selected"] == 1
+    assert report["summary"]["dbt_composition_inputs"] == 1
+    assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("2d/l_mlo.dcm")
+
+
+def test_plan_mammography_collection_scans_readable_dbt_non_dcm_files(
+    tmp_path: Path,
+) -> None:
+    _write_old_format_dbt_series_with_suffix(tmp_path, ".ima")
+
+    report = plan_mammography_collection(
+        tmp_path,
+        include_2d=False,
+        include_dbt=True,
+    )
+
+    assert report["summary"]["input_dicom_files"] == 0
+    assert report["summary"]["dbt_composition_inputs"] == 1
+    assert report["dbt"]["composition_inputs"][0]["frame_count"] == (
+        NONSTANDARD_EXTENSION_DBT_FRAME_COUNT
+    )
+    assert report["dbt"]["skipped_files"] == []
+
+
+def test_plan_mammography_collection_can_select_only_dbt(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+    create_old_format_dbt_series(tmp_path)
+
+    report = plan_mammography_collection(
+        tmp_path,
+        include_2d=False,
+        include_dbt=True,
+    )
+
+    assert report["plan"] == {
+        "include_2d": False,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
+    assert report["views"] is None
+    assert report["dbt"]["composition_inputs"]
+    assert report["summary"]["warnings"] == 0
+    assert report["warnings"] == []
+
+
+def test_mammoplan_json_output(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+    create_old_format_dbt_series(tmp_path)
+
+    result = _run_cli(
+        "mammoplan",
+        str(tmp_path),
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
+    assert report["summary"]["dbt_composition_inputs"] == 1
+
+
+def test_mammoplan_include_flags_select_exact_input_groups(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+    create_old_format_dbt_series(tmp_path)
+
+    result = _run_cli(
+        "mammoplan",
+        str(tmp_path),
+        "--include-dbt",
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["plan"] == {
+        "include_2d": False,
+        "include_dbt": True,
+        "prefer_synthetic_2d": False,
+    }
+    assert report["views"] is None
+    assert report["dbt"]["composition_inputs"]
+
+
+def test_plan_mammography_collection_can_prefer_synthetic_2d(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "ffdm.dcm")
+    _write_synth(tmp_path / "synth.dcm")
+
+    report = plan_mammography_collection(
+        tmp_path,
+        include_dbt=False,
+        prefer_synthetic_2d=True,
+    )
+
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": False,
+        "prefer_synthetic_2d": True,
+    }
+    assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("synth.dcm")
+
+
+def test_mammoplan_prefer_synthetic_2d_flag(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "ffdm.dcm")
+    _write_synth(tmp_path / "synth.dcm")
+
+    result = _run_cli(
+        "mammoplan",
+        str(tmp_path),
+        "--include-2d",
+        "--prefer-synthetic-2d",
+        "--format",
+        "json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["plan"] == {
+        "include_2d": True,
+        "include_dbt": False,
+        "prefer_synthetic_2d": True,
+    }
+    assert report["views"]["selected_views"]["lmlo"]["source_path"].endswith("synth.dcm")
+
+
+def test_mammoplan_no_longer_accepts_preference_flag(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+
+    result = _run_cli("mammoplan", str(tmp_path), "--preference", "tomo-first")
+
+    assert result.returncode != 0
+    assert "unexpected argument '--preference'" in result.stderr
+
+
+def test_mammoselect_no_longer_accepts_plan_flag(tmp_path: Path) -> None:
+    _write_ffdm(tmp_path / "l_mlo.dcm")
+
+    result = _run_cli("mammoselect", str(tmp_path), "--plan", "2d")
+
+    assert result.returncode != 0
+    assert "unexpected argument '--plan'" in result.stderr

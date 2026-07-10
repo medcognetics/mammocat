@@ -1,8 +1,8 @@
 use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::{
-    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, FilterConfig,
-    MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
+    collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, DbtObjectKind,
+    FilterConfig, MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
     PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
 };
 use std::collections::{HashMap, HashSet};
@@ -35,6 +35,10 @@ struct Cli {
     /// Allowed mammogram types (comma-separated: ffdm,tomo,synth,sfm)
     #[arg(long, value_delimiter = ',')]
     allowed_types: Option<Vec<MammogramTypeArg>>,
+
+    /// Allowed DBT object kinds (comma-separated: none,volume,slice,unknown)
+    #[arg(long, value_delimiter = ',')]
+    allowed_dbt_object_kinds: Option<Vec<DbtObjectKindArg>>,
 
     /// Exclude views with breast implants
     #[arg(long)]
@@ -74,7 +78,7 @@ struct Cli {
 }
 
 /// Output format options
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
 enum OutputFormat {
     /// Human-readable text format
     Text,
@@ -85,7 +89,7 @@ enum OutputFormat {
 }
 
 /// Preference ordering for mammogram type selection
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum PreferenceOrderArg {
     /// Default ordering: FFDM > SYNTH > TOMO > SFM (prefers 2D for inference)
     Default,
@@ -126,6 +130,30 @@ impl From<MammogramTypeArg> for MammogramType {
     }
 }
 
+/// DBT object kind argument for filtering
+#[derive(Debug, Clone, ValueEnum)]
+enum DbtObjectKindArg {
+    /// Not a DBT object
+    None,
+    /// Multi-frame DBT volume object
+    Volume,
+    /// Single-frame DBT slice object
+    Slice,
+    /// Ambiguous DBT object kind
+    Unknown,
+}
+
+impl From<DbtObjectKindArg> for DbtObjectKind {
+    fn from(arg: DbtObjectKindArg) -> Self {
+        match arg {
+            DbtObjectKindArg::None => DbtObjectKind::None,
+            DbtObjectKindArg::Volume => DbtObjectKind::Volume,
+            DbtObjectKindArg::Slice => DbtObjectKind::Slice,
+            DbtObjectKindArg::Unknown => DbtObjectKind::Unknown,
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -139,6 +167,8 @@ fn main() {
     }
 
     info!("Processing directory: {}", cli.directory.display());
+
+    let preference_order: PreferenceOrder = cli.preference.into();
 
     // Collect all .dcm files
     let dicom_files = match collect_dicom_files(&cli.directory) {
@@ -182,8 +212,6 @@ fn main() {
     let filter_config = build_filter_config(&cli);
     info!("Filter config: {:?}", filter_config);
 
-    // Convert preference order argument to core type
-    let preference_order: PreferenceOrder = cli.preference.into();
     info!("Using preference order: {:?}", preference_order);
 
     // Select preferred views with filtering
@@ -226,6 +254,14 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
             .map(|arg| MammogramType::from(arg.clone()))
             .collect();
         config = config.with_allowed_types(allowed);
+    }
+
+    if let Some(kind_args) = &cli.allowed_dbt_object_kinds {
+        let allowed: HashSet<DbtObjectKind> = kind_args
+            .iter()
+            .map(|arg| DbtObjectKind::from(arg.clone()))
+            .collect();
+        config = config.with_allowed_dbt_object_kinds(allowed);
     }
 
     // Handle exclude flags
@@ -457,7 +493,7 @@ impl<'a> fmt::Display for TextReport<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mammocat_core::{ImageType, Laterality, MammogramMetadata, ViewPosition};
+    use mammocat_core::{DbtObjectKind, ImageType, Laterality, MammogramMetadata, ViewPosition};
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
@@ -487,6 +523,7 @@ mod tests {
             file_path: PathBuf::from(format!("{study_uid}_{laterality:?}_{view_position:?}.dcm")),
             metadata: MammogramMetadata {
                 mammogram_type: mammo_type,
+                dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position,
                 image_type: ImageType::new(
@@ -503,6 +540,9 @@ mod tests {
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
+                pixel_spacing: None,
+                concatenation_uid: None,
+                sop_instance_uid_of_concatenation_source: None,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
                 transfer_syntax_uid: Some(transfer_syntax_uid.to_string()),
@@ -523,6 +563,14 @@ mod tests {
             is_implant_displaced: false,
             is_spot_compression: false,
             is_magnified: false,
+            series_instance_uid: Some(format!("{study_uid}.series")),
+        }
+    }
+
+    fn default_dbt_object_kind(mammo_type: MammogramType) -> DbtObjectKind {
+        match mammo_type {
+            MammogramType::Tomo => DbtObjectKind::Unknown,
+            _ => DbtObjectKind::None,
         }
     }
 
@@ -656,6 +704,25 @@ mod tests {
 
         assert!(config.exclude_lossy_compressed);
         assert!(config.deprioritize_lossy_compressed);
+    }
+
+    #[test]
+    fn test_build_filter_config_allows_dbt_object_kinds() {
+        let cli = Cli::try_parse_from([
+            "mammoselect",
+            "--allowed-dbt-object-kinds",
+            "volume,slice",
+            "/tmp",
+        ])
+        .unwrap();
+        let config = build_filter_config(&cli);
+        let allowed = config
+            .allowed_dbt_object_kinds
+            .expect("allowed DBT object kinds");
+
+        assert_eq!(allowed.len(), 2);
+        assert!(allowed.contains(&DbtObjectKind::Volume));
+        assert!(allowed.contains(&DbtObjectKind::Slice));
     }
 
     #[test]

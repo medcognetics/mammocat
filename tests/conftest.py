@@ -9,6 +9,21 @@ CT_IMAGE_STORAGE_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.2"
 DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.1.2"
 
 
+def _apply_mammogram_type(ds: Dataset, mammogram_type: str) -> None:
+    """Apply mammogram-type-specific synthetic tags."""
+    if mammogram_type == "FFDM":
+        ds.ImageType = ["ORIGINAL", "PRIMARY", ""]
+    elif mammogram_type == "TOMO":
+        ds.ImageType = ["ORIGINAL", "PRIMARY", "VOLUME"]
+        ds.NumberOfFrames = 50
+    elif mammogram_type == "SYNTH":
+        ds.ImageType = ["DERIVED", "SECONDARY", ""]
+        ds.PresentationIntentType = "FOR PROCESSING"
+    elif mammogram_type == "SFM":
+        ds.ImageType = ["ORIGINAL", "PRIMARY", ""]
+        # SFM is identified by manufacturer-specific fields or absence of digital indicators
+
+
 def create_mammogram_dicom(
     mammogram_type: str = "FFDM",
     laterality: str = "L",
@@ -22,6 +37,7 @@ def create_mammogram_dicom(
     is_spot_compression: bool = False,
     is_magnified: bool = False,
     is_implant_displaced: bool = False,
+    pixel_spacing: tuple[float, float] | None = (0.07, 0.07),
     transfer_syntax_uid: str = ExplicitVRLittleEndian,
     lossy_image_compression: str = "00",
 ) -> Dataset:
@@ -40,6 +56,7 @@ def create_mammogram_dicom(
         is_spot_compression: Whether this is spot compression view
         is_magnified: Whether this is magnified view
         is_implant_displaced: Whether this is implant displaced view
+        pixel_spacing: Optional row/column pixel spacing in millimeters
         transfer_syntax_uid: DICOM transfer syntax UID to write in file metadata
         lossy_image_compression: LossyImageCompression tag value
 
@@ -87,23 +104,14 @@ def create_mammogram_dicom(
     ds.BitsStored = 16
     ds.HighBit = 15
     ds.PixelRepresentation = 0
+    if pixel_spacing is not None:
+        ds.PixelSpacing = [str(pixel_spacing[0]), str(pixel_spacing[1])]
 
     # Mammography-specific fields
     ds.ImageLaterality = laterality
     ds.ViewPosition = view_position
 
-    # Set ImageType based on mammogram type
-    if mammogram_type == "FFDM":
-        ds.ImageType = ["ORIGINAL", "PRIMARY", ""]
-    elif mammogram_type == "TOMO":
-        ds.ImageType = ["ORIGINAL", "PRIMARY", "VOLUME"]
-        ds.NumberOfFrames = 50
-    elif mammogram_type == "SYNTH":
-        ds.ImageType = ["DERIVED", "SECONDARY", ""]
-        ds.PresentationIntentType = "FOR PROCESSING"
-    elif mammogram_type == "SFM":
-        ds.ImageType = ["ORIGINAL", "PRIMARY", ""]
-        # SFM is identified by manufacturer-specific fields or absence of digital indicators
+    _apply_mammogram_type(ds, mammogram_type)
 
     # Set PresentationIntentType if not already set
     if not hasattr(ds, "PresentationIntentType"):

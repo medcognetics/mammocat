@@ -2,7 +2,7 @@ use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::error::Result;
 use crate::extraction::tags::{
     get_string_value, get_u16_value, COLUMNS, LOSSY_IMAGE_COMPRESSION, PIXEL_DATA_TAG, ROWS,
-    SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
+    SERIES_INSTANCE_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
 };
 use crate::extraction::{is_implant_displaced, is_magnified, is_spot_compression};
 use crate::types::PreferenceOrder;
@@ -75,6 +75,9 @@ pub struct MammogramRecord {
 
     /// Study Instance UID
     pub study_instance_uid: Option<String>,
+
+    /// Series Instance UID
+    pub series_instance_uid: Option<String>,
 
     /// SOP Instance UID
     pub sop_instance_uid: Option<String>,
@@ -205,6 +208,7 @@ impl MammogramRecord {
             file_path: path,
             metadata,
             study_instance_uid: get_string_value(dcm, STUDY_INSTANCE_UID),
+            series_instance_uid: get_string_value(dcm, SERIES_INSTANCE_UID),
             sop_instance_uid: get_string_value(dcm, SOP_INSTANCE_UID),
             rows: get_u16_value(dcm, ROWS),
             columns: get_u16_value(dcm, COLUMNS),
@@ -430,7 +434,7 @@ impl Ord for MammogramRecord {
 mod tests {
     use super::*;
     use crate::extraction::tags::LOSSY_IMAGE_COMPRESSION;
-    use crate::types::{ImageType, Laterality, MammogramType, ViewPosition};
+    use crate::types::{DbtObjectKind, ImageType, Laterality, MammogramType, ViewPosition};
     use dicom_core::{DataElement, PrimitiveValue, VR};
 
     fn make_test_record(
@@ -450,6 +454,7 @@ mod tests {
             file_path: PathBuf::from("test.dcm"),
             metadata: MammogramMetadata {
                 mammogram_type: mammo_type,
+                dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position: view_pos,
                 image_type: ImageType::new(
@@ -466,6 +471,9 @@ mod tests {
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
+                pixel_spacing: None,
+                concatenation_uid: None,
+                sop_instance_uid_of_concatenation_source: None,
                 is_secondary_capture: false,
                 modality: Some("MG".to_string()),
                 transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
@@ -480,7 +488,15 @@ mod tests {
             transfer_syntax_uid: None,
             is_lossy_compressed: false,
             study_instance_uid: study_uid,
+            series_instance_uid: None,
             sop_instance_uid: sop_uid,
+        }
+    }
+
+    fn default_dbt_object_kind(mammo_type: MammogramType) -> DbtObjectKind {
+        match mammo_type {
+            MammogramType::Tomo => DbtObjectKind::Unknown,
+            _ => DbtObjectKind::None,
         }
     }
 

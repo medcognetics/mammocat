@@ -7,10 +7,13 @@ mod record;
 mod views;
 
 pub use record::MammogramRecord;
+pub(crate) use views::get_preferred_views_filtered_refined_with_study_mode_and_warnings;
 pub use views::{
     get_preferred_views, get_preferred_views_filtered,
     get_preferred_views_filtered_with_study_mode,
     get_preferred_views_filtered_with_study_mode_and_warnings, get_preferred_views_with_order,
-    get_preferred_views_with_order_and_warnings, PreferredViewSelection,
-    PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode,
+    get_preferred_views_with_order_and_warnings, refine_dbt_object_classification,
+    refine_dbt_object_classification_with_diagnostics, DbtRefinementDiagnostic,
+    DbtRefinementReason, PreferredViewSelection, PreferredViewSelectionWithWarnings,
+    SelectionWarning, StudySelectionMode,
 };

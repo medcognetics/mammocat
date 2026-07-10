@@ -7,8 +7,10 @@ use std::sync::OnceLock;
 /// Represents the physical spacing between adjacent pixels
 /// in the detector/imager, measured in mm.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize))]
 pub struct PixelSpacing {
     pub row: f64,
+    #[cfg_attr(feature = "json", serde(rename = "column"))]
     pub col: f64,
 }
 

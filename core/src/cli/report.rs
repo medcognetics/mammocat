@@ -1,7 +1,7 @@
 use crate::api::MammogramMetadata;
 use std::fmt;
 
-const FIELD_LABEL_WIDTH: usize = "Transfer Syntax UID".len();
+const FIELD_LABEL_WIDTH: usize = "Concat Source SOP UID".len();
 
 /// Text report formatter for mammogram metadata
 pub struct TextReport<'a> {
@@ -21,6 +21,7 @@ impl<'a> fmt::Display for TextReport<'a> {
         writeln!(f, "==================")?;
         writeln!(f)?;
         write_field(f, "Type", self.metadata.mammogram_type.simple_name())?;
+        write_field(f, "DBT Object Kind", self.metadata.dbt_object_kind)?;
         write_field(f, "Laterality", self.metadata.laterality.simple_name())?;
         write_field(
             f,
@@ -39,6 +40,26 @@ impl<'a> fmt::Display for TextReport<'a> {
             self.metadata.model.as_deref().unwrap_or("unknown"),
         )?;
         write_field(f, "Frames", self.metadata.number_of_frames)?;
+        match self.metadata.pixel_spacing {
+            Some(pixel_spacing) => write_field(f, "Pixel Spacing", pixel_spacing)?,
+            None => write_field(f, "Pixel Spacing", "unknown")?,
+        }
+        write_field(
+            f,
+            "Concatenation UID",
+            self.metadata
+                .concatenation_uid
+                .as_deref()
+                .unwrap_or("unknown"),
+        )?;
+        write_field(
+            f,
+            "Concat Source SOP UID",
+            self.metadata
+                .sop_instance_uid_of_concatenation_source
+                .as_deref()
+                .unwrap_or("unknown"),
+        )?;
         write_field(f, "For Processing", self.metadata.is_for_processing)?;
         write_field(f, "Has Implant", self.metadata.has_implant)?;
         write_field(f, "Implant Displaced", self.metadata.is_implant_displaced)?;
@@ -93,11 +114,12 @@ fn write_field<T: fmt::Display>(f: &mut fmt::Formatter<'_>, label: &str, value: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImageType, Laterality, MammogramType, ViewPosition};
+    use crate::types::{DbtObjectKind, ImageType, Laterality, MammogramType, ViewPosition};
 
     fn test_metadata() -> MammogramMetadata {
         MammogramMetadata {
             mammogram_type: MammogramType::Ffdm,
+            dbt_object_kind: DbtObjectKind::None,
             laterality: Laterality::Left,
             view_position: ViewPosition::Cc,
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
@@ -109,6 +131,9 @@ mod tests {
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
+            pixel_spacing: None,
+            concatenation_uid: None,
+            sop_instance_uid_of_concatenation_source: None,
             is_secondary_capture: false,
             modality: Some("MG".to_string()),
             transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
@@ -125,11 +150,15 @@ mod tests {
 
         assert!(output.contains("Mammogram Metadata"));
         assert!(output.contains("Type"));
+        assert!(output.contains("DBT Object Kind"));
         assert!(output.contains("Laterality"));
         assert!(output.contains("View Position"));
         assert!(output.contains("Manufacturer"));
         assert!(output.contains("Model"));
         assert!(output.contains("Frames"));
+        assert!(output.contains("Pixel Spacing"));
+        assert!(output.contains("Concatenation UID"));
+        assert!(output.contains("Concat Source SOP UID"));
         assert!(output.contains("Transfer Syntax UID"));
         assert!(output.contains("Transfer Syntax"));
         assert!(output.contains("Compression"));
@@ -165,8 +194,20 @@ mod tests {
         assert!(output.contains("Spot Compression"));
         assert!(output.contains("Magnification"));
         assert!(output.contains("Secondary Capture"));
-        assert!(output.contains("Spot Compression   : false"));
-        assert!(output.contains("Magnification      : false"));
-        assert!(output.contains("Secondary Capture  : false"));
+        assert!(output.contains("Spot Compression     : false"));
+        assert!(output.contains("Magnification        : false"));
+        assert!(output.contains("Secondary Capture    : false"));
+    }
+
+    #[test]
+    fn text_report_includes_slice_dbt_object_kind() {
+        let mut metadata = test_metadata();
+        metadata.mammogram_type = MammogramType::Tomo;
+        metadata.dbt_object_kind = DbtObjectKind::Slice;
+
+        let output = TextReport::new(&metadata).to_string();
+
+        assert!(output.contains("Type                 : tomo"));
+        assert!(output.contains("DBT Object Kind      : slice"));
     }
 }

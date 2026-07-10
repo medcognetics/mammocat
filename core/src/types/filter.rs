@@ -1,4 +1,4 @@
-use crate::types::MammogramType;
+use crate::types::{DbtObjectKind, MammogramType};
 use std::collections::HashSet;
 
 /// Configuration for filtering mammogram records during selection
@@ -10,20 +10,23 @@ use std::collections::HashSet;
 /// # Example
 ///
 /// ```
-/// use mammocat_core::{FilterConfig, MammogramType};
+/// use mammocat_core::{DbtObjectKind, FilterConfig, MammogramType};
 /// use std::collections::HashSet;
 ///
-/// // Create filter that only allows FFDM and TOMO, excludes implants
+/// // Create filter that only allows TOMO slice objects and excludes implants
 /// let mut allowed_types = HashSet::new();
-/// allowed_types.insert(MammogramType::Ffdm);
 /// allowed_types.insert(MammogramType::Tomo);
+/// let mut allowed_dbt_object_kinds = HashSet::new();
+/// allowed_dbt_object_kinds.insert(DbtObjectKind::Slice);
 ///
 /// let filter = FilterConfig::default()
 ///     .with_allowed_types(allowed_types)
+///     .with_allowed_dbt_object_kinds(allowed_dbt_object_kinds)
 ///     .exclude_implants(true);
 ///
 /// assert!(filter.exclude_implants);
-/// assert_eq!(filter.allowed_types.unwrap().len(), 2);
+/// assert_eq!(filter.allowed_types.unwrap().len(), 1);
+/// assert_eq!(filter.allowed_dbt_object_kinds.unwrap().len(), 1);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
@@ -31,6 +34,11 @@ pub struct FilterConfig {
     /// Allowed mammogram types (whitelist approach)
     /// If None, all types are allowed. If Some, only types in the set are included.
     pub allowed_types: Option<HashSet<MammogramType>>,
+
+    /// Allowed DBT object kinds (whitelist approach)
+    /// If None, all kinds are allowed. If Some, only kinds in the set are included.
+    #[cfg_attr(feature = "json", serde(default))]
+    pub allowed_dbt_object_kinds: Option<HashSet<DbtObjectKind>>,
 
     /// Exclude records with implants
     pub exclude_implants: bool,
@@ -60,7 +68,8 @@ pub struct FilterConfig {
 impl Default for FilterConfig {
     fn default() -> Self {
         Self {
-            allowed_types: None, // Allow all types by default
+            allowed_types: None,            // Allow all types by default
+            allowed_dbt_object_kinds: None, // Allow all DBT object kinds by default
             exclude_implants: false,
             exclude_non_standard_views: false,
             exclude_for_processing: true, // Default: exclude FOR PROCESSING
@@ -91,6 +100,7 @@ impl FilterConfig {
     pub fn permissive() -> Self {
         Self {
             allowed_types: None,
+            allowed_dbt_object_kinds: None,
             exclude_implants: false,
             exclude_non_standard_views: false,
             exclude_for_processing: false,
@@ -118,6 +128,25 @@ impl FilterConfig {
     /// ```
     pub fn with_allowed_types(mut self, types: HashSet<MammogramType>) -> Self {
         self.allowed_types = Some(types);
+        self
+    }
+
+    /// Builder: Set allowed DBT object kinds
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mammocat_core::{DbtObjectKind, FilterConfig};
+    /// use std::collections::HashSet;
+    ///
+    /// let mut allowed = HashSet::new();
+    /// allowed.insert(DbtObjectKind::Slice);
+    ///
+    /// let filter = FilterConfig::default().with_allowed_dbt_object_kinds(allowed);
+    /// assert!(filter.allowed_dbt_object_kinds.is_some());
+    /// ```
+    pub fn with_allowed_dbt_object_kinds(mut self, kinds: HashSet<DbtObjectKind>) -> Self {
+        self.allowed_dbt_object_kinds = Some(kinds);
         self
     }
 
@@ -253,6 +282,7 @@ mod tests {
     fn test_default_config() {
         let config = FilterConfig::default();
         assert!(config.allowed_types.is_none());
+        assert!(config.allowed_dbt_object_kinds.is_none());
         assert!(!config.exclude_implants);
         assert!(!config.exclude_non_standard_views);
         assert!(config.exclude_for_processing);
@@ -267,6 +297,7 @@ mod tests {
     fn test_permissive_config() {
         let config = FilterConfig::permissive();
         assert!(config.allowed_types.is_none());
+        assert!(config.allowed_dbt_object_kinds.is_none());
         assert!(!config.exclude_implants);
         assert!(!config.exclude_non_standard_views);
         assert!(!config.exclude_for_processing);
@@ -288,6 +319,7 @@ mod tests {
             .exclude_implants(true);
 
         assert_eq!(config.allowed_types, Some(allowed));
+        assert!(config.allowed_dbt_object_kinds.is_none());
         assert!(config.exclude_implants);
     }
 
@@ -317,5 +349,15 @@ mod tests {
 
         assert!(config.allowed_types.is_some());
         assert_eq!(config.allowed_types.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_allowed_dbt_object_kinds_whitelist() {
+        let mut allowed = HashSet::new();
+        allowed.insert(DbtObjectKind::Slice);
+
+        let config = FilterConfig::default().with_allowed_dbt_object_kinds(allowed.clone());
+
+        assert_eq!(config.allowed_dbt_object_kinds, Some(allowed));
     }
 }

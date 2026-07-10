@@ -1,14 +1,17 @@
 //! DBT slice-series scanning and conversion.
 
+use crate::dicom_files::RecursiveFileInventory;
 use crate::error::{MammocatError, Result};
 use crate::extraction::parse_view_position;
 use crate::extraction::tags::PIXEL_DATA_TAG;
+use crate::selection::MammogramRecord;
 use crate::types::ViewPosition;
 use dicom_core::value::PrimitiveValue;
 use dicom_core::{DataElement, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{
-    DicomAttribute, DicomObject, FileMetaTableBuilder, InMemDicomObject, OpenFileOptions,
+    DicomAttribute, DicomObject, FileDicomObject, FileMetaTableBuilder, InMemDicomObject,
+    OpenFileOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -176,6 +179,12 @@ struct DicomFileInfo {
     image_type: Vec<String>,
 }
 
+pub(crate) struct DbtPlanningScan {
+    pub report: DbtScanReport,
+    pub records: Vec<MammogramRecord>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SeriesKey {
     study_instance_uid: String,
@@ -205,9 +214,84 @@ pub fn scan_dbt_study(input: impl AsRef<Path>, _options: DbtScanOptions) -> Resu
     }
 
     let files = collect_files(input)?;
+    scan_dbt_study_from_files(input, files)
+}
+
+pub(crate) fn scan_dbt_study_from_files(
+    input: &Path,
+    files: Vec<PathBuf>,
+) -> Result<DbtScanReport> {
     let total_files = files.len();
-    let mut skipped_files = Vec::new();
-    let mut dicom_infos = Vec::new();
+    scan_dbt_study_from_file_parts(input, files, total_files, Vec::new())
+}
+
+pub(crate) fn scan_dbt_study_for_planning(
+    input: &Path,
+    inventory: &RecursiveFileInventory,
+    record_errors_as_warnings: bool,
+) -> Result<DbtPlanningScan> {
+    let mut skipped_files: Vec<DbtSkippedFile> = inventory
+        .dbt_skipped_files
+        .iter()
+        .map(|path| DbtSkippedFile {
+            path: path.display().to_string(),
+            reason: "not a readable DICOM file: missing DICM magic bytes".to_string(),
+        })
+        .collect();
+    let mut dicom_infos = Vec::with_capacity(inventory.dbt_files.len());
+    let mut records = Vec::with_capacity(inventory.dicom_files.len());
+    let mut warnings = Vec::new();
+
+    for path in &inventory.dbt_files {
+        if inventory.dicom_files.binary_search(path).is_ok() {
+            match read_dicom_info_with_record(input, path, record_errors_as_warnings) {
+                Ok((info, record_result)) => {
+                    dicom_infos.push(info);
+                    if let Some(record_result) = record_result {
+                        match record_result {
+                            Ok(record) => records.push(record),
+                            Err(error) => {
+                                warnings.push(format!("skipping {}: {error}", path.display()))
+                            }
+                        }
+                    }
+                }
+                Err(reason) => {
+                    warnings.push(format!("skipping {}: {reason}", path.display()));
+                    skipped_files.push(DbtSkippedFile {
+                        path: path.display().to_string(),
+                        reason,
+                    });
+                }
+            }
+        } else {
+            match read_dicom_info(input, path) {
+                Ok(info) => dicom_infos.push(info),
+                Err(reason) => skipped_files.push(DbtSkippedFile {
+                    path: path.display().to_string(),
+                    reason,
+                }),
+            }
+        }
+    }
+
+    let report =
+        build_dbt_scan_report(input, inventory.all_files.len(), dicom_infos, skipped_files)?;
+
+    Ok(DbtPlanningScan {
+        report,
+        records,
+        warnings,
+    })
+}
+
+fn scan_dbt_study_from_file_parts(
+    input: &Path,
+    files: Vec<PathBuf>,
+    total_files: usize,
+    mut skipped_files: Vec<DbtSkippedFile>,
+) -> Result<DbtScanReport> {
+    let mut dicom_infos = Vec::with_capacity(files.len());
 
     for path in files {
         match read_dicom_info(input, &path) {
@@ -219,6 +303,15 @@ pub fn scan_dbt_study(input: impl AsRef<Path>, _options: DbtScanOptions) -> Resu
         }
     }
 
+    build_dbt_scan_report(input, total_files, dicom_infos, skipped_files)
+}
+
+fn build_dbt_scan_report(
+    input: &Path,
+    total_files: usize,
+    dicom_infos: Vec<DicomFileInfo>,
+    mut skipped_files: Vec<DbtSkippedFile>,
+) -> Result<DbtScanReport> {
     let dicom_files = dicom_infos.len();
     let mut grouped: BTreeMap<SeriesKey, Vec<DicomFileInfo>> = BTreeMap::new();
     let mut unsupported_series = Vec::new();
@@ -419,10 +512,11 @@ fn collect_files(input: &Path) -> Result<Vec<PathBuf>> {
     fn visit(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
+            let file_type = entry.file_type()?;
             let path = entry.path();
-            if path.is_dir() {
+            if is_dir(&file_type, &path) {
                 visit(&path, files)?;
-            } else if path.is_file() {
+            } else if is_file(&file_type, &path) {
                 files.push(path);
             }
         }
@@ -435,43 +529,89 @@ fn collect_files(input: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn is_dir(file_type: &std::fs::FileType, path: &Path) -> bool {
+    file_type.is_dir() || (file_type.is_symlink() && path.is_dir())
+}
+
+fn is_file(file_type: &std::fs::FileType, path: &Path) -> bool {
+    file_type.is_file() || (file_type.is_symlink() && path.is_file())
+}
+
 fn read_dicom_info(input: &Path, path: &Path) -> std::result::Result<DicomFileInfo, String> {
-    let dcm = OpenFileOptions::new()
+    let dcm = open_dicom_metadata(path)?;
+    Ok(dicom_info_from_file(input, path, &dcm))
+}
+
+fn read_dicom_info_with_record(
+    input: &Path,
+    path: &Path,
+    record_errors_as_warnings: bool,
+) -> std::result::Result<(DicomFileInfo, Option<Result<MammogramRecord>>), String> {
+    let dcm = open_dicom_metadata(path)?;
+    let info = dicom_info_from_file(input, path, &dcm);
+    let record = if let Some(modality) = non_mg_modality(&info) {
+        record_errors_as_warnings.then(|| {
+            Err(MammocatError::ExtractionError(format!(
+                "Expected modality=MG, found {modality}"
+            )))
+        })
+    } else {
+        Some(MammogramRecord::from_file_dicom(path.to_path_buf(), &dcm))
+    };
+    Ok((info, record))
+}
+
+fn non_mg_modality(info: &DicomFileInfo) -> Option<&str> {
+    info.modality
+        .as_deref()
+        .filter(|modality| !modality.eq_ignore_ascii_case("MG"))
+}
+
+fn open_dicom_metadata(
+    path: &Path,
+) -> std::result::Result<FileDicomObject<InMemDicomObject>, String> {
+    OpenFileOptions::new()
         .read_until(PIXEL_DATA_TAG)
         .open_file(path)
-        .map_err(|e| format!("not a readable DICOM file: {}", e))?;
+        .map_err(|e| format!("not a readable DICOM file: {}", e))
+}
 
+fn dicom_info_from_file(
+    input: &Path,
+    path: &Path,
+    dcm: &FileDicomObject<InMemDicomObject>,
+) -> DicomFileInfo {
     let relative_path = path.strip_prefix(input).unwrap_or(path).to_path_buf();
 
-    Ok(DicomFileInfo {
+    DicomFileInfo {
         relative_path,
-        study_instance_uid: get_string(&dcm, tags::STUDY_INSTANCE_UID),
-        series_instance_uid: get_string(&dcm, tags::SERIES_INSTANCE_UID),
-        sop_class_uid: get_string(&dcm, tags::SOP_CLASS_UID),
+        study_instance_uid: get_string(dcm, tags::STUDY_INSTANCE_UID),
+        series_instance_uid: get_string(dcm, tags::SERIES_INSTANCE_UID),
+        sop_class_uid: get_string(dcm, tags::SOP_CLASS_UID),
         transfer_syntax_uid: Some(
             dcm.meta()
                 .transfer_syntax()
                 .trim_end_matches('\0')
                 .to_string(),
         ),
-        modality: get_string(&dcm, tags::MODALITY),
-        number_of_frames: get_i32(&dcm, tags::NUMBER_OF_FRAMES),
-        instance_number: get_i32(&dcm, tags::INSTANCE_NUMBER),
-        image_position_z: get_image_position_z(&dcm),
-        rows: get_u16(&dcm, tags::ROWS),
-        columns: get_u16(&dcm, tags::COLUMNS),
-        samples_per_pixel: get_u16(&dcm, tags::SAMPLES_PER_PIXEL),
-        photometric_interpretation: get_string(&dcm, tags::PHOTOMETRIC_INTERPRETATION),
-        bits_allocated: get_u16(&dcm, tags::BITS_ALLOCATED),
-        bits_stored: get_u16(&dcm, tags::BITS_STORED),
-        high_bit: get_u16(&dcm, tags::HIGH_BIT),
-        pixel_representation: get_u16(&dcm, tags::PIXEL_REPRESENTATION),
-        image_laterality: get_string(&dcm, tags::IMAGE_LATERALITY),
-        laterality: get_string(&dcm, tags::LATERALITY),
-        view_position: get_string(&dcm, tags::VIEW_POSITION),
-        series_description: get_string(&dcm, tags::SERIES_DESCRIPTION),
-        image_type: get_multi_string(&dcm, tags::IMAGE_TYPE),
-    })
+        modality: get_string(dcm, tags::MODALITY),
+        number_of_frames: get_i32(dcm, tags::NUMBER_OF_FRAMES),
+        instance_number: get_i32(dcm, tags::INSTANCE_NUMBER),
+        image_position_z: get_image_position_z(dcm),
+        rows: get_u16(dcm, tags::ROWS),
+        columns: get_u16(dcm, tags::COLUMNS),
+        samples_per_pixel: get_u16(dcm, tags::SAMPLES_PER_PIXEL),
+        photometric_interpretation: get_string(dcm, tags::PHOTOMETRIC_INTERPRETATION),
+        bits_allocated: get_u16(dcm, tags::BITS_ALLOCATED),
+        bits_stored: get_u16(dcm, tags::BITS_STORED),
+        high_bit: get_u16(dcm, tags::HIGH_BIT),
+        pixel_representation: get_u16(dcm, tags::PIXEL_REPRESENTATION),
+        image_laterality: get_string(dcm, tags::IMAGE_LATERALITY),
+        laterality: get_string(dcm, tags::LATERALITY),
+        view_position: get_string(dcm, tags::VIEW_POSITION),
+        series_description: get_string(dcm, tags::SERIES_DESCRIPTION),
+        image_type: get_multi_string(dcm, tags::IMAGE_TYPE),
+    }
 }
 
 fn is_multiframe_dbt(info: &DicomFileInfo) -> bool {
