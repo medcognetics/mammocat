@@ -20,7 +20,8 @@ use crate::extraction::tags::{
     STUDY_INSTANCE_UID, VIEW_POSITION,
 };
 use crate::selection::{
-    get_preferred_views_filtered, refine_dbt_object_classification, MammogramRecord,
+    get_preferred_views_filtered, lossy_compression_source, refine_dbt_object_classification,
+    LossyCompressionSource, MammogramRecord,
 };
 use crate::types::{
     FilterConfig, Laterality, MammogramType, PreferenceOrder, ViewPosition, STANDARD_MAMMO_VIEWS,
@@ -29,17 +30,6 @@ use crate::types::{
 const UNKNOWN_TRANSFER_SYNTAX: &str = "unknown transfer syntax";
 const MONOCHROME1: &str = "MONOCHROME1";
 const MONOCHROME2: &str = "MONOCHROME2";
-
-const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
-    "1.2.840.10008.1.2.4.50", // JPEG Baseline 8-bit
-    "1.2.840.10008.1.2.4.51", // JPEG Extended 12-bit
-    "1.2.840.10008.1.2.4.52", // JPEG Extended retired
-    "1.2.840.10008.1.2.4.53", // JPEG Spectral Selection retired
-    "1.2.840.10008.1.2.4.54", // JPEG Spectral Selection retired
-    "1.2.840.10008.1.2.4.55", // JPEG Full Progression retired
-    "1.2.840.10008.1.2.4.56", // JPEG Full Progression retired
-    "1.2.840.10008.1.2.4.81", // JPEG-LS near-lossless
-];
 
 /// Validation strictness profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1100,52 +1090,44 @@ fn validate_lossy_compression(
     let lossy_indicator = get_string_value(dcm, LOSSY_IMAGE_COMPRESSION);
     let lossy_method = get_string_value(dcm, LOSSY_IMAGE_COMPRESSION_METHOD)
         .filter(|value| !value.trim().is_empty());
-    let lossy_transfer_syntax = is_lossy_transfer_syntax(transfer_syntax_uid, transfer_syntax_name);
-
-    if !lossy_indicator_is_enabled(lossy_indicator.as_deref())
-        && lossy_method.is_none()
-        && !lossy_transfer_syntax
-    {
+    let Some(source) =
+        lossy_compression_source(lossy_indicator.as_deref(), Some(transfer_syntax_uid))
+    else {
         return;
-    }
+    };
 
     let mut details = Vec::new();
-    if let Some(indicator) = lossy_indicator {
-        details.push(format!("LossyImageCompression={indicator}"));
-    }
-    if let Some(method) = lossy_method {
-        details.push(format!("LossyImageCompressionMethod={method}"));
-    }
-    if lossy_transfer_syntax {
-        details.push(format!(
-            "TransferSyntaxUID={transfer_syntax_uid} ({transfer_syntax_name})"
-        ));
-    }
+    let tag_name = match source {
+        LossyCompressionSource::Metadata => {
+            if let Some(indicator) = lossy_indicator {
+                details.push(format!("LossyImageCompression={indicator}"));
+            }
+            if let Some(method) = lossy_method {
+                details.push(format!("LossyImageCompressionMethod={method}"));
+            }
+            "LossyImageCompression"
+        }
+        LossyCompressionSource::TransferSyntax => {
+            details.push(format!(
+                "TransferSyntaxUID={transfer_syntax_uid} ({transfer_syntax_name})"
+            ));
+            "TransferSyntaxUID"
+        }
+    };
     let value = details.join("; ");
+    let evidence = match source {
+        LossyCompressionSource::Metadata => "metadata",
+        LossyCompressionSource::TransferSyntax => "transfer syntax",
+    };
 
     report.record_name(
         MessageKind::Warning,
         "lossy_compression",
         "Lossy compression",
-        format!("lossy compression metadata is present: {value}"),
-        "LossyImageCompression",
+        format!("lossy compression is indicated by {evidence}: {value}"),
+        tag_name,
         Some(value),
     );
-}
-
-fn lossy_indicator_is_enabled(value: Option<&str>) -> bool {
-    value
-        .map(|value| {
-            let value = value.trim();
-            value == "01" || value == "1" || value.eq_ignore_ascii_case("yes")
-        })
-        .unwrap_or(false)
-}
-
-fn is_lossy_transfer_syntax(uid: &str, name: &str) -> bool {
-    let normalized_name = name.to_ascii_lowercase();
-    LOSSY_TRANSFER_SYNTAX_UIDS.contains(&uid)
-        || (normalized_name.contains("lossy") && !normalized_name.contains("lossless"))
 }
 
 fn validate_identity(
@@ -2047,6 +2029,7 @@ fn standard_view_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::selection::LOSSY_TRANSFER_SYNTAX_UIDS;
 
     use std::collections::HashSet;
     use std::fs::File;
@@ -2278,6 +2261,86 @@ mod tests {
 
         assert!(report.is_valid(), "{:?}", report.errors);
         assert!(warning_codes(&report).contains("lossy_compression"));
+        assert!(report.warnings[0]
+            .message
+            .contains("LossyImageCompression=01"));
+        assert!(report.warnings[0]
+            .message
+            .contains("LossyImageCompressionMethod=ISO_10918_1"));
+    }
+
+    #[test]
+    fn validation_warns_for_lossy_jpeg_2000_transfer_syntax() {
+        let dcm = valid_metadata_object();
+        let mut report =
+            FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+        validate_lossy_compression(
+            &mut report,
+            &dcm,
+            "1.2.840.10008.1.2.4.91",
+            "JPEG 2000 Image Compression",
+        );
+
+        assert!(warning_codes(&report).contains("lossy_compression"));
+        assert!(report.warnings[0]
+            .message
+            .contains("1.2.840.10008.1.2.4.91"));
+    }
+
+    #[test]
+    fn validation_warns_for_every_lossy_transfer_syntax_in_shared_policy() {
+        let dcm = valid_metadata_object();
+
+        for uid in LOSSY_TRANSFER_SYNTAX_UIDS {
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+            validate_lossy_compression(&mut report, &dcm, uid, "Known transfer syntax");
+
+            let warning = report
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "lossy_compression")
+                .unwrap_or_else(|| panic!("missing lossy warning for {uid}"));
+            assert!(warning.message.contains(uid), "{uid}");
+        }
+    }
+
+    #[test]
+    fn explicit_lossless_indicator_overrides_lossy_transfer_syntax() {
+        let mut dcm = valid_metadata_object();
+        put_str(&mut dcm, LOSSY_IMAGE_COMPRESSION, "00");
+        let mut report =
+            FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+        validate_lossy_compression(
+            &mut report,
+            &dcm,
+            "1.2.840.10008.1.2.4.50",
+            "JPEG Baseline (Process 1)",
+        );
+
+        assert!(!warning_codes(&report).contains("lossy_compression"));
+    }
+
+    #[test]
+    fn validation_leaves_lossless_transfer_syntaxes_warning_free() {
+        let dcm = valid_metadata_object();
+
+        for (uid, name) in [
+            ("1.2.840.10008.1.2", "Implicit VR Little Endian"),
+            ("1.2.840.10008.1.2.1", "Explicit VR Little Endian"),
+            ("1.2.840.10008.1.2.4.80", "JPEG-LS Lossless"),
+            ("1.2.840.10008.1.2.4.90", "JPEG 2000 Lossless"),
+        ] {
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+            validate_lossy_compression(&mut report, &dcm, uid, name);
+            assert!(
+                !warning_codes(&report).contains("lossy_compression"),
+                "{uid}"
+            );
+        }
     }
 
     #[test]

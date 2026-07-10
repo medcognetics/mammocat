@@ -7,6 +7,9 @@ mod record;
 mod views;
 
 pub use record::MammogramRecord;
+#[cfg(test)]
+pub(crate) use record::LOSSY_TRANSFER_SYNTAX_UIDS;
+pub(crate) use record::{lossy_compression_source, LossyCompressionSource};
 pub(crate) use views::get_preferred_views_filtered_refined_with_study_mode_and_warnings;
 pub use views::{
     get_preferred_views, get_preferred_views_filtered,
