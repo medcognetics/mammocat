@@ -27,7 +27,8 @@ test-python:  ## Run Python tests
 	uv run pytest tests/ -v
 
 test-rust:  ## Run Rust tests only
-	cargo test --features python
+	# Exercise every supported runtime surface, including Python and JSON contracts.
+	cargo test --all-features
 
 test-cov:  ## Run Python tests with coverage
 	uv run pytest tests/ --cov=mammocat --cov-report=html --cov-report=term
