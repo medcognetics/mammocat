@@ -91,6 +91,33 @@ test("duplicate candidates choose the larger image for the same view", () => {
   assert.deepEqual(selection.missingViews.sort(), ["lcc", "lmlo", "rmlo"])
 })
 
+test("colliding filenames and SOP UIDs retain the selected input identity", () => {
+  const sharedOptions = {
+    laterality: "R",
+    viewPosition: "CC",
+    studyInstanceUid: "1.2.826.0.1.3680043.10.543.39",
+    seriesInstanceUid: "1.2.826.0.1.3680043.10.543.39.1",
+    sopInstanceUid: "1.2.826.0.1.3680043.10.543.39.1.1",
+  }
+  const selection = selectPreferredViews([
+    {
+      bytes: createMammogramBytes({ ...sharedOptions, rows: 1024, columns: 1024 }),
+      filename: "duplicate.dcm",
+    },
+    {
+      bytes: createMammogramBytes({ ...sharedOptions, rows: 2048, columns: 2048 }),
+      filename: "duplicate.dcm",
+    },
+  ])
+
+  assert.equal(selection.views.rcc?.source, "duplicate.dcm")
+  assert.equal(selection.views.rcc?.inputIndex, 1)
+  assert.equal(selection.candidates[0].status, "unused")
+  assert.deepEqual(selection.candidates[0].selectedAs, [])
+  assert.equal(selection.candidates[1].status, "selected")
+  assert.deepEqual(selection.candidates[1].selectedAs, ["rcc"])
+})
+
 test("missing views are reported without throwing", () => {
   const selection = selectPreferredViews([
     { bytes: createMammogramBytes({ laterality: "L", viewPosition: "MLO" }), filename: "lmlo.dcm" },

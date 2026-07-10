@@ -125,6 +125,7 @@ pub struct PreferredViewSelection {
 
 struct IndexedRecord {
     input_index: u32,
+    source: String,
     record: CoreMammogramRecord,
 }
 
@@ -188,10 +189,14 @@ fn select_preferred_views_dto(
         let resolved_input = resolve_input(input)?;
         let source = source_for_resolved_input(&resolved_input);
         match record_from_resolved_input(resolved_input) {
-            Ok(record) => records.push(IndexedRecord {
-                input_index,
-                record,
-            }),
+            Ok(mut record) => {
+                record.file_path = internal_input_id(input_index);
+                records.push(IndexedRecord {
+                    input_index,
+                    source: source.clone().unwrap_or_default(),
+                    record,
+                });
+            }
             Err(error) => input_errors.push(InputError {
                 input_index,
                 source,
@@ -202,6 +207,10 @@ fn select_preferred_views_dto(
     }
 
     build_selection(records, input_errors, options)
+}
+
+fn internal_input_id(input_index: u32) -> PathBuf {
+    PathBuf::from(format!("__mammocat_node_input_{input_index:010}"))
 }
 
 fn resolve_input(input: DicomInput) -> Result<ResolvedInput> {
@@ -367,10 +376,15 @@ fn selected_record_for_view(
     view_position: ViewPosition,
 ) -> Option<MammogramRecord> {
     let view = MammogramView::new(laterality, view_position);
-    selection
-        .get(&view)
-        .and_then(Option::as_ref)
-        .map(|record| record_to_dto(record, input_index_for_record(records, record)))
+    let selected = selection.get(&view).and_then(Option::as_ref)?;
+    let indexed = records
+        .iter()
+        .find(|indexed| record_key(&indexed.record) == record_key(selected))?;
+    Some(record_to_dto(
+        selected,
+        indexed.source.clone(),
+        Some(indexed.input_index),
+    ))
 }
 
 fn selected_view_lookup(
@@ -388,27 +402,14 @@ fn selected_view_lookup(
     lookup
 }
 
-fn input_index_for_record(
-    records: &[IndexedRecord],
-    selected: &CoreMammogramRecord,
-) -> Option<u32> {
-    let selected_key = record_key(selected);
-    records
-        .iter()
-        .find(|indexed| record_key(&indexed.record) == selected_key)
-        .map(|indexed| indexed.input_index)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RecordKey {
-    path: String,
-    sop_instance_uid: Option<String>,
+    internal_input_id: PathBuf,
 }
 
 fn record_key(record: &CoreMammogramRecord) -> RecordKey {
     RecordKey {
-        path: source_for_record(record),
-        sop_instance_uid: record.sop_instance_uid.clone(),
+        internal_input_id: record.file_path.clone(),
     }
 }
 
@@ -452,7 +453,7 @@ fn candidate_diagnostics(
 
             CandidateDiagnostic {
                 input_index: indexed.input_index,
-                source: source_for_record(&indexed.record),
+                source: indexed.source.clone(),
                 status: status.to_string(),
                 selected_as,
                 filter_reasons,
@@ -499,9 +500,13 @@ fn filter_reasons(record: &CoreMammogramRecord, filter_config: &FilterConfig) ->
     reasons
 }
 
-fn record_to_dto(record: &CoreMammogramRecord, input_index: Option<u32>) -> MammogramRecord {
+fn record_to_dto(
+    record: &CoreMammogramRecord,
+    source: String,
+    input_index: Option<u32>,
+) -> MammogramRecord {
     MammogramRecord {
-        source: source_for_record(record),
+        source,
         input_index,
         metadata: metadata_to_dto(&record.metadata),
         study_instance_uid: record.study_instance_uid.clone(),
@@ -546,10 +551,6 @@ fn metadata_to_dto(metadata: &mammocat_core::MammogramMetadata) -> MammogramMeta
         transfer_syntax_name: metadata.transfer_syntax_name.clone(),
         compression_type: metadata.compression_type.clone(),
     }
-}
-
-fn source_for_record(record: &CoreMammogramRecord) -> String {
-    record.file_path.display().to_string()
 }
 
 fn error_code(error: &mammocat_core::MammocatError) -> &'static str {
