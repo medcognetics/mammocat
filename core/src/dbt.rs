@@ -6,16 +6,21 @@ use crate::extraction::parse_view_position;
 use crate::extraction::tags::PIXEL_DATA_TAG;
 use crate::selection::MammogramRecord;
 use crate::types::ViewPosition;
+use dicom::parser::dataset::lazy_read::LazyDataSetReader;
+use dicom::parser::dataset::LazyDataToken;
+use dicom::parser::stateful::decode::StatefulDecode;
+use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_core::value::{DataSetSequence, PrimitiveValue};
 use dicom_core::{DataElement, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{
-    DicomAttribute, DicomObject, FileDicomObject, FileMetaTableBuilder, InMemDicomObject,
-    OpenFileOptions,
+    DicomAttribute, DicomObject, FileDicomObject, FileMetaTable, FileMetaTableBuilder,
+    InMemDicomObject, OpenFileOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -234,6 +239,13 @@ struct DbtSourceFrameMetadata {
     image_position: Vec<String>,
     source_sop_class_uid: String,
     source_sop_instance_uid: String,
+}
+
+#[derive(Debug, Clone)]
+struct PixelDataRange {
+    path: PathBuf,
+    offset: u64,
+    length: u64,
 }
 
 /// Recursively scan an input directory for old-format DBT series.
@@ -1044,13 +1056,15 @@ fn preflight_output_path(
 
 fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -> Result<()> {
     let mut first_object = None;
-    let mut pixel_data = Vec::new();
+    let mut pixel_data_ranges = Vec::with_capacity(series.source_paths.len());
     let mut shared_metadata = None;
     let mut frame_metadata = Vec::with_capacity(series.source_paths.len());
 
     for source in &series.source_paths {
         let source_path = input.join(source);
-        let dcm = OpenFileOptions::new().open_file(&source_path)?;
+        let dcm = OpenFileOptions::new()
+            .read_until(PIXEL_DATA_TAG)
+            .open_file(&source_path)?;
         let current_shared = extract_shared_functional_metadata(&dcm, &source_path)?;
         if let Some(expected) = &shared_metadata {
             if !shared_functional_metadata_matches(expected, &current_shared) {
@@ -1064,33 +1078,17 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
         }
         frame_metadata.push(extract_source_frame_metadata(&dcm, &source_path)?);
 
-        let pixel_bytes = dcm
-            .element(tags::PIXEL_DATA)
-            .map_err(|_| {
-                MammocatError::ExtractionError(format!(
-                    "missing PixelData in {}",
-                    source_path.display()
-                ))
-            })?
-            .to_bytes()
-            .map_err(|e| {
-                MammocatError::ExtractionError(format!(
-                    "cannot read PixelData in {}: {}",
-                    source_path.display(),
-                    e
-                ))
-            })?;
         let expected_len = expected_frame_pixel_bytes(&dcm, &source_path)?;
-        if pixel_bytes.len() != expected_len {
+        let pixel_data_range = locate_pixel_data_range(&source_path)?;
+        if pixel_data_range.length != expected_len as u64 {
             return Err(MammocatError::ExtractionError(format!(
                 "PixelData length in {} is {}; expected {} bytes from image geometry",
                 source_path.display(),
-                pixel_bytes.len(),
+                pixel_data_range.length,
                 expected_len
             )));
         }
-        pixel_data.extend_from_slice(&pixel_bytes);
-        drop(pixel_bytes);
+        pixel_data_ranges.push(pixel_data_range);
 
         if first_object.is_none() {
             first_object = Some(dcm.into_inner());
@@ -1182,11 +1180,6 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
         VR::CS,
         series.view_position.as_str(),
     ));
-    obj.put(DataElement::new(
-        tags::PIXEL_DATA,
-        VR::OW,
-        PrimitiveValue::from(pixel_data),
-    ));
     obj.put(shared_metadata.view_code_sequence.clone());
     if obj.element(tags::ACQUISITION_CONTEXT_SEQUENCE).is_err() {
         obj.put(sequence_element(
@@ -1222,7 +1215,113 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
                 .media_storage_sop_instance_uid(sop_instance_uid),
         )
         .map_err(|e| MammocatError::DicomError(format!("failed to build output meta: {}", e)))?;
-    write_dicom_atomic(&file_obj, output_path)
+    write_dicom_atomic_streaming(&file_obj, &pixel_data_ranges, output_path)
+}
+
+fn locate_pixel_data_range(path: &Path) -> Result<PixelDataRange> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut prefix = [0_u8; 132];
+    let prefix_len = reader.read(&mut prefix)?;
+    let dataset_start = if prefix_len >= prefix.len() && &prefix[128..] == b"DICM" {
+        128
+    } else {
+        0
+    };
+    reader.seek(SeekFrom::Start(dataset_start))?;
+
+    let meta = FileMetaTable::from_reader(&mut reader)
+        .map_err(|source| MammocatError::DicomError(source.to_string()))?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .ok_or_else(|| {
+            MammocatError::DicomError(format!(
+                "unsupported transfer syntax {} in {}",
+                meta.transfer_syntax(),
+                path.display()
+            ))
+        })?;
+    let mut dataset = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
+        .map_err(|source| MammocatError::DicomError(source.to_string()))?;
+    let mut pixel_length = None;
+
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(|source| MammocatError::DicomError(source.to_string()))?;
+        match token {
+            LazyDataToken::ElementHeader(header) if header.tag == PIXEL_DATA_TAG => {
+                pixel_length = header.len.get().map(u64::from);
+            }
+            LazyDataToken::LazyValue { decoder, .. } if pixel_length.is_some() => {
+                return Ok(PixelDataRange {
+                    path: path.to_path_buf(),
+                    offset: decoder.position(),
+                    length: pixel_length.unwrap_or_default(),
+                });
+            }
+            LazyDataToken::PixelSequenceStart => {
+                return Err(MammocatError::ExtractionError(format!(
+                    "encapsulated PixelData is unsupported in {}",
+                    path.display()
+                )));
+            }
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip()
+                    .map_err(|source| MammocatError::DicomError(source.to_string()))?;
+            }
+            _ => {}
+        }
+    }
+
+    Err(MammocatError::ExtractionError(format!(
+        "missing PixelData in {}",
+        path.display()
+    )))
+}
+
+fn write_dicom_atomic_streaming(
+    obj: &dicom_object::FileDicomObject<InMemDicomObject>,
+    pixel_data_ranges: &[PixelDataRange],
+    output_path: &Path,
+) -> Result<()> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let total_length = pixel_data_ranges.iter().try_fold(0_u64, |total, range| {
+        total.checked_add(range.length).ok_or_else(|| {
+            MammocatError::ExtractionError("combined PixelData length overflows u64".to_string())
+        })
+    })?;
+    let encoded_length = u32::try_from(total_length).map_err(|_| {
+        MammocatError::ExtractionError(format!(
+            "combined PixelData length {total_length} exceeds DICOM defined-length limit"
+        ))
+    })?;
+    let temp_path = temp_path_for(output_path);
+    obj.write_to_file(&temp_path)
+        .map_err(|source| MammocatError::DicomError(format!("failed to write DICOM: {source}")))?;
+
+    let mut output = OpenOptions::new().append(true).open(&temp_path)?;
+    output.write_all(&PIXEL_DATA_TAG.0.to_le_bytes())?;
+    output.write_all(&PIXEL_DATA_TAG.1.to_le_bytes())?;
+    output.write_all(b"OW")?;
+    output.write_all(&[0_u8; 2])?;
+    output.write_all(&encoded_length.to_le_bytes())?;
+    for range in pixel_data_ranges {
+        let mut input = File::open(&range.path)?;
+        input.seek(SeekFrom::Start(range.offset))?;
+        let copied = std::io::copy(&mut input.take(range.length), &mut output)?;
+        if copied != range.length {
+            return Err(MammocatError::ExtractionError(format!(
+                "PixelData in {} ended after {copied} of {} bytes",
+                range.path.display(),
+                range.length
+            )));
+        }
+    }
+    output.flush()?;
+    drop(output);
+    fs::rename(temp_path, output_path)?;
+    Ok(())
 }
 
 fn extract_shared_functional_metadata(
@@ -1793,20 +1892,6 @@ fn invalid_value_count(
         "{name} in {} has {actual} values; expected {expected}",
         source_path.display()
     ))
-}
-
-fn write_dicom_atomic(
-    obj: &dicom_object::FileDicomObject<InMemDicomObject>,
-    output_path: &Path,
-) -> Result<()> {
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temp_path = temp_path_for(output_path);
-    obj.write_to_file(&temp_path)
-        .map_err(|e| MammocatError::DicomError(format!("failed to write DICOM: {}", e)))?;
-    fs::rename(temp_path, output_path)?;
-    Ok(())
 }
 
 fn copy_file_atomic(source: &Path, output_path: &Path) -> Result<()> {
