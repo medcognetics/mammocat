@@ -7,6 +7,7 @@ mod record;
 mod views;
 
 pub use record::MammogramRecord;
+pub(crate) use views::get_preferred_views_filtered_refined_with_study_mode_and_warnings;
 pub use views::{
     get_preferred_views, get_preferred_views_filtered,
     get_preferred_views_filtered_with_study_mode,

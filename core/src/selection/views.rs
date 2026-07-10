@@ -155,18 +155,14 @@ fn select_preferred_views_for_records(
     preference_order: PreferenceOrder,
     deprioritize_lossy_compressed: bool,
 ) -> PreferredViewSelection {
-    let mut result = HashMap::new();
+    let mut result = HashMap::with_capacity(STANDARD_MAMMO_VIEWS.len());
 
     // Try each standard view
     for standard_view in STANDARD_MAMMO_VIEWS.iter() {
-        let candidates: Vec<_> = records
+        // Select most preferred from candidates using the specified preference order
+        let selection = records
             .iter()
             .filter(|record| is_candidate_for_view(record, standard_view))
-            .collect();
-
-        // Select most preferred from candidates using the specified preference order
-        let selection = candidates
-            .into_iter()
             .min_by(|a, b| {
                 compare_record_preference(a, b, preference_order, deprioritize_lossy_compressed)
             })
@@ -270,7 +266,23 @@ pub fn get_preferred_views_filtered_with_study_mode_and_warnings(
     study_selection_mode: StudySelectionMode,
 ) -> Result<PreferredViewSelectionWithWarnings> {
     let refined_records = refine_dbt_object_classification(records);
-    let filtered_records = apply_filters(&refined_records, filter_config);
+    get_preferred_views_filtered_refined_with_study_mode_and_warnings(
+        &refined_records,
+        filter_config,
+        preference_order,
+        study_selection_mode,
+    )
+}
+
+/// Selects preferred inference views from records that have already had
+/// collection-context DBT refinement applied.
+pub(crate) fn get_preferred_views_filtered_refined_with_study_mode_and_warnings(
+    refined_records: &[MammogramRecord],
+    filter_config: &FilterConfig,
+    preference_order: PreferenceOrder,
+    study_selection_mode: StudySelectionMode,
+) -> Result<PreferredViewSelectionWithWarnings> {
+    let filtered_records = apply_filters(refined_records, filter_config);
     let selected_study = select_study_records(
         &filtered_records,
         study_selection_mode,
