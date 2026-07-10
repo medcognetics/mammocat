@@ -14,16 +14,17 @@ use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::dicom_files::collect_dicom_files;
 use crate::extraction::tags::{
     get_string_value, BITS_ALLOCATED, BITS_STORED, COLUMNS, DICOM_MAGIC_BYTES, HIGH_BIT,
-    IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION, LOSSY_IMAGE_COMPRESSION_METHOD,
-    MODALITY, NUMBER_OF_FRAMES, PHOTOMETRIC_INTERPRETATION, PIXEL_DATA_TAG, PIXEL_REPRESENTATION,
-    PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL, SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID,
-    STUDY_INSTANCE_UID, VIEW_POSITION,
+    IMAGER_PIXEL_SPACING, IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION,
+    LOSSY_IMAGE_COMPRESSION_METHOD, MODALITY, NUMBER_OF_FRAMES, PHOTOMETRIC_INTERPRETATION,
+    PIXEL_DATA_TAG, PIXEL_REPRESENTATION, PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL,
+    SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID, VIEW_POSITION,
 };
 use crate::selection::{
     get_preferred_views_filtered, refine_dbt_object_classification, MammogramRecord,
 };
 use crate::types::{
-    FilterConfig, Laterality, MammogramType, PreferenceOrder, ViewPosition, STANDARD_MAMMO_VIEWS,
+    FilterConfig, Laterality, MammogramType, PixelSpacing, PreferenceOrder, ViewPosition,
+    STANDARD_MAMMO_VIEWS,
 };
 
 const UNKNOWN_TRANSFER_SYNTAX: &str = "unknown transfer syntax";
@@ -1427,7 +1428,7 @@ fn collect_mammography_metadata(
     report.mammography.concatenation_uid = metadata.concatenation_uid.clone();
     report.mammography.sop_instance_uid_of_concatenation_source =
         metadata.sop_instance_uid_of_concatenation_source.clone();
-    report.mammography.pixel_spacing = get_string_value(dcm, PIXEL_SPACING);
+    validate_pixel_spacing_metadata(report, dcm);
 
     validate_image_type(report, dcm, profile);
     validate_laterality_value(report, metadata.laterality, profile);
@@ -1445,12 +1446,63 @@ fn collect_mammography_metadata(
         "ManufacturerModelName",
         "missing_model",
     );
-    optional_metadata_warning(
-        report,
-        report.mammography.pixel_spacing.clone().as_deref(),
-        "PixelSpacing",
-        "missing_pixel_spacing",
-    );
+}
+
+fn validate_pixel_spacing_metadata(
+    report: &mut FileValidationReport,
+    dcm: &FileDicomObject<InMemDicomObject>,
+) {
+    let rows = report.image.rows;
+    let columns = report.image.columns;
+    let candidates = [
+        (PIXEL_SPACING, "PixelSpacing", "invalid_pixel_spacing"),
+        (
+            IMAGER_PIXEL_SPACING,
+            "ImagerPixelSpacing",
+            "invalid_imager_pixel_spacing",
+        ),
+    ];
+    let mut source_present = false;
+
+    for (tag, name, invalid_code) in candidates {
+        let Some(value) = get_string_value(dcm, tag) else {
+            continue;
+        };
+        source_present = true;
+
+        match PixelSpacing::parse_with_dimensions(&value, rows, columns) {
+            Ok(_) => {
+                report.pass(
+                    name,
+                    format!("{name} contains a usable numeric pair"),
+                    Some(tag),
+                    Some(value.clone()),
+                );
+                if report.mammography.pixel_spacing.is_none() {
+                    report.mammography.pixel_spacing = Some(value);
+                }
+            }
+            Err(source) => report.record_tag(
+                MessageKind::Warning,
+                invalid_code,
+                name,
+                format!("{name} is malformed: {source}"),
+                (tag, name),
+                Some(value),
+            ),
+        }
+    }
+
+    if !source_present {
+        report.record_name(
+            MessageKind::Warning,
+            "missing_pixel_spacing",
+            "PixelSpacing",
+            "PixelSpacing and ImagerPixelSpacing are absent".to_string(),
+            "PixelSpacing",
+            None,
+        );
+    }
 }
 
 fn validate_selection_eligibility(
@@ -2212,6 +2264,34 @@ mod tests {
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.status, ValidationStatus::Pass);
         assert!(report.pixel.pixel_data_present);
+    }
+
+    #[test]
+    fn malformed_pixel_spacing_is_not_reported_as_missing() {
+        let mut dcm = valid_metadata_object();
+        put_str_with_vr(&mut dcm, PIXEL_SPACING, VR::DS, "0.1\\0.2\\0.3");
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert!(warning_codes(&report).contains("invalid_pixel_spacing"));
+        assert!(!warning_codes(&report).contains("missing_pixel_spacing"));
+        assert!(report.mammography.pixel_spacing.is_none());
+    }
+
+    #[test]
+    fn validation_uses_valid_imager_spacing_after_invalid_primary() {
+        let mut dcm = valid_metadata_object();
+        put_str_with_vr(&mut dcm, PIXEL_SPACING, VR::DS, "-0.1\\0.1");
+        put_str_with_vr(&mut dcm, IMAGER_PIXEL_SPACING, VR::DS, "0.2\\0.3");
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert!(warning_codes(&report).contains("invalid_pixel_spacing"));
+        assert!(!warning_codes(&report).contains("missing_pixel_spacing"));
+        assert_eq!(
+            report.mammography.pixel_spacing.as_deref(),
+            Some("0.2\\0.3")
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 use crate::error::Result;
 use crate::extraction::mammo_type::extract_mammogram_type_impl;
 use crate::extraction::tags::{
-    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, CONCATENATION_UID,
+    get_int_value, get_string_value, BREAST_IMPLANT_PRESENT, COLUMNS, CONCATENATION_UID,
     IMAGER_PIXEL_SPACING, MANUFACTURER, MANUFACTURER_MODEL_NAME, MODALITY, NUMBER_OF_FRAMES,
-    PIXEL_SPACING, PRESENTATION_INTENT_TYPE, SOP_CLASS_UID,
+    PIXEL_SPACING, PRESENTATION_INTENT_TYPE, ROWS, SOP_CLASS_UID,
     SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
 };
 use crate::extraction::{
@@ -187,9 +187,13 @@ impl MammogramExtractor {
 
     /// Extracts pixel spacing from PixelSpacing with ImagerPixelSpacing fallback.
     fn extract_pixel_spacing(dcm: &InMemDicomObject) -> Option<PixelSpacing> {
-        get_string_value(dcm, PIXEL_SPACING)
-            .or_else(|| get_string_value(dcm, IMAGER_PIXEL_SPACING))
-            .and_then(|value| PixelSpacing::parse(&value).ok())
+        let rows = get_int_value(dcm, ROWS).and_then(|value| value.try_into().ok());
+        let columns = get_int_value(dcm, COLUMNS).and_then(|value| value.try_into().ok());
+
+        [PIXEL_SPACING, IMAGER_PIXEL_SPACING]
+            .into_iter()
+            .filter_map(|tag| get_string_value(dcm, tag))
+            .find_map(|value| PixelSpacing::parse_with_dimensions(&value, rows, columns).ok())
     }
 }
 
@@ -508,6 +512,28 @@ mod tests {
 
         assert_eq!(pixel_spacing.row, 0.090);
         assert_eq!(pixel_spacing.col, 0.091);
+    }
+
+    #[test]
+    fn invalid_primary_pixel_spacing_uses_valid_imager_fallback() {
+        let mut dcm = minimal_mammo_dicom();
+        dcm.put(DataElement::new(
+            Tag(0x0028, 0x0030),
+            VR::DS,
+            PrimitiveValue::from("-0.070\\0"),
+        ));
+        dcm.put(DataElement::new(
+            Tag(0x0018, 0x1164),
+            VR::DS,
+            PrimitiveValue::from("0.090\\0.091"),
+        ));
+
+        let metadata = MammogramExtractor::extract(&dcm).unwrap();
+
+        assert_eq!(
+            metadata.pixel_spacing,
+            Some(PixelSpacing::new(0.090, 0.091))
+        );
     }
 
     #[cfg(feature = "json")]
