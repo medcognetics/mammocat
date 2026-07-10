@@ -153,6 +153,142 @@ struct PlannedCopy {
     report: DbtCopiedFile,
 }
 
+#[derive(Debug)]
+struct StagingDirectory {
+    root: PathBuf,
+    output_root: PathBuf,
+    output_root_existed: bool,
+}
+
+#[derive(Debug)]
+struct CommittedOutput {
+    final_path: PathBuf,
+    backup_path: Option<PathBuf>,
+}
+
+impl StagingDirectory {
+    fn create(output_root: &Path) -> Result<Self> {
+        let parent = output_root
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let root = parent.join(format!(".mammocat-staging-{}", Uuid::new_v4().simple()));
+        fs::create_dir(&root)?;
+        fs::create_dir(root.join("outputs"))?;
+        Ok(Self {
+            root,
+            output_root: output_root.to_path_buf(),
+            output_root_existed: output_root.exists(),
+        })
+    }
+
+    fn staged_output_path(&self, final_path: &Path) -> Result<PathBuf> {
+        let relative_path = final_path.strip_prefix(&self.output_root).map_err(|_| {
+            MammocatError::ExtractionError(format!(
+                "planned output {} is outside destination {}",
+                final_path.display(),
+                self.output_root.display()
+            ))
+        })?;
+        Ok(self.root.join("outputs").join(relative_path))
+    }
+
+    fn backup_path(&self, final_path: &Path) -> Result<PathBuf> {
+        let relative_path = final_path.strip_prefix(&self.output_root).map_err(|_| {
+            MammocatError::ExtractionError(format!(
+                "planned output {} is outside destination {}",
+                final_path.display(),
+                self.output_root.display()
+            ))
+        })?;
+        Ok(self.root.join("backups").join(relative_path))
+    }
+
+    fn commit(&self, final_paths: &[PathBuf]) -> Result<()> {
+        let mut committed = Vec::with_capacity(final_paths.len());
+        for final_path in final_paths {
+            if let Err(error) = self.commit_one(final_path, &mut committed) {
+                let rollback_result = self.rollback(&committed);
+                return match rollback_result {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(MammocatError::ExtractionError(format!(
+                        "failed to commit staged outputs: {error}; rollback also failed: {rollback_error}"
+                    ))),
+                };
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_one(&self, final_path: &Path, committed: &mut Vec<CommittedOutput>) -> Result<()> {
+        let staged_path = self.staged_output_path(final_path)?;
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let backup_path = if final_path.exists() {
+            let backup_path = self.backup_path(final_path)?;
+            if let Some(parent) = backup_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(final_path, &backup_path)?;
+            Some(backup_path)
+        } else {
+            None
+        };
+
+        if let Err(error) = fs::rename(&staged_path, final_path) {
+            if let Some(backup_path) = &backup_path {
+                fs::rename(backup_path, final_path)?;
+            }
+            return Err(error.into());
+        }
+
+        committed.push(CommittedOutput {
+            final_path: final_path.to_path_buf(),
+            backup_path,
+        });
+        Ok(())
+    }
+
+    fn rollback(&self, committed: &[CommittedOutput]) -> Result<()> {
+        for output in committed.iter().rev() {
+            if output.final_path.exists() {
+                fs::remove_file(&output.final_path)?;
+            }
+            if let Some(backup_path) = &output.backup_path {
+                fs::rename(backup_path, &output.final_path)?;
+            }
+            self.remove_empty_output_directories(&output.final_path);
+        }
+        Ok(())
+    }
+
+    fn remove_empty_output_directories(&self, final_path: &Path) {
+        let mut current = final_path.parent();
+        while let Some(directory) = current {
+            if !directory.starts_with(&self.output_root) {
+                break;
+            }
+            if directory == self.output_root && self.output_root_existed {
+                break;
+            }
+            let is_output_root = directory == self.output_root;
+            if fs::remove_dir(directory).is_err() || is_output_root {
+                break;
+            }
+            current = directory.parent();
+        }
+    }
+}
+
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
 #[derive(Debug, Clone)]
 struct DicomFileInfo {
     relative_path: PathBuf,
@@ -455,12 +591,20 @@ pub fn convert_dbt_study(
 
     if !options.dry_run {
         preflight_output_paths(&converted_series, &planned_copies, options.force)?;
+        let staging = StagingDirectory::create(output)?;
+        let mut final_paths = Vec::with_capacity(converted_series.len() + planned_copies.len());
         for (series, converted) in scan.conversion_needed_series.iter().zip(&converted_series) {
-            combine_series(input, series, Path::new(&converted.output_path))?;
+            let final_path = Path::new(&converted.output_path);
+            let staged_path = staging.staged_output_path(final_path)?;
+            combine_series(input, series, &staged_path)?;
+            final_paths.push(final_path.to_path_buf());
         }
         for planned in &planned_copies {
-            copy_file_atomic(&planned.source_path, &planned.output_path)?;
+            let staged_path = staging.staged_output_path(&planned.output_path)?;
+            copy_file_atomic(&planned.source_path, &staged_path)?;
+            final_paths.push(planned.output_path.clone());
         }
+        staging.commit(&final_paths)?;
     }
 
     let summary = DbtConvertSummary {

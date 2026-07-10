@@ -175,6 +175,63 @@ def test_convert_rejects_invalid_pixel_data_length(tmp_path: Path) -> None:
     assert not output_dir.exists()
 
 
+def test_convert_rolls_back_when_later_series_fails(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    valid_dir = input_dir / "a"
+    invalid_dir = input_dir / "b"
+    valid_dir.mkdir(parents=True)
+    invalid_dir.mkdir(parents=True)
+    study_uid = "1.2.826.0.1.3680043.10.543.20"
+    create_old_format_dbt_series(
+        valid_dir,
+        frame_count=2,
+        study_uid=study_uid,
+        series_uid=f"{study_uid}.1",
+    )
+    create_old_format_dbt_series(
+        invalid_dir,
+        frame_count=2,
+        study_uid=study_uid,
+        series_uid=f"{study_uid}.2",
+    )
+    malformed_path = invalid_dir / "dbt_slice_1.dcm"
+    malformed = pydicom.dcmread(malformed_path)
+    malformed.PixelData = malformed.PixelData[:-2]
+    malformed.save_as(malformed_path, enforce_file_format=True)
+
+    dry_run = convert_dbt_study(input_dir, output_dir, dry_run=True)
+    assert len(dry_run["converted_series"]) == 2
+    existing_output = Path(dry_run["converted_series"][0]["output_path"])
+    existing_output.parent.mkdir(parents=True)
+    existing_bytes = b"existing destination content"
+    existing_output.write_bytes(existing_bytes)
+
+    with pytest.raises(Exception, match="PixelData length"):
+        convert_dbt_study(input_dir, output_dir, force=True)
+
+    assert existing_output.read_bytes() == existing_bytes
+    assert [path for path in output_dir.rglob("*") if path.is_file()] == [existing_output]
+    assert not [path for path in tmp_path.iterdir() if path.name.startswith(".mammocat-staging-")]
+
+
+def test_force_replaces_existing_output_after_staging_succeeds(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    create_old_format_dbt_series(input_dir, frame_count=2)
+    dry_run = convert_dbt_study(input_dir, output_dir, dry_run=True)
+    output_path = Path(dry_run["converted_series"][0]["output_path"])
+    output_path.parent.mkdir(parents=True)
+    output_path.write_bytes(b"existing destination content")
+
+    report = convert_dbt_study(input_dir, output_dir, force=True)
+
+    assert report["summary"]["converted_series"] == 1
+    assert pydicom.dcmread(output_path).NumberOfFrames == "2"
+    assert not [path for path in tmp_path.iterdir() if path.name.startswith(".mammocat-staging-")]
+
+
 def test_convert_preflights_copy_collisions_before_writes(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
