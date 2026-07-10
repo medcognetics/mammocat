@@ -24,6 +24,7 @@ export function createMammogramBytes(options = {}) {
     seriesInstanceUid = `${studyInstanceUid}.1`,
     sopInstanceUid = `${seriesInstanceUid}.1`,
     pixelSpacing = ["0.07", "0.07"],
+    nestedViewModifiers = [],
   } = options
 
   const sopClassUid =
@@ -59,11 +60,52 @@ export function createMammogramBytes(options = {}) {
     element(0x0028, 0x0030, "DS", pixelSpacing.join("\\")),
     element(0x0008, 0x0068, "CS", "FOR PRESENTATION"),
     element(0x0028, 0x2110, "CS", "00"),
+    nestedViewModifiers.length > 0
+      ? viewCodeSequence(viewPosition, nestedViewModifiers)
+      : new Uint8Array(),
   ])
 
   return Buffer.from(
     concat([preamble, groupLengthElement(metaBody.length), metaBody, dataset]),
   )
+}
+
+function viewCodeSequence(viewPosition, modifierMeanings) {
+  const modifierItems = modifierMeanings.map((meaning, index) =>
+    concat([
+      element(0x0008, 0x0100, "SH", `MOD-${index + 1}`),
+      element(0x0008, 0x0102, "SH", "99MAMMOCAT"),
+      element(0x0008, 0x0104, "LO", meaning),
+    ]),
+  )
+  const viewItem = concat([
+    element(0x0008, 0x0100, "SH", viewPosition),
+    element(0x0008, 0x0102, "SH", "99MAMMOCAT"),
+    element(0x0008, 0x0104, "LO", viewPosition),
+    sequenceElement(0x0054, 0x0222, modifierItems),
+  ])
+  return sequenceElement(0x0054, 0x0220, [viewItem])
+}
+
+function sequenceElement(group, tag, itemDatasets) {
+  const value = concat(itemDatasets.map(sequenceItem))
+  const header = new Uint8Array(12)
+  const view = new DataView(header.buffer)
+  view.setUint16(0, group, true)
+  view.setUint16(2, tag, true)
+  header[4] = 0x53
+  header[5] = 0x51
+  view.setUint32(8, value.length, true)
+  return concat([header, value])
+}
+
+function sequenceItem(dataset) {
+  const header = new Uint8Array(8)
+  const view = new DataView(header.buffer)
+  view.setUint16(0, 0xfffe, true)
+  view.setUint16(2, 0xe000, true)
+  view.setUint32(4, dataset.length, true)
+  return concat([header, dataset])
 }
 
 function imageTypeForMammogramType(mammogramType) {

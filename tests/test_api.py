@@ -152,6 +152,41 @@ class TestMammogramExtractor:
         assert metadata_dict["mammogram_type"] == "tomo"
         assert metadata_dict["dbt_object_kind"] == "slice"
 
+    def test_nested_view_modifiers_match_top_level_encoding(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        modifier_options = {
+            "is_spot_compression": True,
+            "is_magnified": True,
+            "is_implant_displaced": True,
+        }
+        top_level_path = fixtures_dir / "top_level_modifiers.dcm"
+        nested_path = fixtures_dir / "nested_modifiers.dcm"
+        mammogram_dicom_factory(**modifier_options).save_as(
+            top_level_path, enforce_file_format=True
+        )
+        mammogram_dicom_factory(**modifier_options, nested_view_modifiers=True).save_as(
+            nested_path, enforce_file_format=True
+        )
+
+        top_level = MammogramExtractor.extract_from_file(top_level_path)
+        nested = MammogramExtractor.extract_from_file(nested_path)
+
+        assert (
+            top_level.is_spot_compression,
+            top_level.is_magnified,
+            top_level.is_implant_displaced,
+        ) == (True, True, True)
+        assert (
+            nested.is_spot_compression,
+            nested.is_magnified,
+            nested.is_implant_displaced,
+        ) == (
+            top_level.is_spot_compression,
+            top_level.is_magnified,
+            top_level.is_implant_displaced,
+        )
+
 
 class TestMammogramRecord:
     def test_from_file(self, sample_dicom):

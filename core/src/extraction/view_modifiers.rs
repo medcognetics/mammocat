@@ -1,5 +1,6 @@
 use crate::extraction::tags::{
-    get_string_value, CODE_MEANING, PADDLE_DESCRIPTION, VIEW_MODIFIER_CODE_SEQUENCE, VIEW_POSITION,
+    get_string_value, CODE_MEANING, PADDLE_DESCRIPTION, VIEW_CODE_SEQUENCE,
+    VIEW_MODIFIER_CODE_SEQUENCE, VIEW_POSITION,
 };
 use dicom_object::InMemDicomObject;
 
@@ -17,8 +18,11 @@ use dicom_object::InMemDicomObject;
 /// Vector of view modifier code meanings (trimmed and lowercased)
 pub fn extract_view_modifier_meanings(dcm: &InMemDicomObject) -> Vec<String> {
     let mut meanings = Vec::new();
+    collect_view_modifier_meanings(dcm, &mut meanings);
+    meanings
+}
 
-    // Try to get ViewModifierCodeSequence
+fn collect_view_modifier_meanings(dcm: &InMemDicomObject, meanings: &mut Vec<String>) {
     if let Ok(sequence_elem) = dcm.element(VIEW_MODIFIER_CODE_SEQUENCE) {
         if let Some(items) = sequence_elem.items() {
             for item in items {
@@ -29,7 +33,13 @@ pub fn extract_view_modifier_meanings(dcm: &InMemDicomObject) -> Vec<String> {
         }
     }
 
-    meanings
+    if let Ok(sequence_elem) = dcm.element(VIEW_CODE_SEQUENCE) {
+        if let Some(items) = sequence_elem.items() {
+            for item in items {
+                collect_view_modifier_meanings(item, meanings);
+            }
+        }
+    }
 }
 
 /// Checks if "implant displaced" is present in view modifier codes
@@ -114,7 +124,36 @@ pub fn is_magnified(dcm: &InMemDicomObject) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extraction::tags::VIEW_CODE_SEQUENCE;
+    use dicom_core::value::DataSetSequence;
+    use dicom_core::{DataElement, Tag, VR};
     use dicom_object::InMemDicomObject;
+
+    fn code_sequence(tag: Tag, meanings: &[&str]) -> DataElement<InMemDicomObject> {
+        let items = meanings
+            .iter()
+            .map(|meaning| {
+                InMemDicomObject::from_element_iter([DataElement::new(
+                    CODE_MEANING,
+                    VR::LO,
+                    *meaning,
+                )])
+            })
+            .collect::<Vec<_>>();
+        DataElement::new(tag, VR::SQ, DataSetSequence::from(items))
+    }
+
+    fn nested_modifier_object(meanings: &[&str]) -> InMemDicomObject {
+        let view_item = InMemDicomObject::from_element_iter([code_sequence(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            meanings,
+        )]);
+        InMemDicomObject::from_element_iter([DataElement::new(
+            VIEW_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![view_item]),
+        )])
+    }
 
     #[test]
     fn test_is_implant_displaced_empty() {
@@ -145,7 +184,31 @@ mod tests {
         assert!(!is_magnified(&dcm));
     }
 
-    // Note: Testing with actual sequences would require building proper DICOM sequences
-    // which is complex. The main logic is tested here; integration tests with real
-    // DICOM files will verify the complete functionality.
+    #[test]
+    fn nested_view_modifiers_set_all_supported_flags() {
+        let dcm =
+            nested_modifier_object(&["Implant Displaced", "Spot Compression", "Magnification"]);
+
+        assert_eq!(
+            extract_view_modifier_meanings(&dcm),
+            ["implant displaced", "spot compression", "magnification"]
+        );
+        assert!(is_implant_displaced(&dcm));
+        assert!(is_spot_compression(&dcm));
+        assert!(is_magnified(&dcm));
+    }
+
+    #[test]
+    fn mixed_level_view_modifiers_are_collected_in_stable_order() {
+        let mut dcm = nested_modifier_object(&["Magnification"]);
+        dcm.put(code_sequence(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            &["Spot Compression", "Implant Displaced"],
+        ));
+
+        assert_eq!(
+            extract_view_modifier_meanings(&dcm),
+            ["spot compression", "implant displaced", "magnification"]
+        );
+    }
 }

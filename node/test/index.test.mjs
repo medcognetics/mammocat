@@ -44,6 +44,19 @@ test("file path and byte inputs produce matching metadata", async (t) => {
   assert.deepEqual(fromBytes.pixelSpacing, fromFile.pixelSpacing)
 })
 
+test("nested view modifiers populate all metadata flags", () => {
+  const metadata = extractMetadata({
+    bytes: createMammogramBytes({
+      nestedViewModifiers: ["implant displaced", "spot compression", "magnification"],
+    }),
+    filename: "nested_modifiers.dcm",
+  })
+
+  assert.equal(metadata.isImplantDisplaced, true)
+  assert.equal(metadata.isSpotCompression, true)
+  assert.equal(metadata.isMagnified, true)
+})
+
 test("selectPreferredViews returns the four preferred standard slots", () => {
   const inputs = [
     { bytes: createMammogramBytes({ laterality: "R", viewPosition: "CC" }), filename: "rcc.dcm" },

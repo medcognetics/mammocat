@@ -37,6 +37,7 @@ def create_mammogram_dicom(
     is_spot_compression: bool = False,
     is_magnified: bool = False,
     is_implant_displaced: bool = False,
+    nested_view_modifiers: bool = False,
     pixel_spacing: tuple[float, float] | None = (0.07, 0.07),
     transfer_syntax_uid: str = ExplicitVRLittleEndian,
     lossy_image_compression: str = "00",
@@ -56,6 +57,7 @@ def create_mammogram_dicom(
         is_spot_compression: Whether this is spot compression view
         is_magnified: Whether this is magnified view
         is_implant_displaced: Whether this is implant displaced view
+        nested_view_modifiers: Place modifiers under ViewCodeSequence instead of at the root
         pixel_spacing: Optional row/column pixel spacing in millimeters
         transfer_syntax_uid: DICOM transfer syntax UID to write in file metadata
         lossy_image_compression: LossyImageCompression tag value
@@ -137,13 +139,22 @@ def create_mammogram_dicom(
         view_modifier_codes.append(("R-4092C", "99SDM", "implant displaced"))
 
     if view_modifier_codes:
-        ds.ViewModifierCodeSequence = []
+        modifier_parent = ds
+        if nested_view_modifiers:
+            view_code = Dataset()
+            view_code.CodeValue = view_position
+            view_code.CodingSchemeDesignator = "99MAMMOCAT"
+            view_code.CodeMeaning = view_position
+            ds.ViewCodeSequence = [view_code]
+            modifier_parent = view_code
+
+        modifier_parent.ViewModifierCodeSequence = []
         for code_value, coding_scheme, code_meaning in view_modifier_codes:
             modifier = Dataset()
             modifier.CodeValue = code_value
             modifier.CodingSchemeDesignator = coding_scheme
             modifier.CodeMeaning = code_meaning
-            ds.ViewModifierCodeSequence.append(modifier)
+            modifier_parent.ViewModifierCodeSequence.append(modifier)
 
     # Equipment Information
     ds.Manufacturer = "TEST_MANUFACTURER"
