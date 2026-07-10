@@ -91,7 +91,7 @@ impl PyMammogramType {
 
     #[getter]
     fn value(&self) -> &str {
-        self.inner.simple_name()
+        self.inner.serialized_name()
     }
 }
 

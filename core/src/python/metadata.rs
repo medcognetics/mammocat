@@ -171,7 +171,10 @@ impl PyMammogramMetadata {
     /// Convert metadata to dictionary
     pub fn to_dict(&self, py: Python) -> PyResult<Py<PyDict>> {
         let dict = PyDict::new_bound(py);
-        dict.set_item("mammogram_type", self.mammogram_type().simple_name())?;
+        dict.set_item(
+            "mammogram_type",
+            self.inner.mammogram_type.serialized_name(),
+        )?;
         dict.set_item("dbt_object_kind", self.dbt_object_kind().simple_name())?;
         dict.set_item("laterality", self.laterality().simple_name())?;
         dict.set_item("view_position", self.view_position().simple_name())?;

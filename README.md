@@ -330,6 +330,8 @@ mammocat/
 - **`MammogramType`**: Unknown, Tomo, Ffdm, Synth, Sfm
   - Implements preference ordering for deduplication
   - `is_preferred_to()` method for comparison
+  - Machine-readable values are `unknown`, `tomo`, `ffdm`, `synth`, and `sfm`
+  - Human-readable display uses `s-view` for `Synth`; serialized output uses `synth`
 
 - **`DbtObjectKind`**: None, Volume, Slice, Unknown
   - Describes DBT storage representation independently from `MammogramType`

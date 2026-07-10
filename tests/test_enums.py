@@ -17,7 +17,7 @@ class TestMammogramType:
         """Test MammogramType enum values."""
         assert MammogramType.FFDM.value == "ffdm"
         assert MammogramType.TOMO.value == "tomo"
-        assert MammogramType.SYNTH.value == "s-view"
+        assert MammogramType.SYNTH.value == "synth"
         assert MammogramType.SFM.value == "sfm"
         assert MammogramType.UNKNOWN.value == "unknown"
 

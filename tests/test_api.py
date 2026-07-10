@@ -115,6 +115,22 @@ class TestMammogramExtractor:
         assert d["transfer_syntax_name"] == "Explicit VR Little Endian"
         assert d["compression_type"] == "uncompressed"
 
+    def test_synthesized_metadata_uses_canonical_machine_value(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        """Test serialized metadata distinguishes the machine and display values."""
+        dicom_path = fixtures_dir / "synthetic_2d.dcm"
+        ds = mammogram_dicom_factory(mammogram_type="SYNTH")
+        ds.ImageType = ["DERIVED", "PRIMARY", "TOMO_2D"]
+        ds.PresentationIntentType = "FOR PRESENTATION"
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+
+        assert metadata.to_dict()["mammogram_type"] == "synth"
+        assert metadata.mammogram_type.value == "synth"
+        assert str(metadata.mammogram_type) == "s-view"
+
     def test_concat_metadata_to_dict(self, fixtures_dir, mammogram_dicom_factory):
         """Test concat identifiers are exposed in metadata and to_dict."""
         dicom_path = fixtures_dir / "concat_metadata.dcm"
