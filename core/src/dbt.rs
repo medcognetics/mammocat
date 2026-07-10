@@ -27,6 +27,13 @@ const SUPPORTED_TRANSFER_SYNTAXES: &[&str] = &[
     uids::IMPLICIT_VR_LITTLE_ENDIAN,
 ];
 
+const CONVENTIONAL_MAMMOGRAPHY_SOP_CLASS_UIDS: &[&str] = &[
+    uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+    uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PROCESSING,
+    uids::BREAST_PROJECTION_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+    uids::BREAST_PROJECTION_X_RAY_IMAGE_STORAGE_FOR_PROCESSING,
+];
+
 /// Scan options for DBT study detection.
 #[derive(Debug, Clone, Default)]
 pub struct DbtScanOptions;
@@ -356,6 +363,23 @@ fn build_dbt_scan_report(
         }
 
         if !has_dbt_evidence(&items) {
+            if items.iter().all(is_clearly_conventional_mammography) {
+                copy_through_files.extend(items.iter().map(file_finding));
+            } else {
+                unsupported_series.push(DbtUnsupportedSeries {
+                    study_instance_uid: Some(key.study_instance_uid),
+                    series_instance_uid: Some(key.series_instance_uid),
+                    source_paths: items
+                        .iter()
+                        .map(|i| relative_string(&i.relative_path))
+                        .collect(),
+                    reason: "multi-file series has no DBT evidence and is not a recognized conventional mammography series".to_string(),
+                });
+            }
+            continue;
+        }
+
+        if items.iter().any(is_clearly_conventional_mammography) {
             unsupported_series.push(DbtUnsupportedSeries {
                 study_instance_uid: Some(key.study_instance_uid),
                 series_instance_uid: Some(key.series_instance_uid),
@@ -363,7 +387,7 @@ fn build_dbt_scan_report(
                     .iter()
                     .map(|i| relative_string(&i.relative_path))
                     .collect(),
-                reason: "multi-file series has no DBT evidence".to_string(),
+                reason: "mixed DBT and conventional mammography evidence".to_string(),
             });
             continue;
         }
@@ -623,6 +647,16 @@ fn is_multiframe_dbt(info: &DicomFileInfo) -> bool {
 
 fn has_dbt_evidence(items: &[DicomFileInfo]) -> bool {
     items.iter().any(has_dbt_text_evidence)
+}
+
+fn is_clearly_conventional_mammography(info: &DicomFileInfo) -> bool {
+    string_eq(&info.modality, "MG")
+        && info
+            .sop_class_uid
+            .as_deref()
+            .map(|uid| CONVENTIONAL_MAMMOGRAPHY_SOP_CLASS_UIDS.contains(&uid))
+            .unwrap_or(false)
+        && !has_dbt_text_evidence(info)
 }
 
 fn has_dbt_text_evidence(info: &DicomFileInfo) -> bool {
