@@ -180,6 +180,9 @@ def create_old_format_dbt_slice(
     ds.StudyInstanceUID = study_uid
     ds.StudyDate = "20240102"
     ds.StudyTime = "130000"
+    ds.ReferringPhysicianName = ""
+    ds.StudyID = ""
+    ds.AccessionNumber = ""
     ds.SeriesInstanceUID = series_uid
     ds.SeriesNumber = "7"
     ds.SeriesDescription = f"TOMO {laterality}-{view} 2D+, Diagnosis"
@@ -188,6 +191,38 @@ def create_old_format_dbt_slice(
     ds.SOPInstanceUID = sop_uid
     ds.InstanceNumber = str(instance_number)
     ds.ImagePositionPatient = [0.0, 0.0, float(instance_number)]
+    ds.ImageOrientationPatient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    ds.PixelSpacing = [0.1, 0.1]
+    ds.SliceThickness = 1.0
+    ds.FrameOfReferenceUID = f"{study_uid}.99"
+    ds.PositionReferenceIndicator = ""
+    ds.WindowCenter = 2048
+    ds.WindowWidth = 4096
+    ds.RescaleIntercept = 0
+    ds.RescaleSlope = 1
+    ds.RescaleType = "US"
+    ds.ContentDate = "20240102"
+    ds.ContentTime = "130000"
+    ds.Manufacturer = "TEST_MANUFACTURER"
+    ds.ManufacturerModelName = "TEST_MODEL"
+    ds.DeviceSerialNumber = "TEST_SERIAL"
+    ds.SoftwareVersions = "TEST_SOFTWARE"
+    ds.BurnedInAnnotation = "NO"
+    ds.LossyImageCompression = "00"
+    ds.BreastImplantPresent = "NO"
+    ds.AcquisitionContextSequence = []
+
+    anatomy = Dataset()
+    anatomy.CodeValue = "76752008"
+    anatomy.CodingSchemeDesignator = "SCT"
+    anatomy.CodeMeaning = "Breast"
+    ds.AnatomicRegionSequence = [anatomy]
+
+    view_code = Dataset()
+    view_code.CodeValue = "399368009" if view == "MLO" else "399162004"
+    view_code.CodingSchemeDesignator = "SCT"
+    view_code.CodeMeaning = "medio-lateral oblique" if view == "MLO" else "cranio-caudal"
+    ds.ViewCodeSequence = [view_code]
     ds.Rows = rows
     ds.Columns = columns
     ds.SamplesPerPixel = 1
