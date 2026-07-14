@@ -29,7 +29,7 @@ pub use dbt::{
 };
 pub use dicom_files::{
     collect_dicom_files, collect_dicom_files_recursively,
-    collect_dicom_files_recursively_no_symlinks, is_dicom_file,
+    collect_dicom_files_recursively_no_symlinks, ensure_no_symlink_components, is_dicom_file,
 };
 pub use error::{MammocatError, Result};
 pub use extraction::{extract_view_descriptor, Evidence, MammographyViewDescriptor};

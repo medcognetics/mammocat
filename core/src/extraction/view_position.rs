@@ -404,7 +404,7 @@ pub fn from_str(value: &str, strict: bool) -> ViewPosition {
     VIEW_CODE_DEFINITIONS
         .iter()
         .find_map(|definition| {
-            contains_token(&normalized, definition.view.short_str()).then_some(definition.view)
+            contains_view_token(&normalized, definition.view.short_str()).then_some(definition.view)
         })
         .unwrap_or(ViewPosition::Unknown)
 }
@@ -507,6 +507,17 @@ fn contains_token(value: &str, token: &str) -> bool {
     value
         .split(|character: char| !character.is_ascii_alphanumeric())
         .any(|part| part == token)
+}
+
+fn contains_view_token(value: &str, view: &str) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|part| {
+            part == view
+                || ["l", "r", "left", "right"]
+                    .iter()
+                    .any(|prefix| part.strip_prefix(prefix).is_some_and(|rest| rest == view))
+        })
 }
 
 #[cfg(test)]
@@ -832,6 +843,26 @@ mod tests {
 
             assert_eq!(descriptor.view_position, expected_view, "{raw}");
             assert!(descriptor.modifiers.contains(&expected_modifier), "{raw}");
+        }
+    }
+
+    #[test]
+    fn laterality_prefixed_mlo_labels_are_heuristic_base_view_evidence() {
+        for (tag, source, raw) in [
+            (VIEW_POSITION_TAG, "ViewPosition", "RMLO"),
+            (SERIES_DESCRIPTION, "SeriesDescription", "LMLO"),
+        ] {
+            let mut dcm = InMemDicomObject::new_empty();
+            dcm.put(DataElement::new(tag, VR::CS, PrimitiveValue::from(raw)));
+
+            let descriptor = extract_view_descriptor(&dcm);
+
+            assert_eq!(descriptor.view_position, ViewPosition::Mlo, "{raw}");
+            assert!(descriptor.evidence.iter().any(|evidence| {
+                evidence.source == source
+                    && evidence.value == raw
+                    && evidence.confidence == Confidence::Heuristic
+            }));
         }
     }
 

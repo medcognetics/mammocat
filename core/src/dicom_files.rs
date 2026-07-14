@@ -93,6 +93,28 @@ pub fn collect_dicom_files_recursively_no_symlinks(
     Ok(files)
 }
 
+/// Reject a path when its final component or any lexical ancestor is a symbolic link.
+pub fn ensure_no_symlink_components(path: &Path) -> std::io::Result<()> {
+    for component in path
+        .ancestors()
+        .filter(|component| !component.as_os_str().is_empty())
+    {
+        if std::fs::symlink_metadata(component)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "path contains a symbolic link component: {}",
+                    component.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn collect_recursive_file_inventory(
     directory: &Path,
 ) -> std::io::Result<RecursiveFileInventory> {
@@ -216,5 +238,23 @@ mod tests {
         let files = collect_dicom_files_recursively_no_symlinks(directory.path()).unwrap();
 
         assert!(files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_component_check_rejects_linked_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let target = directory.path().join("target");
+        let linked = directory.path().join("linked");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("image.dcm"), b"synthetic DICOM candidate").unwrap();
+        symlink(&target, &linked).unwrap();
+
+        let error = ensure_no_symlink_components(&linked.join("image.dcm")).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("symbolic link"));
     }
 }

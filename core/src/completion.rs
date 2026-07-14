@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::api::MammogramExtractor;
+use crate::dicom_files::ensure_no_symlink_components;
 use crate::error::{MammocatError, Result};
 use crate::extraction::tags::{
     get_string_value, CODE_MEANING, CODE_VALUE, CODING_SCHEME_DESIGNATOR, FRAME_ANATOMY_SEQUENCE,
@@ -664,7 +665,7 @@ pub fn complete_file(
     output: &Path,
     options: &CompletionFileOptions,
 ) -> Result<CompletionReport> {
-    reject_symlink_input(input)?;
+    ensure_no_symlink_components(input)?;
     if input != output && paths_resolve_to_same_file(input, output)? {
         return Err(MammocatError::IoError(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -728,16 +729,6 @@ pub fn complete_file(
         return Err(error);
     }
     Ok(report)
-}
-
-fn reject_symlink_input(input: &Path) -> Result<()> {
-    if fs::symlink_metadata(input)?.file_type().is_symlink() {
-        return Err(MammocatError::IoError(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("input cannot be a symbolic link: {}", input.display()),
-        )));
-    }
-    Ok(())
 }
 
 fn paths_resolve_to_same_file(input: &Path, output: &Path) -> Result<bool> {
@@ -2297,6 +2288,38 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(fs::read(input).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_completion_rejects_symlinked_input_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let target_directory = directory.path().join("target");
+        let linked_directory = directory.path().join("linked");
+        fs::create_dir(&target_directory).unwrap();
+        let target_input = target_directory.join("image.dcm");
+        minimal_file_object().write_to_file(&target_input).unwrap();
+        let original = fs::read(&target_input).unwrap();
+        symlink(&target_directory, &linked_directory).unwrap();
+        let linked_input = linked_directory.join("image.dcm");
+
+        let result = complete_file(
+            &linked_input,
+            &linked_input,
+            &CompletionFileOptions {
+                backup_suffix: Some(".bak".to_string()),
+                ..CompletionFileOptions::default()
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(MammocatError::IoError(error)) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert_eq!(fs::read(&target_input).unwrap(), original);
+        assert!(!target_directory.join("image.dcm.bak").exists());
     }
 
     #[test]

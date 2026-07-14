@@ -7,8 +7,8 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use mammocat_core::{
-    collect_dicom_files_recursively_no_symlinks, complete_file, plan_completion,
-    CompletionFileOptions, CompletionOptions, CompletionPlan, CompletionReport,
+    collect_dicom_files_recursively_no_symlinks, complete_file, ensure_no_symlink_components,
+    plan_completion, CompletionFileOptions, CompletionOptions, CompletionPlan, CompletionReport,
 };
 use serde::Serialize;
 
@@ -200,12 +200,8 @@ fn validate_arguments(cli: &Cli) -> std::result::Result<(), String> {
             format!("cannot inspect input {}: {error}", cli.input.display())
         }
     })?;
-    if input_metadata.file_type().is_symlink() {
-        return Err(format!(
-            "INPUT cannot be a symbolic link: {}",
-            cli.input.display()
-        ));
-    }
+    ensure_no_symlink_components(&cli.input)
+        .map_err(|error| format!("invalid INPUT {}: {error}", cli.input.display()))?;
     if cli
         .backup_suffix
         .as_deref()
@@ -238,13 +234,8 @@ fn validate_arguments(cli: &Cli) -> std::result::Result<(), String> {
 }
 
 fn collect_inputs(input: &Path) -> io::Result<Vec<PathBuf>> {
+    ensure_no_symlink_components(input)?;
     let metadata = fs::symlink_metadata(input)?;
-    if metadata.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("INPUT cannot be a symbolic link: {}", input.display()),
-        ));
-    }
     if metadata.is_file() {
         Ok(vec![input.to_path_buf()])
     } else if metadata.is_dir() {
@@ -608,6 +599,39 @@ mod tests {
         symlink(target, &input).unwrap();
         let cli = Cli {
             input,
+            output: None,
+            in_place: false,
+            dry_run: true,
+            allow_heuristic: false,
+            strip_signatures: false,
+            backup_suffix: None,
+            force: false,
+            format: OutputFormat::Text,
+            quiet: false,
+            verbose: false,
+            color: ColorMode::Never,
+            no_color: false,
+            progress: ProgressMode::Never,
+        };
+
+        let error = validate_arguments(&cli).unwrap_err();
+
+        assert!(error.contains("symbolic link"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_input_with_symlinked_ancestor_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let target_directory = directory.path().join("target");
+        let linked_directory = directory.path().join("linked");
+        std::fs::create_dir(&target_directory).unwrap();
+        std::fs::write(target_directory.join("image.dcm"), b"synthetic DICOM").unwrap();
+        symlink(&target_directory, &linked_directory).unwrap();
+        let cli = Cli {
+            input: linked_directory.join("image.dcm"),
             output: None,
             in_place: false,
             dry_run: true,
