@@ -41,6 +41,7 @@ from ._mammocat import (
     # Enums
     MammogramType,
     MammogramView,
+    MammographyViewModifier,
     PhotometricInterpretation,
     PreferenceOrder,
     SelectionError,
@@ -73,6 +74,7 @@ __all__ = [
     "MammogramRecord",
     "MammogramType",
     "MammogramView",
+    "MammographyViewModifier",
     "PhotometricInterpretation",
     "PreferenceOrder",
     "SelectionError",

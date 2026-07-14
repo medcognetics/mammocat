@@ -65,6 +65,7 @@ def test_validate_dicom_selection_report_passes(validation_dicom: Path | str) ->
     assert report["summary"]["profile"] == "selection"
     assert report["summary"]["source_type"] == "file"
     assert file_report["pixel"]["pixel_data_present"] is True
+    assert file_report["mammography"]["view_modifiers"] == []
     assert file_report["selection"]["eligible"] is True
 
 

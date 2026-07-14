@@ -42,6 +42,7 @@ pub struct MammogramMetadata {
     pub dbt_object_kind: String,
     pub laterality: String,
     pub view_position: String,
+    pub view_modifiers: Vec<String>,
     pub image_type: String,
     pub pixel_spacing: Option<PixelSpacing>,
     pub is_for_processing: bool,
@@ -511,9 +512,9 @@ fn record_to_dto(record: &CoreMammogramRecord, input_index: Option<u32>) -> Mamm
         columns: record.columns.map(u32::from),
         transfer_syntax_uid: record.transfer_syntax_uid.clone(),
         is_lossy_compressed: record.is_lossy_compressed,
-        is_implant_displaced: record.is_implant_displaced,
-        is_spot_compression: record.is_spot_compression,
-        is_magnified: record.is_magnified,
+        is_implant_displaced: record.is_implant_displaced(),
+        is_spot_compression: record.is_spot_compression(),
+        is_magnified: record.is_magnified(),
     }
 }
 
@@ -523,6 +524,11 @@ fn metadata_to_dto(metadata: &mammocat_core::MammogramMetadata) -> MammogramMeta
         dbt_object_kind: metadata.dbt_object_kind.to_string(),
         laterality: metadata.laterality.simple_name().to_string(),
         view_position: metadata.view_position.simple_name().to_string(),
+        view_modifiers: metadata
+            .view_modifiers
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         image_type: metadata.image_type.to_string(),
         pixel_spacing: metadata.pixel_spacing.map(|spacing| PixelSpacing {
             row: spacing.row,
@@ -530,9 +536,9 @@ fn metadata_to_dto(metadata: &mammocat_core::MammogramMetadata) -> MammogramMeta
         }),
         is_for_processing: metadata.is_for_processing,
         has_implant: metadata.has_implant,
-        is_spot_compression: metadata.is_spot_compression,
-        is_magnified: metadata.is_magnified,
-        is_implant_displaced: metadata.is_implant_displaced,
+        is_spot_compression: metadata.is_spot_compression(),
+        is_magnified: metadata.is_magnified(),
+        is_implant_displaced: metadata.is_implant_displaced(),
         manufacturer: metadata.manufacturer.clone(),
         model: metadata.model.clone(),
         number_of_frames: metadata.number_of_frames,

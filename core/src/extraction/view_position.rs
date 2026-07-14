@@ -1,745 +1,894 @@
+use std::collections::BTreeSet;
+
 use crate::error::Result;
-use crate::types::ViewPosition;
+use crate::registry::{is_retired_snomed_coding_scheme, retired_view_code_matches};
+pub use crate::registry::{
+    view_code_definition, view_modifier_code_definition, Confidence, ViewCodeDefinition,
+    ViewModifierCodeDefinition, VIEW_CODE_DEFINITIONS, VIEW_MODIFIER_CODE_DEFINITIONS,
+};
+use crate::types::{MammographyViewModifier, ViewPosition};
 use dicom_object::InMemDicomObject;
 
 use super::tags::{
-    get_string_value, CODE_MEANING, VIEW_CODE_SEQUENCE, VIEW_MODIFIER_CODE_SEQUENCE,
-    VIEW_POSITION as VIEW_POSITION_TAG,
+    get_string_value, CODE_MEANING, CODE_VALUE, CODING_SCHEME_DESIGNATOR, PADDLE_DESCRIPTION,
+    PERFORMED_PROCEDURE_STEP_DESCRIPTION, SERIES_DESCRIPTION, STUDY_DESCRIPTION,
+    VIEW_CODE_SEQUENCE, VIEW_MODIFIER_CODE_SEQUENCE, VIEW_POSITION as VIEW_POSITION_TAG,
 };
 
-// Pattern sets for view position matching
-const CC_STRINGS: &[&str] = &["cranio-caudal", "caudal-cranial"];
-const ML_STRINGS: &[&str] = &["medio-lateral", "medial-lateral"];
-const LM_STRINGS: &[&str] = &["latero-medial", "lateral-medial"];
-const AT_STRINGS: &[&str] = &["axillary tail"];
-const CV_STRINGS: &[&str] = &["cleavage view", "valley-view"];
+const CURRENT_CODING_SCHEME: &str = "SCT";
+#[cfg(test)]
+const LEGACY_CODING_SCHEME: &str = "SRT";
+const ROLLED_LATERAL_ABBREVIATION: &str = "rl";
+const ROLLED_MEDIAL_ABBREVIATION: &str = "rm";
+const TANGENTIAL_ABBREVIATION: &str = "tan";
+const IMPLANT_DISPLACED_SUFFIX: &str = "id";
+const MAGNIFICATION_SUFFIX: &str = "m";
 
-/// Extracts view position from DICOM file
-///
-/// Implements the extraction logic from Python types.py:586-594
-///
-/// # Algorithm
-///
-/// 1. Extract from ViewPosition tag with pattern matching
-/// 2. Extract from all ViewCodeSequence → CodeMeaning entries
-/// 3. Extract from all ViewModifierCodeSequence → CodeMeaning entries (including nested)
-/// 4. Return the candidate with the highest enum value (Unknown < Xccl < ... < Cv)
-///
-/// This matches the Python behavior of combining all sources and selecting the maximum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize))]
+pub struct Evidence {
+    pub source: String,
+    pub value: String,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize))]
+pub struct MammographyViewDescriptor {
+    pub view_position: ViewPosition,
+    pub modifiers: BTreeSet<MammographyViewModifier>,
+    pub evidence: Vec<Evidence>,
+    pub conflicts: Vec<String>,
+}
+
+impl Default for MammographyViewDescriptor {
+    fn default() -> Self {
+        Self {
+            view_position: ViewPosition::Unknown,
+            modifiers: BTreeSet::new(),
+            evidence: Vec::new(),
+            conflicts: Vec::new(),
+        }
+    }
+}
+
+pub fn extract_view_descriptor(dcm: &InMemDicomObject) -> MammographyViewDescriptor {
+    let mut descriptor = MammographyViewDescriptor::default();
+    let mut base_candidates = Vec::new();
+
+    if let Ok(element) = dcm.element(VIEW_CODE_SEQUENCE) {
+        if let Some(items) = element.items() {
+            for item in items {
+                if let Some(candidate) = parse_view_code_item(item, &mut descriptor) {
+                    base_candidates.push(candidate);
+                }
+                extract_modifier_sequence(
+                    item,
+                    "ViewCodeSequence/ViewModifierCodeSequence",
+                    &mut descriptor,
+                );
+            }
+        }
+    }
+
+    extract_modifier_sequence(dcm, "ViewModifierCodeSequence", &mut descriptor);
+
+    if let Some(raw_view) = get_string_value(dcm, VIEW_POSITION_TAG) {
+        let compact_alias = compact_view_position_alias(&raw_view);
+        let strict_view = from_str(&raw_view, true);
+        if !strict_view.is_unknown() {
+            add_base_candidate(
+                &mut base_candidates,
+                &mut descriptor,
+                strict_view,
+                Confidence::Structural,
+                "ViewPosition",
+                &raw_view,
+            );
+        } else {
+            let loose_view = compact_alias
+                .and_then(|(view, _)| view)
+                .unwrap_or_else(|| from_str(&raw_view, false));
+            if !loose_view.is_unknown() {
+                add_base_candidate(
+                    &mut base_candidates,
+                    &mut descriptor,
+                    loose_view,
+                    Confidence::Heuristic,
+                    "ViewPosition",
+                    &raw_view,
+                );
+            }
+        }
+
+        if let Some(modifier) = modifier_from_text(&raw_view, true) {
+            add_modifier(
+                &mut descriptor,
+                modifier,
+                Confidence::Structural,
+                "ViewPosition",
+                &raw_view,
+            );
+        } else if let Some((_, modifier)) = compact_alias {
+            add_modifier(
+                &mut descriptor,
+                modifier,
+                Confidence::Heuristic,
+                "ViewPosition",
+                &raw_view,
+            );
+        } else {
+            for definition in VIEW_MODIFIER_CODE_DEFINITIONS {
+                if description_contains_modifier(&raw_view, definition.modifier) {
+                    add_modifier(
+                        &mut descriptor,
+                        definition.modifier,
+                        Confidence::Heuristic,
+                        "ViewPosition",
+                        &raw_view,
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(paddle) = get_string_value(dcm, PADDLE_DESCRIPTION) {
+        if paddle.contains("SPOT") || paddle.contains("SPT") {
+            add_modifier(
+                &mut descriptor,
+                MammographyViewModifier::SpotCompression,
+                Confidence::Heuristic,
+                "PaddleDescription",
+                &paddle,
+            );
+        }
+        if paddle.contains("MAG") {
+            add_modifier(
+                &mut descriptor,
+                MammographyViewModifier::Magnification,
+                Confidence::Heuristic,
+                "PaddleDescription",
+                &paddle,
+            );
+        }
+    }
+
+    for (source, tag) in [
+        ("SeriesDescription", SERIES_DESCRIPTION),
+        ("StudyDescription", STUDY_DESCRIPTION),
+        (
+            "PerformedProcedureStepDescription",
+            PERFORMED_PROCEDURE_STEP_DESCRIPTION,
+        ),
+    ] {
+        if let Some(description) = get_string_value(dcm, tag) {
+            let view = from_str(&description, false);
+            if !view.is_unknown() {
+                add_base_candidate(
+                    &mut base_candidates,
+                    &mut descriptor,
+                    view,
+                    Confidence::Heuristic,
+                    source,
+                    &description,
+                );
+            }
+            for definition in VIEW_MODIFIER_CODE_DEFINITIONS {
+                if description_contains_modifier(&description, definition.modifier) {
+                    add_modifier(
+                        &mut descriptor,
+                        definition.modifier,
+                        Confidence::Heuristic,
+                        source,
+                        &description,
+                    );
+                }
+            }
+        }
+    }
+
+    descriptor.view_position = resolve_base_view(&base_candidates, &mut descriptor.conflicts);
+    descriptor
+}
+
 pub fn extract_view_position(dcm: &InMemDicomObject) -> Result<ViewPosition> {
-    let mut candidates = Vec::new();
+    Ok(extract_view_descriptor(dcm).view_position)
+}
 
-    // Extract from ViewPosition tag (loose mode)
-    if let Some(vp) = get_string_value(dcm, VIEW_POSITION_TAG) {
-        let result = from_str(&vp, false);
-        if !result.is_unknown() {
-            candidates.push(result);
+pub fn extract_view_modifiers(dcm: &InMemDicomObject) -> BTreeSet<MammographyViewModifier> {
+    extract_view_descriptor(dcm).modifiers
+}
+
+fn parse_view_code_item(
+    item: &InMemDicomObject,
+    descriptor: &mut MammographyViewDescriptor,
+) -> Option<BaseCandidate> {
+    let tuple_match = match_view_tuple(item);
+    let meaning = get_string_value(item, CODE_MEANING);
+    let meaning_match = meaning
+        .as_deref()
+        .map(|value| from_str(value, true))
+        .filter(|view| !view.is_unknown());
+
+    if let (Some((tuple_view, _)), Some(meaning_view)) = (tuple_match, meaning_match) {
+        if tuple_view != meaning_view {
+            descriptor.conflicts.push(format!(
+                "ViewCodeSequence code resolves to {} but CodeMeaning resolves to {}",
+                tuple_view, meaning_view
+            ));
         }
     }
 
-    // Extract from ViewCodeSequence (strict mode)
-    candidates.extend(extract_all_from_view_code_sequence(dcm));
+    if let Some((view, confidence)) = tuple_match {
+        let value = get_string_value(item, CODE_VALUE).unwrap_or_default();
+        descriptor.evidence.push(Evidence {
+            source: "ViewCodeSequence".to_string(),
+            value,
+            confidence,
+        });
+        return Some(BaseCandidate {
+            view,
+            confidence,
+            authoritative_code: true,
+        });
+    }
 
-    // Extract from ViewModifierCodeSequence (strict mode, including nested)
-    candidates.extend(extract_all_from_view_modifier_code_sequence(dcm));
-
-    // Return the maximum value (Python: sorted(candidates, key=lambda x: x.value)[-1])
-    // ViewPosition derives Ord, so we can use max() directly
-    Ok(candidates
-        .into_iter()
-        .max()
-        .unwrap_or(ViewPosition::Unknown))
+    let tuple_is_incomplete =
+        element_is_empty(item, CODING_SCHEME_DESIGNATOR) || element_is_empty(item, CODE_VALUE);
+    tuple_is_incomplete
+        .then_some(meaning_match)
+        .flatten()
+        .map(|view| {
+            let value = meaning.unwrap_or_default();
+            descriptor.evidence.push(Evidence {
+                source: "ViewCodeSequence/CodeMeaning".to_string(),
+                value,
+                confidence: Confidence::Structural,
+            });
+            BaseCandidate {
+                view,
+                confidence: Confidence::Structural,
+                authoritative_code: false,
+            }
+        })
 }
 
-/// Extracts all view positions from ViewCodeSequence
-///
-/// Navigates: ViewCodeSequence items → CodeMeaning
-/// This mirrors the Python implementation in types.py:591
-///
-/// # Arguments
-///
-/// * `dcm` - DICOM object to extract from
-///
-/// # Returns
-///
-/// Vector of all valid ViewPosition values found in ViewCodeSequence
-fn extract_all_from_view_code_sequence(dcm: &InMemDicomObject) -> Vec<ViewPosition> {
-    let mut results = Vec::new();
-
-    // Try to get ViewCodeSequence
-    if let Ok(seq_elem) = dcm.element(VIEW_CODE_SEQUENCE) {
-        if let Some(items) = seq_elem.items() {
-            for item in items {
-                if let Some(code_meaning) = get_string_value(item, CODE_MEANING) {
-                    let view_pos = from_str(&code_meaning, true); // strict mode
-                    if !view_pos.is_unknown() {
-                        results.push(view_pos);
-                    }
-                }
+fn extract_modifier_sequence(
+    object: &InMemDicomObject,
+    source: &str,
+    descriptor: &mut MammographyViewDescriptor,
+) {
+    let Ok(element) = object.element(VIEW_MODIFIER_CODE_SEQUENCE) else {
+        return;
+    };
+    let Some(items) = element.items() else {
+        return;
+    };
+    for item in items {
+        let tuple_match = match_modifier_tuple(item);
+        let meaning = get_string_value(item, CODE_MEANING);
+        let meaning_match = meaning
+            .as_deref()
+            .and_then(|value| modifier_from_text(value, true));
+        if let (Some((tuple_modifier, _)), Some(meaning_modifier)) = (tuple_match, meaning_match) {
+            if tuple_modifier != meaning_modifier {
+                descriptor.conflicts.push(format!(
+                    "{source} code resolves to {tuple_modifier} but CodeMeaning resolves to {meaning_modifier}"
+                ));
+            }
+        }
+        if let Some((modifier, confidence)) = tuple_match {
+            let value = get_string_value(item, CODE_VALUE).unwrap_or_default();
+            add_modifier(descriptor, modifier, confidence, source, &value);
+        } else if element_is_empty(item, CODING_SCHEME_DESIGNATOR)
+            || element_is_empty(item, CODE_VALUE)
+        {
+            if let Some(modifier) = meaning_match {
+                add_modifier(
+                    descriptor,
+                    modifier,
+                    Confidence::Structural,
+                    &format!("{source}/CodeMeaning"),
+                    meaning.as_deref().unwrap_or_default(),
+                );
             }
         }
     }
-
-    results
 }
 
-/// Extracts all view positions from ViewModifierCodeSequence
-///
-/// Navigates: ViewModifierCodeSequence items → CodeMeaning
-/// Also recursively checks ViewModifierCodeSequence within ViewCodeSequence items
-/// This mirrors the Python implementation in types.py:53-62 and types.py:592
-///
-/// # Arguments
-///
-/// * `dcm` - DICOM object to extract from
-///
-/// # Returns
-///
-/// Vector of all valid ViewPosition values found in ViewModifierCodeSequence
-fn extract_all_from_view_modifier_code_sequence(dcm: &InMemDicomObject) -> Vec<ViewPosition> {
-    let mut results = Vec::new();
-
-    // Extract from top-level ViewModifierCodeSequence
-    if let Ok(seq_elem) = dcm.element(VIEW_MODIFIER_CODE_SEQUENCE) {
-        if let Some(items) = seq_elem.items() {
-            for item in items {
-                if let Some(code_meaning) = get_string_value(item, CODE_MEANING) {
-                    let view_pos = from_str(&code_meaning, true); // strict mode
-                    if !view_pos.is_unknown() {
-                        results.push(view_pos);
-                    }
-                }
-            }
+fn match_view_tuple(item: &InMemDicomObject) -> Option<(ViewPosition, Confidence)> {
+    let scheme = get_string_value(item, CODING_SCHEME_DESIGNATOR)?;
+    let code = get_string_value(item, CODE_VALUE)?;
+    VIEW_CODE_DEFINITIONS.iter().find_map(|definition| {
+        if scheme.eq_ignore_ascii_case(CURRENT_CODING_SCHEME) && code == definition.code_value {
+            Some((definition.view, Confidence::Exact))
+        } else if is_retired_snomed_coding_scheme(&scheme)
+            && retired_view_code_matches(definition, &code)
+        {
+            Some((definition.view, Confidence::Structural))
+        } else {
+            None
         }
-    }
-
-    // Also check ViewModifierCodeSequence nested within ViewCodeSequence items
-    if let Ok(seq_elem) = dcm.element(VIEW_CODE_SEQUENCE) {
-        if let Some(items) = seq_elem.items() {
-            for view_code_item in items {
-                // Recursively extract from nested ViewModifierCodeSequence
-                results.extend(extract_all_from_view_modifier_code_sequence(view_code_item));
-            }
-        }
-    }
-
-    results
+    })
 }
 
-/// Parses view position from string
-///
-/// Supports both strict and loose matching modes:
-/// - Strict: exact match with predefined patterns only
-/// - Loose: also tries substring matching
+fn match_modifier_tuple(item: &InMemDicomObject) -> Option<(MammographyViewModifier, Confidence)> {
+    let scheme = get_string_value(item, CODING_SCHEME_DESIGNATOR)?;
+    let code = get_string_value(item, CODE_VALUE)?;
+    VIEW_MODIFIER_CODE_DEFINITIONS
+        .iter()
+        .find_map(|definition| {
+            if scheme.eq_ignore_ascii_case(CURRENT_CODING_SCHEME) && code == definition.code_value {
+                Some((definition.modifier, Confidence::Exact))
+            } else if is_retired_snomed_coding_scheme(&scheme)
+                && code.eq_ignore_ascii_case(definition.legacy_code_value)
+            {
+                Some((definition.modifier, Confidence::Structural))
+            } else {
+                None
+            }
+        })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BaseCandidate {
+    view: ViewPosition,
+    confidence: Confidence,
+    authoritative_code: bool,
+}
+
+fn add_base_candidate(
+    candidates: &mut Vec<BaseCandidate>,
+    descriptor: &mut MammographyViewDescriptor,
+    view: ViewPosition,
+    confidence: Confidence,
+    source: &str,
+    value: &str,
+) {
+    candidates.push(BaseCandidate {
+        view,
+        confidence,
+        authoritative_code: false,
+    });
+    descriptor.evidence.push(Evidence {
+        source: source.to_string(),
+        value: value.to_string(),
+        confidence,
+    });
+}
+
+fn resolve_base_view(candidates: &[BaseCandidate], conflicts: &mut Vec<String>) -> ViewPosition {
+    let Some(selected) = candidates
+        .iter()
+        .max_by_key(|candidate| (candidate.authoritative_code, candidate.confidence))
+    else {
+        return ViewPosition::Unknown;
+    };
+    for candidate in candidates {
+        if candidate.view != selected.view {
+            conflicts.push(format!(
+                "view evidence disagrees: {} versus {}",
+                selected.view, candidate.view
+            ));
+        }
+    }
+    selected.view
+}
+
+fn add_modifier(
+    descriptor: &mut MammographyViewDescriptor,
+    modifier: MammographyViewModifier,
+    confidence: Confidence,
+    source: &str,
+    value: &str,
+) {
+    descriptor.modifiers.insert(modifier);
+    descriptor.evidence.push(Evidence {
+        source: source.to_string(),
+        value: value.to_string(),
+        confidence,
+    });
+}
+
 #[allow(clippy::should_implement_trait)]
-pub fn from_str(s: &str, strict: bool) -> ViewPosition {
-    let s_lower = s.trim().to_lowercase();
-
-    if let Some(pos) = match_strict_patterns(&s_lower) {
-        return pos;
+pub fn from_str(value: &str, strict: bool) -> ViewPosition {
+    let normalized = normalize_text(value);
+    let exact = VIEW_CODE_DEFINITIONS.iter().find_map(|definition| {
+        let short = definition.view.short_str();
+        let meaning = normalize_text(definition.code_meaning);
+        (normalized == short || normalized == meaning).then_some(definition.view)
+    });
+    if exact.is_some() || strict {
+        return exact.unwrap_or(ViewPosition::Unknown);
     }
+    VIEW_CODE_DEFINITIONS
+        .iter()
+        .find_map(|definition| {
+            contains_view_token(&normalized, definition.view.short_str()).then_some(definition.view)
+        })
+        .unwrap_or(ViewPosition::Unknown)
+}
 
-    if !strict {
-        if let Some(pos) = match_loose_patterns(&s_lower) {
-            return pos;
+fn modifier_from_text(value: &str, strict: bool) -> Option<MammographyViewModifier> {
+    let normalized = normalize_text(value);
+    let exact = VIEW_MODIFIER_CODE_DEFINITIONS
+        .iter()
+        .find_map(|definition| {
+            let meaning = normalize_text(definition.code_meaning);
+            (normalized == meaning).then_some(definition.modifier)
+        });
+    if exact.is_some() {
+        return exact;
+    }
+    match normalized.as_str() {
+        "at" => Some(MammographyViewModifier::AxillaryTail),
+        "cv" | "cleavage view" => Some(MammographyViewModifier::Cleavage),
+        "magnified" => Some(MammographyViewModifier::Magnification),
+        _ if !strict && normalized.contains("spot compression") => {
+            Some(MammographyViewModifier::SpotCompression)
         }
-    }
-
-    ViewPosition::Unknown
-}
-
-/// Matches exact patterns and descriptive names
-fn match_strict_patterns(s: &str) -> Option<ViewPosition> {
-    // CC - Cranio-caudal
-    if CC_STRINGS.contains(&s) || s == "cc" {
-        return Some(ViewPosition::Cc);
-    }
-
-    // LMO - check before MLO (both contain "lateral" and "oblique")
-    if matches_lmo(s) {
-        return Some(ViewPosition::Lmo);
-    }
-
-    // MLO - Medio-lateral oblique
-    if matches_mlo(s) {
-        return Some(ViewPosition::Mlo);
-    }
-
-    // LM - check before ML
-    if LM_STRINGS.contains(&s) || s == "lm" {
-        return Some(ViewPosition::Lm);
-    }
-
-    // ML - Medio-lateral
-    if ML_STRINGS.contains(&s) || s == "ml" {
-        return Some(ViewPosition::Ml);
-    }
-
-    // XCCL - CC exaggerated laterally
-    if s.contains("exaggerated laterally") || s == "xccl" {
-        return Some(ViewPosition::Xccl);
-    }
-
-    // XCCM - CC exaggerated medially
-    if s.contains("exaggerated medially") || s == "xccm" {
-        return Some(ViewPosition::Xccm);
-    }
-
-    // AT - Axillary tail
-    if AT_STRINGS.iter().any(|&p| s.contains(p)) || s == "at" {
-        return Some(ViewPosition::At);
-    }
-
-    // CV - Cleavage view
-    if CV_STRINGS.iter().any(|&p| s.contains(p)) || s == "cv" {
-        return Some(ViewPosition::Cv);
-    }
-
-    None
-}
-
-/// Checks if string matches LMO patterns
-fn matches_lmo(s: &str) -> bool {
-    s == "lmo"
-        || s == "latero-medial oblique"
-        || s == "lateral-medial oblique"
-        || (s.contains("oblique") && s.contains("latero"))
-}
-
-/// Checks if string matches MLO patterns
-fn matches_mlo(s: &str) -> bool {
-    s == "mlo"
-        || s == "medio-lateral oblique"
-        || s == "medial-lateral oblique"
-        || (s.contains("oblique") && s.contains("medio"))
-        || (s.contains("oblique") && s.contains("medial") && !s.contains("latero"))
-}
-
-/// Matches view position abbreviations as substrings
-fn match_loose_patterns(s: &str) -> Option<ViewPosition> {
-    // Check more specific patterns first to avoid false matches
-    // (e.g., "xccl" before "cc", "mlo" before "ml")
-    if s.contains("xccl") {
-        Some(ViewPosition::Xccl)
-    } else if s.contains("xccm") {
-        Some(ViewPosition::Xccm)
-    } else if s.contains("mlo") {
-        Some(ViewPosition::Mlo)
-    } else if s.contains("lmo") {
-        Some(ViewPosition::Lmo)
-    } else if contains_token(s, "cc") {
-        Some(ViewPosition::Cc)
-    } else if contains_token(s, "ml") {
-        Some(ViewPosition::Ml)
-    } else if contains_token(s, "lm") {
-        Some(ViewPosition::Lm)
-    } else if contains_token(s, "at") {
-        Some(ViewPosition::At)
-    } else if contains_token(s, "cv") {
-        Some(ViewPosition::Cv)
-    } else {
-        None
+        _ if !strict && normalized.contains("implant displaced") => {
+            Some(MammographyViewModifier::ImplantDisplaced)
+        }
+        _ if !strict && normalized.contains("magnif") => {
+            Some(MammographyViewModifier::Magnification)
+        }
+        _ => None,
     }
 }
 
-fn contains_token(s: &str, token: &str) -> bool {
-    s.split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|part| !part.is_empty())
+fn compact_view_position_alias(
+    value: &str,
+) -> Option<(Option<ViewPosition>, MammographyViewModifier)> {
+    let compact = normalize_text(value).replace(' ', "");
+    match compact.as_str() {
+        ROLLED_LATERAL_ABBREVIATION => Some((None, MammographyViewModifier::RolledLateral)),
+        ROLLED_MEDIAL_ABBREVIATION => Some((None, MammographyViewModifier::RolledMedial)),
+        TANGENTIAL_ABBREVIATION => Some((None, MammographyViewModifier::Tangential)),
+        _ => compact
+            .strip_suffix(IMPLANT_DISPLACED_SUFFIX)
+            .and_then(compact_base_view)
+            .map(|view| (Some(view), MammographyViewModifier::ImplantDisplaced))
+            .or_else(|| {
+                compact
+                    .strip_suffix(MAGNIFICATION_SUFFIX)
+                    .and_then(compact_base_view)
+                    .map(|view| (Some(view), MammographyViewModifier::Magnification))
+            }),
+    }
+}
+
+fn compact_base_view(value: &str) -> Option<ViewPosition> {
+    let view = from_str(value, true);
+    (!view.is_unknown()).then_some(view)
+}
+
+fn description_contains_modifier(value: &str, modifier: MammographyViewModifier) -> bool {
+    let normalized = normalize_text(value);
+    let definition = view_modifier_code_definition(modifier);
+    normalized.contains(&normalize_text(definition.code_meaning))
+        || match modifier {
+            MammographyViewModifier::SpotCompression => {
+                normalized.contains("spot") || contains_token(&normalized, "spt")
+            }
+            MammographyViewModifier::Magnification => {
+                normalized.contains("magnif") || contains_token(&normalized, "mag")
+            }
+            MammographyViewModifier::ImplantDisplaced => {
+                normalized.contains("implant displaced") || contains_token(&normalized, "id")
+            }
+            MammographyViewModifier::AxillaryTail => contains_token(&normalized, "at"),
+            MammographyViewModifier::Cleavage => contains_token(&normalized, "cv"),
+            _ => false,
+        }
+}
+
+fn element_is_empty(item: &InMemDicomObject, tag: dicom_core::Tag) -> bool {
+    get_string_value(item, tag).is_none_or(|value| value.is_empty())
+}
+
+fn normalize_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn contains_token(value: &str, token: &str) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
         .any(|part| part == token)
+}
+
+fn contains_view_token(value: &str, view: &str) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|part| {
+            part == view
+                || ["l", "r", "left", "right"]
+                    .iter()
+                    .any(|prefix| part.strip_prefix(prefix).is_some_and(|rest| rest == view))
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dicom_core::value::DataSetSequence;
+    use dicom_core::value::{DataSetSequence, PrimitiveValue};
     use dicom_core::{DataElement, VR};
-    use dicom_object::InMemDicomObject;
 
-    #[test]
-    fn test_from_str_basic() {
-        assert_eq!(from_str("cc", false), ViewPosition::Cc);
-        assert_eq!(from_str("CC", false), ViewPosition::Cc);
-        assert_eq!(from_str("mlo", false), ViewPosition::Mlo);
-        assert_eq!(from_str("MLO", false), ViewPosition::Mlo);
-        assert_eq!(from_str("ml", false), ViewPosition::Ml);
-        assert_eq!(from_str("lm", false), ViewPosition::Lm);
+    fn coded_item(scheme: &str, code: &str, meaning: &str) -> InMemDicomObject {
+        InMemDicomObject::from_element_iter([
+            DataElement::new(
+                CODING_SCHEME_DESIGNATOR,
+                VR::SH,
+                PrimitiveValue::from(scheme),
+            ),
+            DataElement::new(CODE_VALUE, VR::SH, PrimitiveValue::from(code)),
+            DataElement::new(CODE_MEANING, VR::LO, PrimitiveValue::from(meaning)),
+        ])
     }
 
     #[test]
-    fn test_from_str_full_names() {
-        assert_eq!(from_str("cranio-caudal", false), ViewPosition::Cc);
-        assert_eq!(from_str("medio-lateral oblique", false), ViewPosition::Mlo);
-        assert_eq!(from_str("medio-lateral", false), ViewPosition::Ml);
-        assert_eq!(from_str("latero-medial", false), ViewPosition::Lm);
-        assert_eq!(from_str("latero-medial oblique", false), ViewPosition::Lmo);
+    fn parses_every_cid_4014_code() {
+        for definition in VIEW_CODE_DEFINITIONS {
+            let item = coded_item(
+                CURRENT_CODING_SCHEME,
+                definition.code_value,
+                definition.code_meaning,
+            );
+            let mut descriptor = MammographyViewDescriptor::default();
+            let candidate = parse_view_code_item(&item, &mut descriptor).unwrap();
+            assert_eq!(candidate.view, definition.view);
+            assert_eq!(candidate.confidence, Confidence::Exact);
+        }
     }
 
     #[test]
-    fn test_from_str_exaggerated() {
-        assert_eq!(from_str("xccl", false), ViewPosition::Xccl);
-        assert_eq!(from_str("xccm", false), ViewPosition::Xccm);
+    fn parses_every_cid_4015_code() {
+        for definition in VIEW_MODIFIER_CODE_DEFINITIONS {
+            let modifier = match_modifier_tuple(&coded_item(
+                CURRENT_CODING_SCHEME,
+                definition.code_value,
+                definition.code_meaning,
+            ))
+            .unwrap();
+            assert_eq!(modifier, (definition.modifier, Confidence::Exact));
+        }
+    }
+
+    #[test]
+    fn parses_legacy_snomed_rt_aliases() {
+        for definition in VIEW_CODE_DEFINITIONS {
+            let item = coded_item(
+                LEGACY_CODING_SCHEME,
+                definition.legacy_code_value,
+                definition.code_meaning,
+            );
+            assert_eq!(
+                match_view_tuple(&item),
+                Some((definition.view, Confidence::Structural))
+            );
+        }
+        for definition in VIEW_MODIFIER_CODE_DEFINITIONS {
+            let item = coded_item(
+                LEGACY_CODING_SCHEME,
+                definition.legacy_code_value,
+                definition.code_meaning,
+            );
+            assert_eq!(
+                match_modifier_tuple(&item),
+                Some((definition.modifier, Confidence::Structural))
+            );
+        }
+    }
+
+    #[test]
+    fn parses_all_retired_snomed_scheme_designators() {
+        for scheme in ["SRT", "SNM3", "99SDM"] {
+            let modifier = coded_item(scheme, "R-102D1", "Axillary Tail");
+            let mut view = coded_item(scheme, "R-10226", "medio-lateral oblique");
+            view.put(DataElement::new(
+                VIEW_MODIFIER_CODE_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![modifier]),
+            ));
+            let mut dcm = InMemDicomObject::new_empty();
+            dcm.put(DataElement::new(
+                VIEW_CODE_SEQUENCE,
+                VR::SQ,
+                DataSetSequence::from(vec![view]),
+            ));
+
+            let descriptor = extract_view_descriptor(&dcm);
+
+            assert_eq!(descriptor.view_position, ViewPosition::Mlo, "{scheme}");
+            assert!(
+                descriptor
+                    .modifiers
+                    .contains(&MammographyViewModifier::AxillaryTail),
+                "{scheme}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_deprecated_exaggerated_view_codes() {
+        for (scheme, code, expected) in [
+            ("SNM3", "Y-X1770", ViewPosition::Xccl),
+            ("SNM3", "Y-X1771", ViewPosition::Xccm),
+        ] {
+            let item = coded_item(scheme, code, expected.short_str());
+
+            assert_eq!(
+                match_view_tuple(&item),
+                Some((expected, Confidence::Structural)),
+                "{scheme}:{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn meaning_only_fallback_requires_an_incomplete_tuple() {
+        let meaning_only = InMemDicomObject::from_element_iter([DataElement::new(
+            CODE_MEANING,
+            VR::LO,
+            PrimitiveValue::from("  CRANIO_CAUDAL  "),
+        )]);
+        let mut descriptor = MammographyViewDescriptor::default();
         assert_eq!(
-            from_str("cranio-caudal exaggerated laterally", false),
-            ViewPosition::Xccl
+            parse_view_code_item(&meaning_only, &mut descriptor)
+                .unwrap()
+                .view,
+            ViewPosition::Cc
         );
-        assert_eq!(
-            from_str("cranio-caudal exaggerated medially", false),
-            ViewPosition::Xccm
-        );
+
+        let private_tuple = coded_item("99VENDOR", "PRIVATE_CC", "cranio-caudal");
+        let mut descriptor = MammographyViewDescriptor::default();
+        assert!(parse_view_code_item(&private_tuple, &mut descriptor).is_none());
     }
 
     #[test]
-    fn test_from_str_special_views() {
-        assert_eq!(from_str("axillary tail", false), ViewPosition::At);
-        assert_eq!(from_str("at", false), ViewPosition::At);
-        assert_eq!(from_str("cleavage view", false), ViewPosition::Cv);
-        assert_eq!(from_str("cv", false), ViewPosition::Cv);
-    }
-
-    #[test]
-    fn test_from_str_strict_mode() {
-        assert_eq!(from_str("cc", true), ViewPosition::Cc);
-        assert_eq!(from_str("mlo", true), ViewPosition::Mlo);
-
-        // Loose patterns shouldn't match in strict mode
-        assert_eq!(from_str("some cc view", true), ViewPosition::Unknown);
-    }
-
-    #[test]
-    fn test_from_str_loose_mode() {
-        assert_eq!(from_str("left cc view", false), ViewPosition::Cc);
-        assert_eq!(from_str("right mlo projection", false), ViewPosition::Mlo);
-    }
-
-    #[test]
-    fn test_from_str_loose_mode_avoids_false_positives() {
-        assert_eq!(from_str("lateral", false), ViewPosition::Unknown);
-        assert_eq!(from_str("accession", false), ViewPosition::Unknown);
-    }
-
-    #[test]
-    fn test_from_str_unknown() {
-        assert_eq!(from_str("", false), ViewPosition::Unknown);
-        assert_eq!(from_str("invalid", false), ViewPosition::Unknown);
-        assert_eq!(from_str("xyz", false), ViewPosition::Unknown);
-    }
-
-    #[test]
-    fn test_extract_all_from_view_code_sequence_empty() {
-        // Empty DICOM should return empty vector
-        let dcm = InMemDicomObject::new_empty();
-        assert!(extract_all_from_view_code_sequence(&dcm).is_empty());
-    }
-
-    #[test]
-    fn test_extract_all_from_view_code_sequence_cranio_caudal() {
-        // Test the user's example: CodeMeaning = "cranio-caudal" should parse to CC
+    fn reads_nested_and_top_level_modifier_sequences() {
+        let nested_modifier = coded_item("SCT", "399055006", "Spot Compression");
+        let mut view = coded_item("SCT", "399162004", "cranio-caudal");
+        view.put(DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![nested_modifier]),
+        ));
         let mut dcm = InMemDicomObject::new_empty();
-
-        // Create a ViewCodeSequence item with CodeMeaning "cranio-caudal"
-        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cranio-caudal"),
-        )]);
-
-        // Create ViewCodeSequence
-        let view_code_seq = DataElement::new(
+        dcm.put(DataElement::new(
             VIEW_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
+            DataSetSequence::from(vec![view]),
+        ));
+        dcm.put(DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![coded_item("SCT", "399163009", "Magnification")]),
+        ));
 
-        dcm.put(view_code_seq);
-
-        // Test extraction
-        let results = extract_all_from_view_code_sequence(&dcm);
-        assert_eq!(results, vec![ViewPosition::Cc]);
+        let descriptor = extract_view_descriptor(&dcm);
+        assert_eq!(descriptor.view_position, ViewPosition::Cc);
+        assert!(descriptor
+            .modifiers
+            .contains(&MammographyViewModifier::SpotCompression));
+        assert!(descriptor
+            .modifiers
+            .contains(&MammographyViewModifier::Magnification));
     }
 
     #[test]
-    fn test_extract_all_from_view_code_sequence_mlo() {
-        // Test medio-lateral oblique
+    fn ignores_base_view_codes_in_nonstandard_modifier_sequences() {
         let mut dcm = InMemDicomObject::new_empty();
-
-        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
-        )]);
-
-        let view_code_seq = DataElement::new(
+        dcm.put(DataElement::new(
             VIEW_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        let results = extract_all_from_view_code_sequence(&dcm);
-        assert_eq!(results, vec![ViewPosition::Mlo]);
-    }
-
-    #[test]
-    fn test_extract_view_position_fallback_to_sequence() {
-        // Test that extract_view_position falls back to ViewCodeSequence when ViewPosition is absent
-        let mut dcm = InMemDicomObject::new_empty();
-
-        // Only add ViewCodeSequence, no ViewPosition tag
-        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cranio-caudal"),
-        )]);
-
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
+            DataSetSequence::from(vec![coded_item("SNM3", "R-10242", "cranio-caudal")]),
+        ));
+        dcm.put(DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
+            DataSetSequence::from(vec![coded_item("SNM3", "R-10242", "cranio-caudal")]),
+        ));
 
-        dcm.put(view_code_seq);
+        let descriptor = extract_view_descriptor(&dcm);
 
-        // Test that extract_view_position uses the sequence fallback
-        let result = extract_view_position(&dcm).unwrap();
-        assert_eq!(result, ViewPosition::Cc);
+        assert_eq!(descriptor.view_position, ViewPosition::Cc);
+        assert!(descriptor.modifiers.is_empty());
+        assert!(descriptor.conflicts.is_empty());
     }
 
     #[test]
-    fn test_extract_view_position_priority() {
-        // Test that ViewPosition tag takes priority over ViewCodeSequence
+    fn modifier_does_not_replace_base_view() {
         let mut dcm = InMemDicomObject::new_empty();
-
-        // Add ViewPosition tag with MLO
         dcm.put(DataElement::new(
             VIEW_POSITION_TAG,
             VR::CS,
-            dicom_core::value::PrimitiveValue::from("MLO"),
+            PrimitiveValue::from("CC"),
         ));
-
-        // Add ViewCodeSequence with CC (should be ignored)
-        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cranio-caudal"),
-        )]);
-
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        // Should use ViewPosition tag (MLO), not ViewCodeSequence (CC)
-        let result = extract_view_position(&dcm).unwrap();
-        assert_eq!(result, ViewPosition::Mlo);
-    }
-
-    #[test]
-    fn test_extract_all_from_view_code_sequence_multiple_items() {
-        // Test with multiple items in sequence - should return all valid matches
-        let mut dcm = InMemDicomObject::new_empty();
-
-        // Create first item with invalid CodeMeaning
-        let invalid_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("unknown view"),
-        )]);
-
-        // Create second item with valid CodeMeaning
-        let mlo_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
-        )]);
-
-        // Create third item with another valid CodeMeaning
-        let cc_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cranio-caudal"),
-        )]);
-
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![invalid_item, mlo_item, cc_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        let results = extract_all_from_view_code_sequence(&dcm);
-        assert_eq!(results, vec![ViewPosition::Mlo, ViewPosition::Cc]);
-    }
-
-    #[test]
-    fn test_extract_all_from_view_modifier_code_sequence_empty() {
-        // Empty DICOM should return empty vector
-        let dcm = InMemDicomObject::new_empty();
-        assert!(extract_all_from_view_modifier_code_sequence(&dcm).is_empty());
-    }
-
-    #[test]
-    fn test_extract_all_from_view_modifier_code_sequence_top_level() {
-        // Test extraction from top-level ViewModifierCodeSequence
-        let mut dcm = InMemDicomObject::new_empty();
-
-        // Create a ViewModifierCodeSequence item with CodeMeaning "axillary tail"
-        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("axillary tail"),
-        )]);
-
-        let modifier_seq = DataElement::new(
+        let modifier = coded_item("SCT", "399161006", "Cleavage");
+        dcm.put(DataElement::new(
             VIEW_MODIFIER_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![modifier_item]),
-        );
-
-        dcm.put(modifier_seq);
-
-        let results = extract_all_from_view_modifier_code_sequence(&dcm);
-        assert_eq!(results, vec![ViewPosition::At]);
+            DataSetSequence::from(vec![modifier]),
+        ));
+        let descriptor = extract_view_descriptor(&dcm);
+        assert_eq!(descriptor.view_position, ViewPosition::Cc);
+        assert!(descriptor
+            .modifiers
+            .contains(&MammographyViewModifier::Cleavage));
     }
 
     #[test]
-    fn test_extract_all_from_view_modifier_code_sequence_nested() {
-        // Test extraction from ViewModifierCodeSequence nested within ViewCodeSequence
+    fn canonical_code_is_authoritative_and_conflict_is_retained() {
         let mut dcm = InMemDicomObject::new_empty();
-
-        // Create a nested ViewModifierCodeSequence within a ViewCodeSequence item
-        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cleavage view"),
-        )]);
-
-        let modifier_seq = DataElement::new(
-            VIEW_MODIFIER_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![modifier_item]),
-        );
-
-        let mut view_code_item = InMemDicomObject::new_empty();
-        view_code_item.put(modifier_seq);
-
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        let results = extract_all_from_view_modifier_code_sequence(&dcm);
-        assert_eq!(results, vec![ViewPosition::Cv]);
-    }
-
-    #[test]
-    fn test_extract_all_from_view_modifier_code_sequence_both_levels() {
-        // Test extraction from both top-level and nested ViewModifierCodeSequence
-        let mut dcm = InMemDicomObject::new_empty();
-
-        // Top-level ViewModifierCodeSequence with "axillary tail"
-        let top_modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("axillary tail"),
-        )]);
-
-        let top_modifier_seq = DataElement::new(
-            VIEW_MODIFIER_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![top_modifier_item]),
-        );
-
-        dcm.put(top_modifier_seq);
-
-        // Nested ViewModifierCodeSequence with "cleavage view"
-        let nested_modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cleavage view"),
-        )]);
-
-        let nested_modifier_seq = DataElement::new(
-            VIEW_MODIFIER_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![nested_modifier_item]),
-        );
-
-        let mut view_code_item = InMemDicomObject::new_empty();
-        view_code_item.put(nested_modifier_seq);
-
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        let results = extract_all_from_view_modifier_code_sequence(&dcm);
-        // Should get both: At from top-level and Cv from nested
-        assert_eq!(results.len(), 2);
-        assert!(results.contains(&ViewPosition::At));
-        assert!(results.contains(&ViewPosition::Cv));
-    }
-
-    #[test]
-    fn test_extract_view_position_selects_maximum() {
-        // Test that extract_view_position selects the candidate with highest enum value
-        // When we have both CC (value 3) and MLO (value 4), should return MLO
-        let mut dcm = InMemDicomObject::new_empty();
-
-        // Add ViewPosition tag with CC
         dcm.put(DataElement::new(
             VIEW_POSITION_TAG,
             VR::CS,
-            dicom_core::value::PrimitiveValue::from("CC"),
+            PrimitiveValue::from("CC"),
         ));
-
-        // Add ViewCodeSequence with MLO (higher value than CC)
-        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
-        )]);
-
-        let view_code_seq = DataElement::new(
+        dcm.put(DataElement::new(
             VIEW_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        // Should return MLO because it has higher enum value than CC
-        let result = extract_view_position(&dcm).unwrap();
-        assert_eq!(result, ViewPosition::Mlo);
+            DataSetSequence::from(vec![coded_item(
+                "SCT",
+                "399368009",
+                "medio-lateral oblique",
+            )]),
+        ));
+        let descriptor = extract_view_descriptor(&dcm);
+        assert_eq!(descriptor.view_position, ViewPosition::Mlo);
+        assert!(!descriptor.conflicts.is_empty());
     }
 
     #[test]
-    fn test_extract_view_position_with_view_modifier() {
-        // Test extraction when ViewPosition comes from ViewModifierCodeSequence
+    fn legacy_coded_base_is_authoritative_over_view_position() {
         let mut dcm = InMemDicomObject::new_empty();
-
-        // Add ViewPosition tag with CC
         dcm.put(DataElement::new(
             VIEW_POSITION_TAG,
             VR::CS,
-            dicom_core::value::PrimitiveValue::from("CC"),
+            PrimitiveValue::from("CC"),
         ));
-
-        // Add ViewModifierCodeSequence with CV (cleavage view, highest value)
-        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cleavage view"),
-        )]);
-
-        let modifier_seq = DataElement::new(
-            VIEW_MODIFIER_CODE_SEQUENCE,
+        dcm.put(DataElement::new(
+            VIEW_CODE_SEQUENCE,
             VR::SQ,
-            DataSetSequence::from(vec![modifier_item]),
-        );
-
-        dcm.put(modifier_seq);
-
-        // Should return CV because it has highest enum value
-        let result = extract_view_position(&dcm).unwrap();
-        assert_eq!(result, ViewPosition::Cv);
+            DataSetSequence::from(vec![coded_item("SRT", "R-10226", "medio-lateral oblique")]),
+        ));
+        let descriptor = extract_view_descriptor(&dcm);
+        assert_eq!(descriptor.view_position, ViewPosition::Mlo);
+        assert!(!descriptor.conflicts.is_empty());
     }
 
     #[test]
-    fn test_extract_view_position_all_three_sources() {
-        // Test combining all three sources: ViewPosition, ViewCodeSequence, ViewModifierCodeSequence
-        let mut dcm = InMemDicomObject::new_empty();
-
-        // Add ViewPosition tag with CC (value 3)
-        dcm.put(DataElement::new(
-            VIEW_POSITION_TAG,
-            VR::CS,
-            dicom_core::value::PrimitiveValue::from("CC"),
-        ));
-
-        // Add ViewCodeSequence with MLO (value 4)
-        let view_code_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("medio-lateral oblique"),
-        )]);
-
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
-
-        dcm.put(view_code_seq);
-
-        // Add ViewModifierCodeSequence with AT (value 8, highest)
-        let modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("axillary tail"),
-        )]);
-
-        let modifier_seq = DataElement::new(
-            VIEW_MODIFIER_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![modifier_item]),
-        );
-
-        dcm.put(modifier_seq);
-
-        // Should return AT because it has the highest enum value
-        let result = extract_view_position(&dcm).unwrap();
-        assert_eq!(result, ViewPosition::At);
+    fn legacy_at_and_cv_are_modifiers() {
+        for (value, modifier) in [
+            ("AT", MammographyViewModifier::AxillaryTail),
+            ("CV", MammographyViewModifier::Cleavage),
+        ] {
+            let mut dcm = InMemDicomObject::new_empty();
+            dcm.put(DataElement::new(
+                VIEW_POSITION_TAG,
+                VR::CS,
+                PrimitiveValue::from(value),
+            ));
+            let descriptor = extract_view_descriptor(&dcm);
+            assert_eq!(descriptor.view_position, ViewPosition::Unknown);
+            assert!(descriptor.modifiers.contains(&modifier));
+        }
     }
 
     #[test]
-    fn test_extract_view_position_nested_modifier_wins() {
-        // Test that nested ViewModifierCodeSequence is included in selection
-        let mut dcm = InMemDicomObject::new_empty();
+    fn compound_view_position_preserves_base_and_modifier_evidence() {
+        for (raw, expected_view, expected_modifier) in [
+            (
+                "CC SPOT",
+                ViewPosition::Cc,
+                MammographyViewModifier::SpotCompression,
+            ),
+            (
+                "MLO MAG",
+                ViewPosition::Mlo,
+                MammographyViewModifier::Magnification,
+            ),
+            (
+                "MLO ID",
+                ViewPosition::Mlo,
+                MammographyViewModifier::ImplantDisplaced,
+            ),
+            (
+                "CCM",
+                ViewPosition::Cc,
+                MammographyViewModifier::Magnification,
+            ),
+            (
+                "MLOM",
+                ViewPosition::Mlo,
+                MammographyViewModifier::Magnification,
+            ),
+            (
+                "CCID",
+                ViewPosition::Cc,
+                MammographyViewModifier::ImplantDisplaced,
+            ),
+            (
+                "MLOID",
+                ViewPosition::Mlo,
+                MammographyViewModifier::ImplantDisplaced,
+            ),
+            (
+                "LMID",
+                ViewPosition::Lm,
+                MammographyViewModifier::ImplantDisplaced,
+            ),
+        ] {
+            let mut dcm = InMemDicomObject::new_empty();
+            dcm.put(DataElement::new(
+                VIEW_POSITION_TAG,
+                VR::CS,
+                PrimitiveValue::from(raw),
+            ));
 
-        // Add ViewPosition tag with CC (value 3)
-        dcm.put(DataElement::new(
-            VIEW_POSITION_TAG,
-            VR::CS,
-            dicom_core::value::PrimitiveValue::from("CC"),
-        ));
+            let descriptor = extract_view_descriptor(&dcm);
 
-        // Add nested ViewModifierCodeSequence with CV (value 9, highest)
-        let nested_modifier_item = InMemDicomObject::from_element_iter([DataElement::new(
-            CODE_MEANING,
-            VR::LO,
-            dicom_core::value::PrimitiveValue::from("cleavage view"),
-        )]);
+            assert_eq!(descriptor.view_position, expected_view, "{raw}");
+            assert!(descriptor.modifiers.contains(&expected_modifier), "{raw}");
+        }
+    }
 
-        let nested_modifier_seq = DataElement::new(
-            VIEW_MODIFIER_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![nested_modifier_item]),
-        );
+    #[test]
+    fn laterality_prefixed_mlo_labels_are_heuristic_base_view_evidence() {
+        for (tag, source, raw) in [
+            (VIEW_POSITION_TAG, "ViewPosition", "RMLO"),
+            (SERIES_DESCRIPTION, "SeriesDescription", "LMLO"),
+        ] {
+            let mut dcm = InMemDicomObject::new_empty();
+            dcm.put(DataElement::new(tag, VR::CS, PrimitiveValue::from(raw)));
 
-        let mut view_code_item = InMemDicomObject::new_empty();
-        view_code_item.put(nested_modifier_seq);
+            let descriptor = extract_view_descriptor(&dcm);
 
-        let view_code_seq = DataElement::new(
-            VIEW_CODE_SEQUENCE,
-            VR::SQ,
-            DataSetSequence::from(vec![view_code_item]),
-        );
+            assert_eq!(descriptor.view_position, ViewPosition::Mlo, "{raw}");
+            assert!(descriptor.evidence.iter().any(|evidence| {
+                evidence.source == source
+                    && evidence.value == raw
+                    && evidence.confidence == Confidence::Heuristic
+            }));
+        }
+    }
 
-        dcm.put(view_code_seq);
+    #[test]
+    fn modifier_abbreviations_from_real_files_are_heuristic() {
+        for (raw, expected_modifier) in [
+            ("RL", MammographyViewModifier::RolledLateral),
+            ("RM", MammographyViewModifier::RolledMedial),
+            ("TAN", MammographyViewModifier::Tangential),
+        ] {
+            let mut dcm = InMemDicomObject::new_empty();
+            dcm.put(DataElement::new(
+                VIEW_POSITION_TAG,
+                VR::CS,
+                PrimitiveValue::from(raw),
+            ));
 
-        // Should return CV from nested ViewModifierCodeSequence
-        let result = extract_view_position(&dcm).unwrap();
-        assert_eq!(result, ViewPosition::Cv);
+            let descriptor = extract_view_descriptor(&dcm);
+
+            assert_eq!(descriptor.view_position, ViewPosition::Unknown, "{raw}");
+            assert!(descriptor.modifiers.contains(&expected_modifier), "{raw}");
+            assert!(descriptor.evidence.iter().any(|evidence| {
+                evidence.source == "ViewPosition"
+                    && evidence.value == raw
+                    && evidence.confidence == Confidence::Heuristic
+            }));
+        }
     }
 }
