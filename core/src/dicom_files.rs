@@ -66,6 +66,33 @@ pub fn collect_dicom_files_recursively(directory: &Path) -> std::io::Result<Vec<
     Ok(files)
 }
 
+/// Collect DICOM candidates recursively without following symbolic links.
+pub fn collect_dicom_files_recursively_no_symlinks(
+    directory: &Path,
+) -> std::io::Result<Vec<PathBuf>> {
+    fn visit(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                visit(&path, files)?;
+            } else if file_type.is_file() && is_dicom_candidate(&path) {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(directory, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
 pub(crate) fn collect_recursive_file_inventory(
     directory: &Path,
 ) -> std::io::Result<RecursiveFileInventory> {
@@ -152,4 +179,42 @@ pub fn is_dicom_file(path: &Path) -> bool {
 
     let mut buffer = [0_u8; 132];
     matches!(file.read(&mut buffer), Ok(n) if n >= 132 && &buffer[128..132] == DICOM_MAGIC_BYTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn no_symlink_collector_is_recursive_and_dicom_only() {
+        let directory = tempdir().unwrap();
+        let nested = directory.path().join("series");
+        std::fs::create_dir(&nested).unwrap();
+        let dicom = nested.join("image.dcm");
+        let sidecar = nested.join("notes.txt");
+        std::fs::write(&dicom, b"synthetic DICOM candidate").unwrap();
+        std::fs::write(sidecar, b"not DICOM").unwrap();
+
+        let files = collect_dicom_files_recursively_no_symlinks(directory.path()).unwrap();
+
+        assert_eq!(files, vec![dicom]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_symlink_collector_does_not_follow_file_or_directory_links() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("outside.dcm");
+        std::fs::write(&outside_file, b"synthetic DICOM candidate").unwrap();
+        symlink(&outside_file, directory.path().join("file-link.dcm")).unwrap();
+        symlink(outside.path(), directory.path().join("directory-link")).unwrap();
+
+        let files = collect_dicom_files_recursively_no_symlinks(directory.path()).unwrap();
+
+        assert!(files.is_empty());
+    }
 }

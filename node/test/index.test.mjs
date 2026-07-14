@@ -23,6 +23,7 @@ test("extractMetadata returns JSON-safe metadata from a file path", async (t) =>
   assert.equal(metadata.mammogramType, "ffdm")
   assert.equal(metadata.laterality, "left")
   assert.equal(metadata.viewPosition, "mlo")
+  assert.deepEqual(metadata.viewModifiers, [])
   assert.deepEqual(metadata.pixelSpacing, { row: 0.07, column: 0.07 })
   assert.doesNotThrow(() => JSON.stringify(metadata))
 })

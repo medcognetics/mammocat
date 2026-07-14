@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::registry::parse_laterality_value;
 use crate::types::Laterality;
 use dicom_object::InMemDicomObject;
 
@@ -75,14 +76,7 @@ fn extract_frame_laterality(dcm: &InMemDicomObject) -> Option<String> {
 /// - "R" → Right
 /// - Otherwise → Unknown
 fn parse_laterality_string(s: &str) -> Laterality {
-    let s_lower = s.trim().to_lowercase();
-    if s_lower == "l" {
-        Laterality::Left
-    } else if s_lower == "r" {
-        Laterality::Right
-    } else {
-        Laterality::Unknown
-    }
+    parse_laterality_value(s).unwrap_or(Laterality::Unknown)
 }
 
 #[cfg(test)]
@@ -98,9 +92,23 @@ mod tests {
         assert_eq!(parse_laterality_string("R"), Laterality::Right);
         assert_eq!(parse_laterality_string("l"), Laterality::Left);
         assert_eq!(parse_laterality_string("r"), Laterality::Right);
+        assert_eq!(parse_laterality_string("B"), Laterality::Bilateral);
+        assert_eq!(parse_laterality_string("BILATERAL"), Laterality::Bilateral);
         assert_eq!(parse_laterality_string(" L "), Laterality::Left);
         assert_eq!(parse_laterality_string(""), Laterality::Unknown);
         assert_eq!(parse_laterality_string("UNKNOWN"), Laterality::Unknown);
+    }
+
+    #[test]
+    fn extracts_legacy_bilateral_image_laterality() {
+        let mut dcm = InMemDicomObject::new_empty();
+        dcm.put(DataElement::new(
+            IMAGE_LATERALITY,
+            VR::CS,
+            dicom_core::value::PrimitiveValue::from("BILATERAL"),
+        ));
+
+        assert_eq!(extract_laterality(&dcm).unwrap(), Laterality::Bilateral);
     }
 
     #[test]

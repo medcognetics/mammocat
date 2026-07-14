@@ -8,6 +8,8 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **DBT Object Classification**: Reports whether DBT is stored as a multi-frame volume or split slice object
 - **Laterality Detection**: Extracts breast laterality (Left/Right/Bilateral) with fallback hierarchy
 - **View Position Parsing**: Identifies view positions (CC, MLO, ML, etc.) with pattern matching
+- **Canonical View Coding**: Parses the complete CID 4014 base-view and CID 4015 modifier sets from current SCT tuples, retired SNOMED scheme aliases, and conservative fallbacks
+- **Metadata Completion**: Plans or writes missing canonical mammography fields without replacing populated values
 - **Implant Status**: Detects breast implant presence
 - **Processing Intent**: Identifies "FOR PROCESSING" images
 - **Preferred View Selection**: Automatically selects the best mammogram for each standard view
@@ -28,7 +30,7 @@ cd mammocat
 cargo build --release
 ```
 
-The binaries will be available at `target/release/mammocat`, `target/release/mammoselect`, `target/release/mammoplan`, `target/release/mammovalidate`, and `target/release/dbt-combine`.
+The binaries will be available at `target/release/mammocat`, `target/release/mammofill`, `target/release/mammoselect`, `target/release/mammoplan`, `target/release/mammovalidate`, and `target/release/dbt-combine`.
 
 Build the local Node/TypeScript package:
 
@@ -59,6 +61,29 @@ mammocat --verbose path/to/mammogram.dcm
 ```
 
 `mammocat` reports mammography classification fields plus file-meta transfer syntax details, including `transfer_syntax_uid`, `transfer_syntax_name`, and `compression_type` in JSON output.
+
+### mammofill - Conservative Metadata Completion
+
+Preview or apply missing canonical fields:
+
+```bash
+# Preview one file or a recursive directory without writing
+mammofill --dry-run /path/to/input
+mammofill --dry-run --format json /path/to/input
+
+# Write a file or mirror a directory
+mammofill input.dcm output.dcm
+mammofill /path/to/input-directory /path/to/output-directory
+
+# Replace files atomically and retain explicit backups
+mammofill --in-place --backup-suffix .bak /path/to/input
+```
+
+By default, `mammofill` writes only exact or structural, conflict-free results. `--allow-heuristic` also permits conflict-free results inferred from descriptions or paddle text. Populated values are never replaced. It does not infer `PositionerType` from the SOP Class because supported mammography IODs permit both `MAMMOGRAPHIC` and `NONE`. Signed instances are refused unless `--strip-signatures` is supplied. Copy mode refuses existing outputs unless `--force` is supplied.
+
+The CLI supports the two Digital Mammography SOP Classes, Breast Tomosynthesis Image Storage, and the two Breast Projection X-Ray Image Storage SOP Classes. It preserves SOP identity, transfer syntax, permissions, and Pixel Data, then reopens and validates each output before the atomic rename. Each changed instance receives an appended [`OriginalAttributesSequence`](https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.12.html) audit item. Directory scans do not follow symbolic links.
+
+Exit code `0` means all files completed without issues, `1` means processing completed with a DICOM conflict, refusal, or unsupported SOP Class, and `2` means at least one runtime or I/O error occurred. Reports use stdout; progress and diagnostics use stderr.
 
 ### mammoselect - Preferred View Selection
 
@@ -96,6 +121,8 @@ the most complete study was selected.
 Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any
 usable candidate is missing `StudyInstanceUID`.
+
+Candidate ranking first prefers standard CC/MLO base views, then views without CID 4015 modifiers other than Implant Displaced. An otherwise equivalent Implant Displaced view is preferred. Implant Displaced combined with another modifier remains a modified view. `--only-standard-views` examines only the CID 4014 base view.
 
 ### mammoplan - Mammography Input Planning
 
@@ -141,7 +168,7 @@ cargo build --release --features json
 mammovalidate --format json /path/to/dicom_archive.zip
 ```
 
-The selection profile treats missing selection-critical fields as validation failures, including non-`MG` or missing modality, unknown laterality or view, missing key UIDs, invalid dimensions/frames, invalid bit-depth relationships, and missing `PixelData`. It reports likely filtering or ranking issues, such as `FOR PROCESSING`, secondary capture, non-standard views, spot/magnification views, implants, unusual pixel layouts, lossy compression metadata, and optional metadata gaps, as warnings. Directory and ZIP validation also check four-view coverage after applying the same filter options used by `mammoselect`.
+The selection profile treats missing selection-critical fields as validation failures, including non-`MG` or missing modality, unknown laterality or view, missing key UIDs, invalid dimensions/frames, invalid bit-depth relationships, and missing `PixelData`. It reports likely filtering or ranking issues, such as `FOR PROCESSING`, secondary capture, non-standard views, CID 4015 modifiers, implants, unusual pixel layouts, lossy compression metadata, and optional metadata gaps, as warnings. It also checks fixed values through the same canonical registry used by `mammofill`. Directory and ZIP validation check four-view coverage after applying the same filter options used by `mammoselect`.
 
 Exit code `0` means validation passed, `1` means validation completed and found problems, and `2` means the tool hit a runtime or output error.
 
@@ -200,6 +227,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Completion is also available as a reusable Rust API:
+
+```rust
+use mammocat_core::{apply_completion_plan, plan_completion, CompletionOptions};
+use dicom_object::open_file;
+
+let mut dcm = open_file("mammogram.dcm")?;
+let plan = plan_completion(&dcm, &CompletionOptions::default());
+let report = apply_completion_plan(&mut dcm, &plan)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`plan_completion` never mutates the object. Its plan is bound to the source object's SOP identity and current completion evidence. `apply_completion_plan` rejects a different or subsequently changed object and requires a new plan. Use `complete_file` for temporary-file writes, invariant checks, output validation, and atomic replacement.
+
 ### Node/TypeScript API
 
 The `node/` package builds `@medcognetics/mammocat`, a synchronous NAPI-RS API that returns JSON-safe camelCase objects.
@@ -220,6 +261,7 @@ const bufferSelection = selectPreferredViews([
 ])
 
 console.log(metadata.pixelSpacing?.column)
+console.log(metadata.viewModifiers)
 console.log(selection.views.rcc?.source)
 console.log(bufferSelection.inputErrors)
 ```
@@ -272,17 +314,20 @@ Laterality is extracted using a fallback hierarchy:
 2. `Laterality` tag
 3. `FrameLaterality` in `SharedFunctionalGroupsSequence`
 
-Values are parsed as: `"L"` → Left, `"R"` → Right
+Values are parsed as: `"L"` → Left, `"R"` → Right, `"B"` → Bilateral. The observed legacy value `"BILATERAL"` is accepted for reading but is not rewritten when populated.
 
 ### View Position
 
-View positions are detected using pattern matching on:
+View metadata is resolved by the shared canonical parser from:
 
-- `ViewPosition` tag
-- `ViewCodeSequence` → `CodeMeaning`
-- `ViewModifierCodeSequence` → `CodeMeaning`
+- current `(CodingSchemeDesignator, CodeValue)` tuples
+- documented SNOMED-RT identifiers under the retired `SRT`, `SNM3`, and `99SDM` scheme designators, including the deprecated XCC codes that DICOM requires receivers to recognize
+- exact normalized `CodeMeaning` when a tuple is incomplete
+- `ViewPosition`, paddle text, and descriptions as heuristic evidence
 
-Supports standard views (CC, MLO) and specialized views (XCCL, XCCM, ML, LM, LMO, AT, CV).
+[CID 4014](https://dicom.nema.org/medical/dicom/current/output/chtml/part16/sect_cid_4014.html) base views are ML, MLO, LM, LMO, CC, FB, SIO, ISO, XCCL, XCCM, and breast specimen. [CID 4015](https://dicom.nema.org/medical/dicom/current/output/chtml/part16/sect_CID_4015.html) modifiers are parsed from the standard nested `ViewModifierCodeSequence` and tolerated at the non-standard top level. Coded base views are authoritative; disagreements remain visible as diagnostics. `AT` and `CV` are modifiers, not base views.
+
+Version 0.2.0 removes `ViewPosition::At` and `ViewPosition::Cv` from Rust, Python, and Node metadata. Use `MammographyViewModifier::AxillaryTail` and `MammographyViewModifier::Cleavage`.
 
 ## Architecture
 
@@ -291,7 +336,7 @@ mammocat/
 ├── core/                           # Library and binary
 │   ├── src/
 │   │   ├── types/                  # Core type system
-│   │   │   ├── enums.rs            # MammogramType, DbtObjectKind, Laterality, ViewPosition
+│   │   │   ├── enums.rs            # Domain enums, including CID 4014/4015 types
 │   │   │   ├── image_type.rs       # ImageType struct
 │   │   │   ├── pixel_spacing.rs
 │   │   │   └── view.rs             # MammogramView
@@ -300,7 +345,7 @@ mammocat/
 │   │   │   ├── mammo_type.rs       # Type classification
 │   │   │   ├── laterality.rs       # Laterality extraction
 │   │   │   ├── view_position.rs    # View parsing
-│   │   │   └── view_modifiers.rs   # Spot/mag/implant displaced
+│   │   │   └── view_modifiers.rs   # Shared descriptor convenience readers
 │   │   ├── selection/              # Preferred view selection
 │   │   │   ├── record.rs           # MammogramRecord with comparison
 │   │   │   └── views.rs            # get_preferred_views functions
@@ -310,6 +355,8 @@ mammocat/
 │   │   │   ├── record.rs           # PyMammogramRecord
 │   │   │   └── macros.rs           # Boilerplate reduction macros
 │   │   ├── api.rs                  # Public API
+│   │   ├── registry.rs             # Canonical paths, values, aliases, writers, and consumers
+│   │   ├── completion.rs           # Completion planning, audit, and safe file writes
 │   │   ├── cli/                    # Command-line interface
 │   │   │   ├── mod.rs
 │   │   │   └── report.rs           # Text formatting
@@ -318,6 +365,7 @@ mammocat/
 │   │   ├── main.rs                 # mammocat CLI entry point
 │   │   └── bin/
 │   │       ├── dbt-combine.rs      # DBT conversion CLI entry point
+│   │       ├── mammofill.rs         # metadata completion CLI entry point
 │   │       ├── mammoselect.rs      # mammoselect CLI entry point
 │   │       ├── mammoplan.rs        # input planning CLI entry point
 │   │       └── mammovalidate.rs    # validation CLI entry point
@@ -338,8 +386,11 @@ mammocat/
   - `reduce()` method for combining lateralities
   - `opposite()` for getting contralateral side
 
-- **`ViewPosition`**: Unknown, Xccl, Xccm, Cc, Mlo, Ml, Lmo, Lm, At, Cv
+- **`ViewPosition`**: Unknown, Ml, Mlo, Lm, Lmo, Cc, Fb, Sio, Iso, Xccl, Xccm, Specimen
   - `is_standard_view()`, `is_mlo_like()`, `is_cc_like()` properties
+
+- **`MammographyViewModifier`**: Complete CID 4015 modifier set
+  - Drives modifier-aware selection and the derived spot, magnification, and Implant Displaced properties
 
 ### Data Structures
 
@@ -355,6 +406,8 @@ mammocat/
 - **thiserror** (1.0): Error handling
 - **regex** (1.10): Pattern matching
 - **serde/serde_json** (optional): JSON serialization
+- **chrono**: UTC audit timestamps
+- **indicatif**: stderr progress reporting for `mammofill`
 - **napi/napi-derive** (Node package): NAPI-RS bindings
 
 ## Testing
@@ -411,7 +464,6 @@ Current test coverage includes Rust unit/integration tests and Python tests cove
 ## Future Enhancements
 
 - [ ] Additional metadata fields (PatientAge, StudyDate, etc.)
-- [ ] Sequence navigation for nested DICOM tags (FrameLaterality, ViewCodeSequence)
 - [ ] Performance optimization with rayon for batch processing
 
 ## Python Compatibility

@@ -879,15 +879,17 @@ fn recognized_view_position(value: &str) -> Option<&'static str> {
 
 fn view_position_code(view: ViewPosition) -> &'static str {
     match view {
+        ViewPosition::Ml => "ML",
+        ViewPosition::Mlo => "MLO",
+        ViewPosition::Lm => "LM",
+        ViewPosition::Lmo => "LMO",
+        ViewPosition::Cc => "CC",
+        ViewPosition::Fb => "FB",
+        ViewPosition::Sio => "SIO",
+        ViewPosition::Iso => "ISO",
         ViewPosition::Xccl => "XCCL",
         ViewPosition::Xccm => "XCCM",
-        ViewPosition::Cc => "CC",
-        ViewPosition::Mlo => "MLO",
-        ViewPosition::Ml => "ML",
-        ViewPosition::Lmo => "LMO",
-        ViewPosition::Lm => "LM",
-        ViewPosition::At => "AT",
-        ViewPosition::Cv => "CV",
+        ViewPosition::Specimen => "SPECIMEN",
         ViewPosition::Unknown => "UNKNOWN",
     }
 }

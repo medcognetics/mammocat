@@ -1,10 +1,12 @@
 pub mod api;
 pub mod cli;
+pub mod completion;
 pub mod dbt;
 pub mod dicom_files;
 pub mod error;
 pub mod extraction;
 pub mod planning;
+pub mod registry;
 pub mod selection;
 pub mod types;
 pub mod validation;
@@ -15,18 +17,31 @@ pub mod python;
 
 pub use api::{MammogramExtractor, MammogramMetadata};
 pub use cli::report::TextReport;
+pub use completion::{
+    apply_completion_plan, complete_file, plan_completion, CompletionFileOptions, CompletionIssue,
+    CompletionOptions, CompletionPlan, CompletionReport, FieldAddition, InferredValue,
+};
 pub use dbt::{
     convert_dbt_study, scan_dbt_study, write_combined_dbt_series, DbtConvertOptions,
     DbtConvertReport, DbtConvertSummary, DbtConvertedSeries, DbtCopiedFile, DbtFileFinding,
     DbtScanOptions, DbtScanReport, DbtScanSummary, DbtSeriesFinding, DbtSkippedFile,
     DbtUnsupportedSeries, BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
 };
-pub use dicom_files::{collect_dicom_files, collect_dicom_files_recursively, is_dicom_file};
+pub use dicom_files::{
+    collect_dicom_files, collect_dicom_files_recursively,
+    collect_dicom_files_recursively_no_symlinks, is_dicom_file,
+};
 pub use error::{MammocatError, Result};
+pub use extraction::{extract_view_descriptor, Evidence, MammographyViewDescriptor};
 pub use planning::{
     plan_mammography_collection, DbtCompositionInput, DbtPlan, DbtVolumeCandidate, MammographyPlan,
     MammographyPlanConfig, MammographyPlanOptions, MammographyPlanSelection,
     MammographyPlanSummary, SourceObjectDiagnostic, ViewSelection, ViewsPlan,
+};
+pub use registry::{
+    CanonicalMetadataRegistry, CanonicalMetadataRule, CanonicalParser, CanonicalValue, Confidence,
+    MetadataConsumer, SopApplicability, WriterRepresentation, CANONICAL_METADATA_REGISTRY,
+    CANONICAL_METADATA_RULES, SUPPORTED_SOP_CLASSES,
 };
 pub use selection::{
     get_preferred_views, get_preferred_views_filtered,
