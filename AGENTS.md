@@ -47,6 +47,9 @@ make test-cov
 # Run Node/TypeScript binding tests
 make node-test
 
+# Test install and clean reinstall from an exact Git commit
+make node-test-git-install
+
 # Run specific Rust test
 cargo test test_name
 
@@ -274,8 +277,13 @@ The codebase follows a clear separation of concerns:
 - `src/lib.rs`: Synchronous public API for `extractMetadata`, `selectPreferredViews`, and `selectPreferredViewsFromDirectory`
 - `index.js` and `index.d.ts`: Generated package loader and TypeScript declarations; keep these committed after `npm --prefix node run build`
 - `npm/`: Platform-specific optional native package metadata for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC
-- `test/`: Synthetic non-PHI DICOM fixture generation plus `node --test` API coverage
+- `test/`: Synthetic non-PHI DICOM fixtures, API tests, and the commit-pinned Git installation integration test
 - Native `node/*.node` and `node/npm/**/*.node` artifacts are build outputs and stay ignored
+
+**Root Node package shim**
+- Root `package.json` and `package-lock.json` make the repository installable as `@medcognetics/mammocat` from an exact npm Git dependency.
+- The root `prepare` script builds the NAPI addon from `node/` with access to the Cargo workspace and `core/` path dependency.
+- The installed Git package contains `node/index.js`, `node/index.d.ts`, and the local host `.node` file. It does not declare the unpublished optional platform packages used by the publish-oriented `node/` package.
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap
@@ -364,7 +372,7 @@ Test categories:
 - Preferred view selection (selection/record.rs, selection/views.rs)
 - Canonical parser, completion planning, safe file writes, audit, and CLI behavior
 - Python bindings API (tests/test_enums.py, tests/test_api.py)
-- Node/TypeScript bindings API, generated declarations, file/buffer parity, selection diagnostics, and package dry-run
+- Node/TypeScript bindings API, generated declarations, file/buffer parity, selection diagnostics, package dry-run, and commit-pinned Git installation
 
 When adding features that affect metadata extraction, add corresponding unit tests in the relevant module file.
 

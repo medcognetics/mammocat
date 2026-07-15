@@ -16,6 +16,7 @@
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "test": "node --test test/*.test.mjs",
+    "test:git-install": "node --test test/git-install.integration.mjs",
     "typecheck": "tsc --noEmit",
     "pack:dry-run": "napi artifacts --output-dir . --npm-dir npm && npm pack --dry-run && npm pack --dry-run ./npm/linux-x64-gnu"
   },

@@ -1,5 +1,5 @@
 .PHONY: help dev build build-release install test test-python test-rust test-cov
-.PHONY: node-install node-build node-test node-typecheck node-pack
+.PHONY: node-install node-build node-test node-test-git-install node-typecheck node-pack
 .PHONY: format format-check lint lint-fix typecheck quality quality-fix clean all
 
 help:  ## Show this help message
@@ -42,11 +42,15 @@ node-build:  ## Build Node/TypeScript native bindings
 node-test:  ## Run Node/TypeScript binding tests
 	npm --prefix node test
 
+node-test-git-install:  ## Test commit-pinned npm Git installation and clean reinstall
+	npm --prefix node run test:git-install
+
 node-typecheck:  ## Type-check generated Node/TypeScript declarations
 	npm --prefix node run typecheck
 
 node-pack:  ## Verify Node package contents without publishing
 	npm --prefix node run pack:dry-run
+	npm pack --dry-run --ignore-scripts
 
 # Code formatting
 format:  ## Format both Rust and Python code
