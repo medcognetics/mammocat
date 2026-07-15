@@ -6,8 +6,8 @@ use std::hash::{Hash, Hasher};
 
 use super::macros::impl_py_from;
 use crate::types::{
-    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, PhotometricInterpretation,
-    PreferenceOrder, ViewPosition,
+    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, MammographyViewModifier,
+    PhotometricInterpretation, PreferenceOrder, ViewPosition,
 };
 
 // ============================================================================
@@ -258,6 +258,38 @@ impl PyViewPosition {
         inner: ViewPosition::Unknown,
     };
     #[classattr]
+    const ML: Self = Self {
+        inner: ViewPosition::Ml,
+    };
+    #[classattr]
+    const MLO: Self = Self {
+        inner: ViewPosition::Mlo,
+    };
+    #[classattr]
+    const LM: Self = Self {
+        inner: ViewPosition::Lm,
+    };
+    #[classattr]
+    const LMO: Self = Self {
+        inner: ViewPosition::Lmo,
+    };
+    #[classattr]
+    const CC: Self = Self {
+        inner: ViewPosition::Cc,
+    };
+    #[classattr]
+    const FB: Self = Self {
+        inner: ViewPosition::Fb,
+    };
+    #[classattr]
+    const SIO: Self = Self {
+        inner: ViewPosition::Sio,
+    };
+    #[classattr]
+    const ISO: Self = Self {
+        inner: ViewPosition::Iso,
+    };
+    #[classattr]
     const XCCL: Self = Self {
         inner: ViewPosition::Xccl,
     };
@@ -266,32 +298,8 @@ impl PyViewPosition {
         inner: ViewPosition::Xccm,
     };
     #[classattr]
-    const CC: Self = Self {
-        inner: ViewPosition::Cc,
-    };
-    #[classattr]
-    const MLO: Self = Self {
-        inner: ViewPosition::Mlo,
-    };
-    #[classattr]
-    const ML: Self = Self {
-        inner: ViewPosition::Ml,
-    };
-    #[classattr]
-    const LMO: Self = Self {
-        inner: ViewPosition::Lmo,
-    };
-    #[classattr]
-    const LM: Self = Self {
-        inner: ViewPosition::Lm,
-    };
-    #[classattr]
-    const AT: Self = Self {
-        inner: ViewPosition::At,
-    };
-    #[classattr]
-    const CV: Self = Self {
-        inner: ViewPosition::Cv,
+    const SPECIMEN: Self = Self {
+        inner: ViewPosition::Specimen,
     };
 
     fn is_unknown(&self) -> bool {
@@ -359,6 +367,101 @@ impl PyViewPosition {
 }
 
 impl_py_from!(PyViewPosition, ViewPosition);
+
+// ============================================================================
+// MammographyViewModifier
+// ============================================================================
+
+#[pyclass(name = "MammographyViewModifier", module = "mammocat")]
+#[derive(Clone, Debug)]
+pub struct PyMammographyViewModifier {
+    pub(crate) inner: MammographyViewModifier,
+}
+
+#[pymethods]
+impl PyMammographyViewModifier {
+    #[classattr]
+    const CLEAVAGE: Self = Self {
+        inner: MammographyViewModifier::Cleavage,
+    };
+    #[classattr]
+    const AXILLARY_TAIL: Self = Self {
+        inner: MammographyViewModifier::AxillaryTail,
+    };
+    #[classattr]
+    const ROLLED_LATERAL: Self = Self {
+        inner: MammographyViewModifier::RolledLateral,
+    };
+    #[classattr]
+    const ROLLED_MEDIAL: Self = Self {
+        inner: MammographyViewModifier::RolledMedial,
+    };
+    #[classattr]
+    const ROLLED_INFERIOR: Self = Self {
+        inner: MammographyViewModifier::RolledInferior,
+    };
+    #[classattr]
+    const ROLLED_SUPERIOR: Self = Self {
+        inner: MammographyViewModifier::RolledSuperior,
+    };
+    #[classattr]
+    const IMPLANT_DISPLACED: Self = Self {
+        inner: MammographyViewModifier::ImplantDisplaced,
+    };
+    #[classattr]
+    const MAGNIFICATION: Self = Self {
+        inner: MammographyViewModifier::Magnification,
+    };
+    #[classattr]
+    const SPOT_COMPRESSION: Self = Self {
+        inner: MammographyViewModifier::SpotCompression,
+    };
+    #[classattr]
+    const TANGENTIAL: Self = Self {
+        inner: MammographyViewModifier::Tangential,
+    };
+    #[classattr]
+    const NIPPLE_IN_PROFILE: Self = Self {
+        inner: MammographyViewModifier::NippleInProfile,
+    };
+    #[classattr]
+    const ANTERIOR_COMPRESSION: Self = Self {
+        inner: MammographyViewModifier::AnteriorCompression,
+    };
+    #[classattr]
+    const INFRA_MAMMARY_FOLD: Self = Self {
+        inner: MammographyViewModifier::InfraMammaryFold,
+    };
+    #[classattr]
+    const AXILLARY_TISSUE: Self = Self {
+        inner: MammographyViewModifier::AxillaryTissue,
+    };
+
+    #[getter]
+    fn value(&self) -> &'static str {
+        self.inner.simple_name()
+    }
+
+    fn __str__(&self) -> &'static str {
+        self.inner.simple_name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("MammographyViewModifier.{:?}", self.inner)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __hash__(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl_py_from!(PyMammographyViewModifier, MammographyViewModifier);
 
 // ============================================================================
 // PreferenceOrder

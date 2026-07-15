@@ -7,11 +7,11 @@ use crate::extraction::tags::{
     SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
 };
 use crate::extraction::{
-    extract_dbt_object_kind, extract_image_type, extract_laterality, extract_view_position,
-    is_implant_displaced, is_magnified, is_spot_compression,
+    extract_dbt_object_kind, extract_image_type, extract_laterality, extract_view_descriptor,
 };
 use crate::types::{
-    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, PixelSpacing, ViewPosition,
+    DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, MammographyViewModifier,
+    PixelSpacing, ViewPosition,
 };
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_object::{FileDicomObject, InMemDicomObject};
@@ -100,17 +100,16 @@ impl MammogramExtractor {
         ignore_modality: bool,
     ) -> Result<MammogramMetadata> {
         let mammogram_type = extract_mammogram_type_impl(dcm, is_sfm, ignore_modality)?;
+        let view = extract_view_descriptor(dcm);
         Ok(MammogramMetadata {
             mammogram_type,
             dbt_object_kind: extract_dbt_object_kind(dcm, mammogram_type),
             laterality: extract_laterality(dcm)?,
-            view_position: extract_view_position(dcm)?,
+            view_position: view.view_position,
+            view_modifiers: view.modifiers,
             image_type: extract_image_type(dcm),
             is_for_processing: Self::extract_for_processing(dcm),
             has_implant: Self::extract_implant_status(dcm),
-            is_spot_compression: is_spot_compression(dcm),
-            is_magnified: is_magnified(dcm),
-            is_implant_displaced: is_implant_displaced(dcm),
             manufacturer: get_string_value(dcm, MANUFACTURER),
             model: get_string_value(dcm, MANUFACTURER_MODEL_NAME),
             number_of_frames: get_int_value(dcm, NUMBER_OF_FRAMES).unwrap_or(1),
@@ -302,7 +301,6 @@ fn compression_type_from_name(name: &str) -> &'static str {
 ///
 /// Contains all the key metadata fields extracted from a mammography DICOM file.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize))]
 pub struct MammogramMetadata {
     /// Mammogram type (TOMO, FFDM, SYNTH, SFM, or UNKNOWN)
     pub mammogram_type: MammogramType,
@@ -316,6 +314,9 @@ pub struct MammogramMetadata {
     /// View position (CC, MLO, etc.)
     pub view_position: ViewPosition,
 
+    /// Standard CID 4015 view modifiers.
+    pub view_modifiers: std::collections::BTreeSet<MammographyViewModifier>,
+
     /// Parsed ImageType field
     pub image_type: ImageType,
 
@@ -324,15 +325,6 @@ pub struct MammogramMetadata {
 
     /// Whether breast implant is present
     pub has_implant: bool,
-
-    /// Whether this is a spot compression view
-    pub is_spot_compression: bool,
-
-    /// Whether this is a magnification view
-    pub is_magnified: bool,
-
-    /// Whether this is an implant displaced view
-    pub is_implant_displaced: bool,
 
     /// Manufacturer name
     pub manufacturer: Option<String>,
@@ -383,6 +375,62 @@ impl MammogramMetadata {
     pub fn is_2d(&self) -> bool {
         self.mammogram_type.is_2d_group()
     }
+
+    /// Whether this is a spot compression view.
+    pub fn is_spot_compression(&self) -> bool {
+        self.view_modifiers
+            .contains(&MammographyViewModifier::SpotCompression)
+    }
+
+    /// Whether this is a magnification view.
+    pub fn is_magnified(&self) -> bool {
+        self.view_modifiers
+            .contains(&MammographyViewModifier::Magnification)
+    }
+
+    /// Whether this is an implant displaced view.
+    pub fn is_implant_displaced(&self) -> bool {
+        self.view_modifiers
+            .contains(&MammographyViewModifier::ImplantDisplaced)
+    }
+}
+
+#[cfg(feature = "json")]
+impl serde::Serialize for MammogramMetadata {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("MammogramMetadata", 22)?;
+        state.serialize_field("mammogram_type", &self.mammogram_type)?;
+        state.serialize_field("dbt_object_kind", &self.dbt_object_kind)?;
+        state.serialize_field("laterality", &self.laterality)?;
+        state.serialize_field("view_position", &self.view_position)?;
+        state.serialize_field("view_modifiers", &self.view_modifiers)?;
+        state.serialize_field("image_type", &self.image_type)?;
+        state.serialize_field("is_for_processing", &self.is_for_processing)?;
+        state.serialize_field("has_implant", &self.has_implant)?;
+        state.serialize_field("is_spot_compression", &self.is_spot_compression())?;
+        state.serialize_field("is_magnified", &self.is_magnified())?;
+        state.serialize_field("is_implant_displaced", &self.is_implant_displaced())?;
+        state.serialize_field("manufacturer", &self.manufacturer)?;
+        state.serialize_field("model", &self.model)?;
+        state.serialize_field("number_of_frames", &self.number_of_frames)?;
+        state.serialize_field("pixel_spacing", &self.pixel_spacing)?;
+        state.serialize_field("concatenation_uid", &self.concatenation_uid)?;
+        state.serialize_field(
+            "sop_instance_uid_of_concatenation_source",
+            &self.sop_instance_uid_of_concatenation_source,
+        )?;
+        state.serialize_field("is_secondary_capture", &self.is_secondary_capture)?;
+        state.serialize_field("modality", &self.modality)?;
+        state.serialize_field("transfer_syntax_uid", &self.transfer_syntax_uid)?;
+        state.serialize_field("transfer_syntax_name", &self.transfer_syntax_name)?;
+        state.serialize_field("compression_type", &self.compression_type)?;
+        state.end()
+    }
 }
 
 #[cfg(test)]
@@ -423,12 +471,10 @@ mod tests {
             dbt_object_kind: DbtObjectKind::None,
             laterality: Laterality::Left,
             view_position: ViewPosition::Cc,
+            view_modifiers: Default::default(),
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
-            is_spot_compression: false,
-            is_magnified: false,
-            is_implant_displaced: false,
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
@@ -456,12 +502,10 @@ mod tests {
             dbt_object_kind: DbtObjectKind::Volume,
             laterality: Laterality::Right,
             view_position: ViewPosition::Mlo,
+            view_modifiers: Default::default(),
             image_type: ImageType::new("DERIVED".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
-            is_spot_compression: false,
-            is_magnified: false,
-            is_implant_displaced: false,
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 50,
@@ -476,6 +520,24 @@ mod tests {
         };
 
         assert!(!metadata.is_2d());
+    }
+
+    #[test]
+    fn modifier_convenience_properties_follow_the_canonical_set() {
+        let mut metadata = MammogramExtractor::extract(&minimal_mammo_dicom()).unwrap();
+        metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::SpotCompression);
+        metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::Magnification);
+        metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::ImplantDisplaced);
+
+        assert!(metadata.is_spot_compression());
+        assert!(metadata.is_magnified());
+        assert!(metadata.is_implant_displaced());
     }
 
     #[test]
@@ -518,6 +580,13 @@ mod tests {
             dbt_object_kind: DbtObjectKind::Slice,
             laterality: Laterality::Right,
             view_position: ViewPosition::Cc,
+            view_modifiers: [
+                MammographyViewModifier::ImplantDisplaced,
+                MammographyViewModifier::Magnification,
+                MammographyViewModifier::SpotCompression,
+            ]
+            .into_iter()
+            .collect(),
             image_type: ImageType::new(
                 "DERIVED".to_string(),
                 "PRIMARY".to_string(),
@@ -526,9 +595,6 @@ mod tests {
             ),
             is_for_processing: false,
             has_implant: false,
-            is_spot_compression: false,
-            is_magnified: false,
-            is_implant_displaced: false,
             manufacturer: None,
             model: None,
             number_of_frames: 1,
@@ -546,6 +612,13 @@ mod tests {
 
         assert_eq!(value["mammogram_type"], "tomo");
         assert_eq!(value["dbt_object_kind"], "slice");
+        assert_eq!(
+            value["view_modifiers"],
+            serde_json::json!(["implant_displaced", "magnification", "spot_compression"])
+        );
+        assert_eq!(value["is_spot_compression"], true);
+        assert_eq!(value["is_magnified"], true);
+        assert_eq!(value["is_implant_displaced"], true);
         assert_eq!(value["pixel_spacing"]["row"], 0.07);
         assert_eq!(value["pixel_spacing"]["column"], 0.08);
         assert_eq!(value["concatenation_uid"], "1.2.826.0.1.100");

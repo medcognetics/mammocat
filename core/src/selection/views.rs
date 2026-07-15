@@ -961,7 +961,8 @@ mod tests {
     use super::*;
     use crate::error::MammocatError;
     use crate::types::{
-        DbtObjectKind, ImageType, Laterality, MammogramType, PreferenceOrder, ViewPosition,
+        DbtObjectKind, ImageType, Laterality, MammogramType, MammographyViewModifier,
+        PreferenceOrder, ViewPosition,
     };
     use std::path::PathBuf;
 
@@ -997,6 +998,7 @@ mod tests {
                 dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position: view_pos,
+                view_modifiers: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -1005,9 +1007,6 @@ mod tests {
                 ),
                 is_for_processing: false,
                 has_implant: false,
-                is_spot_compression: false,
-                is_magnified: false,
-                is_implant_displaced: false,
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
@@ -1022,9 +1021,6 @@ mod tests {
             },
             rows: Some(2560),
             columns: Some(3328),
-            is_implant_displaced: false,
-            is_spot_compression: false,
-            is_magnified: false,
             transfer_syntax_uid: None,
             is_lossy_compressed: false,
             study_instance_uid: study_uid.map(str::to_string),
@@ -1295,16 +1291,20 @@ mod tests {
         implant_displaced.sop_instance_uid = Some("3".to_string());
         implant_displaced.rows = Some(1000);
         implant_displaced.columns = Some(1000);
-        implant_displaced.is_implant_displaced = true;
-        implant_displaced.metadata.is_implant_displaced = true;
+        implant_displaced
+            .metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::ImplantDisplaced);
 
         let mut high_resolution = implant_displaced.clone();
         high_resolution.file_path = PathBuf::from("high-resolution.dcm");
         high_resolution.sop_instance_uid = Some("1".to_string());
         high_resolution.rows = Some(3000);
         high_resolution.columns = Some(3000);
-        high_resolution.is_implant_displaced = false;
-        high_resolution.metadata.is_implant_displaced = false;
+        high_resolution
+            .metadata
+            .view_modifiers
+            .remove(&MammographyViewModifier::ImplantDisplaced);
 
         let mut low_resolution = high_resolution.clone();
         low_resolution.file_path = PathBuf::from("low-resolution.dcm");
