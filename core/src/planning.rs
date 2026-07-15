@@ -772,6 +772,7 @@ mod tests {
                 dbt_object_kind,
                 laterality,
                 view_position,
+                view_modifiers: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -780,9 +781,6 @@ mod tests {
                 ),
                 is_for_processing: false,
                 has_implant: false,
-                is_spot_compression: false,
-                is_magnified: false,
-                is_implant_displaced: false,
                 manufacturer: None,
                 model: None,
                 number_of_frames: if dbt_object_kind == DbtObjectKind::Volume {
@@ -806,9 +804,6 @@ mod tests {
             columns: Some(3328),
             transfer_syntax_uid: Some("1.2.840.10008.1.2.1".to_string()),
             is_lossy_compressed: false,
-            is_implant_displaced: false,
-            is_spot_compression: false,
-            is_magnified: false,
         }
     }
 

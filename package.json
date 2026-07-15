@@ -1,0 +1,30 @@
+{
+  "name": "@medcognetics/mammocat",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
+  "license": "Apache-2.0",
+  "main": "node/index.js",
+  "types": "node/index.d.ts",
+  "files": [
+    "node/index.js",
+    "node/index.d.ts",
+    "node/*.node",
+    "LICENSE.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "napi build --cwd node --platform --release",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.4.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "overrides": {
+    "@napi-rs/lzma": "1.4.5",
+    "@octokit/rest": "21.1.1"
+  }
+}
