@@ -65,6 +65,13 @@ test("commit-pinned Git dependency builds and survives npm ci", async (t) => {
   const commitSha = (await run("git", ["rev-parse", "HEAD"], sourceRepository)).trim()
   const dependency = `git+${pathToFileURL(sourceRepository).href}#${commitSha}`
 
+  await run(
+    npmCommand,
+    ["ci", "--ignore-scripts", "--omit=optional", "--no-audit", "--no-fund"],
+    sourceRepository,
+  )
+  await rm(join(sourceRepository, "node_modules"), { force: true, recursive: true })
+
   await mkdir(consumer)
   await writeFile(
     join(consumer, "package.json"),
@@ -159,7 +166,12 @@ async function readJson(path) {
 async function run(command, args, cwd) {
   const { stdout } = await execFile(command, args, {
     cwd,
-    env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false" },
+    env: {
+      ...process.env,
+      npm_config_audit: "false",
+      npm_config_engine_strict: "true",
+      npm_config_fund: "false",
+    },
     maxBuffer: maximumCommandOutputBytes,
   })
   return stdout

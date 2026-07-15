@@ -22,5 +22,9 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "overrides": {
+    "@napi-rs/lzma": "1.4.5",
+    "@octokit/rest": "21.1.1"
   }
 }
