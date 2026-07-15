@@ -4,7 +4,6 @@ use crate::extraction::tags::{
     get_string_value, get_u16_value, COLUMNS, LOSSY_IMAGE_COMPRESSION, PIXEL_DATA_TAG, ROWS,
     SERIES_INSTANCE_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
 };
-use crate::extraction::{is_implant_displaced, is_magnified, is_spot_compression};
 use crate::types::PreferenceOrder;
 use dicom_object::{FileDicomObject, InMemDicomObject, OpenFileOptions};
 use std::cmp::Ordering;
@@ -112,15 +111,6 @@ pub struct MammogramRecord {
 
     /// Whether metadata indicates current or historical lossy compression
     pub is_lossy_compressed: bool,
-
-    /// Whether this is an implant displaced view
-    pub is_implant_displaced: bool,
-
-    /// Whether this is a spot compression view
-    pub is_spot_compression: bool,
-
-    /// Whether this is a magnification view
-    pub is_magnified: bool,
 }
 
 impl MammogramRecord {
@@ -233,9 +223,6 @@ impl MammogramRecord {
             columns: get_u16_value(dcm, COLUMNS),
             transfer_syntax_uid,
             is_lossy_compressed,
-            is_implant_displaced: is_implant_displaced(dcm),
-            is_spot_compression: is_spot_compression(dcm),
-            is_magnified: is_magnified(dcm),
         })
     }
 
@@ -259,7 +246,31 @@ impl MammogramRecord {
     ///
     /// `true` if either spot compression or magnification is detected
     pub fn is_spot_or_mag(&self) -> bool {
-        self.is_spot_compression || self.is_magnified
+        self.is_spot_compression() || self.is_magnified()
+    }
+
+    /// Whether this record has an Implant Displaced modifier.
+    pub fn is_implant_displaced(&self) -> bool {
+        self.metadata.is_implant_displaced()
+    }
+
+    /// Whether this record has a Spot Compression modifier.
+    pub fn is_spot_compression(&self) -> bool {
+        self.metadata.is_spot_compression()
+    }
+
+    /// Whether this record has a Magnification modifier.
+    pub fn is_magnified(&self) -> bool {
+        self.metadata.is_magnified()
+    }
+
+    /// Whether this record has any modifier that should lose to an otherwise
+    /// equivalent unmodified view.
+    pub fn has_deprioritized_view_modifier(&self) -> bool {
+        self.metadata
+            .view_modifiers
+            .iter()
+            .any(|modifier| modifier.affects_selection())
     }
 
     /// Checks if this record is preferred over another
@@ -269,7 +280,7 @@ impl MammogramRecord {
     ///
     /// Priority order:
     /// 1. Standard views beat non-standard views
-    /// 2. Non-spot/mag views beat spot/mag views
+    /// 2. Views without deprioritized CID 4015 modifiers beat modified views
     /// 3. Implant displaced beats non-displaced (same study only)
     /// 4. Lossless beats lossy compressed
     /// 5. Type preference (FFDM > SYNTH > TOMO > SFM)
@@ -293,7 +304,7 @@ impl MammogramRecord {
     ///
     /// Priority order:
     /// 1. Standard views beat non-standard views
-    /// 2. Non-spot/mag views beat spot/mag views
+    /// 2. Views without deprioritized CID 4015 modifiers beat modified views
     /// 3. Implant displaced beats non-displaced (same study only)
     /// 4. Lossless beats lossy compressed
     /// 5. Type preference (according to the provided preference order)
@@ -334,11 +345,12 @@ impl MammogramRecord {
             return false;
         }
 
-        // 2. Non-spot/mag views take priority over spot/mag views
-        if !self.is_spot_or_mag() && other.is_spot_or_mag() {
+        // 2. Unmodified views take priority over special views. Implant
+        // displaced alone is not a deprioritized modifier.
+        if !self.has_deprioritized_view_modifier() && other.has_deprioritized_view_modifier() {
             return true;
         }
-        if self.is_spot_or_mag() && !other.is_spot_or_mag() {
+        if self.has_deprioritized_view_modifier() && !other.has_deprioritized_view_modifier() {
             return false;
         }
 
@@ -346,9 +358,10 @@ impl MammogramRecord {
         if let (Some(self_study), Some(other_study)) =
             (&self.study_instance_uid, &other.study_instance_uid)
         {
-            if self_study == other_study && self.is_implant_displaced && !other.is_implant_displaced
+            if self_study == other_study
+                && self.is_implant_displaced() != other.is_implant_displaced()
             {
-                return true;
+                return self.is_implant_displaced();
             }
         }
 
@@ -442,7 +455,9 @@ impl Ord for MammogramRecord {
 mod tests {
     use super::*;
     use crate::extraction::tags::LOSSY_IMAGE_COMPRESSION;
-    use crate::types::{DbtObjectKind, ImageType, Laterality, MammogramType, ViewPosition};
+    use crate::types::{
+        DbtObjectKind, ImageType, Laterality, MammogramType, MammographyViewModifier, ViewPosition,
+    };
     use dicom_core::{DataElement, PrimitiveValue, VR};
 
     fn make_test_record(
@@ -465,6 +480,14 @@ mod tests {
                 dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position: view_pos,
+                view_modifiers: [
+                    is_implant_displaced.then_some(MammographyViewModifier::ImplantDisplaced),
+                    is_spot_compression.then_some(MammographyViewModifier::SpotCompression),
+                    is_magnified.then_some(MammographyViewModifier::Magnification),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -473,9 +496,6 @@ mod tests {
                 ),
                 is_for_processing: false,
                 has_implant: false,
-                is_spot_compression,
-                is_magnified,
-                is_implant_displaced,
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
@@ -490,9 +510,6 @@ mod tests {
             },
             rows,
             columns,
-            is_implant_displaced,
-            is_spot_compression,
-            is_magnified,
             transfer_syntax_uid: None,
             is_lossy_compressed: false,
             study_instance_uid: study_uid,
@@ -699,6 +716,39 @@ mod tests {
             None,
         );
 
+        let regular = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            Some("1.2.3.4".to_string()),
+            None,
+        );
+
+        assert!(implant_displaced.is_preferred_to(&regular));
+        assert!(!regular.is_preferred_to(&implant_displaced));
+    }
+
+    #[test]
+    fn implant_displaced_preference_is_symmetric_before_mammogram_type() {
+        let implant_displaced = make_test_record(
+            MammogramType::Synth,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            true,
+            false,
+            false,
+            Some("1.2.3.4".to_string()),
+            None,
+        );
         let regular = make_test_record(
             MammogramType::Ffdm,
             ViewPosition::Cc,
@@ -930,6 +980,72 @@ mod tests {
         assert!(standard.is_preferred_to(&mag));
         assert!(!spot.is_preferred_to(&standard));
         assert!(!mag.is_preferred_to(&standard));
+    }
+
+    #[test]
+    fn every_special_cid_4015_modifier_is_deprioritized() {
+        let standard = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            Some("study".to_string()),
+            None,
+        );
+        for modifier in [
+            MammographyViewModifier::Cleavage,
+            MammographyViewModifier::AxillaryTail,
+            MammographyViewModifier::RolledLateral,
+            MammographyViewModifier::RolledMedial,
+            MammographyViewModifier::RolledInferior,
+            MammographyViewModifier::RolledSuperior,
+            MammographyViewModifier::Magnification,
+            MammographyViewModifier::SpotCompression,
+            MammographyViewModifier::Tangential,
+            MammographyViewModifier::NippleInProfile,
+            MammographyViewModifier::AnteriorCompression,
+            MammographyViewModifier::InfraMammaryFold,
+            MammographyViewModifier::AxillaryTissue,
+        ] {
+            let mut modified = standard.clone();
+            modified.metadata.view_modifiers.insert(modifier);
+            assert!(standard.is_preferred_to(&modified), "{modifier}");
+            assert!(!modified.is_preferred_to(&standard), "{modifier}");
+        }
+    }
+
+    #[test]
+    fn implant_displaced_only_remains_preferred_but_mixed_modifiers_do_not() {
+        let regular = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            Some("study".to_string()),
+            None,
+        );
+        let mut implant_displaced = regular.clone();
+        implant_displaced
+            .metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::ImplantDisplaced);
+        assert!(implant_displaced.is_preferred_to(&regular));
+
+        implant_displaced
+            .metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::Tangential);
+        assert!(regular.is_preferred_to(&implant_displaced));
     }
 
     #[test]
