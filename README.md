@@ -14,7 +14,7 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **Processing Intent**: Identifies "FOR PROCESSING" images
 - **Preferred View Selection**: Automatically selects the best mammogram for each standard view
 - **Validation Reports**: Checks whether files or directories are ready for metadata extraction or preferred-view selection
-- **Python Bindings**: Full Python API via PyO3 for seamless integration
+- **Python Bindings**: Full Python API via PyO3
 - **Node/TypeScript Bindings**: Synchronous NAPI-RS package for metadata extraction and preferred-view selection
 - **Clean API**: Easy-to-use library and command-line interface
 - **Type Safe**: Leverages Rust's type system for correctness
@@ -40,7 +40,33 @@ make node-build
 make node-pack
 ```
 
-The root npm package uses optional native packages for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. Local repository installs omit those optional packages until the platform packages have been published.
+The `node/` package keeps metadata for optional prebuilt binaries on Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. Local repository builds omit those unpublished packages.
+
+### Install the Node package from an exact commit
+
+Use the full commit SHA in a consumer `package.json`:
+
+```json
+{
+  "dependencies": {
+    "@medcognetics/mammocat": "git+https://github.com/medcognetics/mammocat.git#<full-commit-sha>"
+  }
+}
+```
+
+Then install without the unpublished optional binary packages:
+
+```bash
+npm install --omit=optional
+```
+
+npm clones the repository, installs the root build dependency, and runs `prepare`. The build uses `node/`, `core/`, and the Cargo workspace, then packages the host `.node` file with `node/index.js` and `node/index.d.ts`. The consumer needs Git, Node.js 18 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for the host target.
+
+Commit the generated `package-lock.json`. It records the full commit SHA, so a clean install uses the same source revision:
+
+```bash
+npm ci --omit=optional
+```
 
 ## Usage
 
@@ -268,7 +294,7 @@ console.log(bufferSelection.inputErrors)
 
 `PreferredViewSelection.views` always uses the fixed keys `rcc`, `lcc`, `rmlo`, and `lmlo`; missing slots are `null`. Bulk selection reports unreadable or unsupported DICOM inputs in `inputErrors`, while invalid API argument shapes throw. The default selection policy targets annotator-focused 2D standard views, excluding TOMO and DBT objects unless an explicit `preferenceOrder` override is supplied.
 
-The package is prepared for prebuilt native installs on Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. The root package stays platform-neutral and resolves the matching native package through optional dependencies.
+The publish-oriented package metadata under `node/` supports prebuilt native packages for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. A commit-pinned Git install instead builds the matching native binary from source and stores it inside the installed package.
 
 ### Python Validation API
 
@@ -448,6 +474,7 @@ Run Node package checks:
 make node-install
 make node-build
 make node-test
+make node-test-git-install
 make node-typecheck
 make node-pack
 ```
@@ -459,7 +486,7 @@ Current test coverage includes Rust unit/integration tests and Python tests cove
 - Data structure operations
 - Preferred view selection
 - Python bindings API (via pytest)
-- Node/TypeScript bindings API, JSON round trips, file/buffer parity, and directory selection
+- Node/TypeScript bindings API, JSON round trips, file/buffer parity, directory selection, and commit-pinned Git installation
 
 ## Future Enhancements
 
