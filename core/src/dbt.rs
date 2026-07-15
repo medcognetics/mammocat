@@ -6,7 +6,7 @@ use crate::extraction::parse_view_position;
 use crate::extraction::tags::PIXEL_DATA_TAG;
 use crate::selection::MammogramRecord;
 use crate::types::ViewPosition;
-use dicom_core::value::PrimitiveValue;
+use dicom_core::value::{DataSetSequence, PrimitiveValue};
 use dicom_core::{DataElement, Tag, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{
@@ -201,6 +201,39 @@ struct Geometry {
     bits_stored: u16,
     high_bit: u16,
     pixel_representation: u16,
+}
+
+#[derive(Debug, Clone)]
+struct DbtSharedFunctionalMetadata {
+    pixel_spacing: Vec<String>,
+    slice_thickness: String,
+    image_orientation: Vec<String>,
+    frame_of_reference_uid: String,
+    window_center: Vec<String>,
+    window_width: Vec<String>,
+    anatomic_region_sequence: DataElement<InMemDicomObject>,
+    anatomic_region_signature: Vec<CodeSequenceSignature>,
+    view_code_sequence: DataElement<InMemDicomObject>,
+    view_code_signature: Vec<CodeSequenceSignature>,
+    frame_laterality: String,
+    breast_implant_present: String,
+    burned_in_annotation: String,
+    lossy_image_compression: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodeSequenceSignature {
+    code_value: Option<String>,
+    coding_scheme_designator: Option<String>,
+    code_meaning: Option<String>,
+    nested: Vec<CodeSequenceSignature>,
+}
+
+#[derive(Debug, Clone)]
+struct DbtSourceFrameMetadata {
+    image_position: Vec<String>,
+    source_sop_class_uid: String,
+    source_sop_instance_uid: String,
 }
 
 /// Recursively scan an input directory for old-format DBT series.
@@ -1014,10 +1047,25 @@ fn preflight_output_path(
 fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -> Result<()> {
     let mut first_object = None;
     let mut pixel_data = Vec::new();
+    let mut shared_metadata = None;
+    let mut frame_metadata = Vec::with_capacity(series.source_paths.len());
 
     for source in &series.source_paths {
         let source_path = input.join(source);
         let dcm = OpenFileOptions::new().open_file(&source_path)?;
+        let current_shared = extract_shared_functional_metadata(&dcm, &source_path)?;
+        if let Some(expected) = &shared_metadata {
+            if !shared_functional_metadata_matches(expected, &current_shared) {
+                return Err(MammocatError::ExtractionError(format!(
+                    "inconsistent functional-group metadata in {}",
+                    source_path.display()
+                )));
+            }
+        } else {
+            shared_metadata = Some(current_shared);
+        }
+        frame_metadata.push(extract_source_frame_metadata(&dcm, &source_path)?);
+
         let pixel_bytes = dcm
             .element(tags::PIXEL_DATA)
             .map_err(|_| {
@@ -1053,6 +1101,8 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
 
     let mut obj = first_object
         .ok_or_else(|| MammocatError::ExtractionError("DBT series has no slices".to_string()))?;
+    let shared_metadata = shared_metadata
+        .ok_or_else(|| MammocatError::ExtractionError("DBT series has no metadata".to_string()))?;
     let sop_instance_uid = generate_uid();
 
     obj.put(DataElement::new(
@@ -1066,6 +1116,64 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
         sop_instance_uid.as_str(),
     ));
     obj.put(DataElement::new(tags::MODALITY, VR::CS, "MG"));
+    obj.put(DataElement::new(
+        tags::IMAGE_TYPE,
+        VR::CS,
+        PrimitiveValue::Strs(
+            vec![
+                "DERIVED".to_string(),
+                "PRIMARY".to_string(),
+                "TOMOSYNTHESIS".to_string(),
+                "NONE".to_string(),
+            ]
+            .into(),
+        ),
+    ));
+    obj.put(DataElement::new(
+        tags::CONTENT_QUALIFICATION,
+        VR::CS,
+        "PRODUCT",
+    ));
+    obj.put(DataElement::new(
+        tags::VOLUMETRIC_PROPERTIES,
+        VR::CS,
+        "VOLUME",
+    ));
+    obj.put(DataElement::new(
+        tags::VOLUME_BASED_CALCULATION_TECHNIQUE,
+        VR::CS,
+        "TOMOSYNTHESIS",
+    ));
+    obj.put(DataElement::new(
+        tags::PIXEL_PRESENTATION,
+        VR::CS,
+        "MONOCHROME",
+    ));
+    obj.put(DataElement::new(
+        tags::PRESENTATION_LUT_SHAPE,
+        VR::CS,
+        "IDENTITY",
+    ));
+    obj.put(DataElement::new(
+        tags::BURNED_IN_ANNOTATION,
+        VR::CS,
+        shared_metadata.burned_in_annotation.as_str(),
+    ));
+    obj.put(DataElement::new(
+        tags::LOSSY_IMAGE_COMPRESSION,
+        VR::CS,
+        shared_metadata.lossy_image_compression.as_str(),
+    ));
+    obj.put(DataElement::new(
+        tags::BREAST_IMPLANT_PRESENT,
+        VR::CS,
+        shared_metadata.breast_implant_present.as_str(),
+    ));
+    obj.put(DataElement::new(
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        shared_metadata.frame_of_reference_uid.as_str(),
+    ));
     obj.put(DataElement::new(
         tags::NUMBER_OF_FRAMES,
         VR::IS,
@@ -1081,8 +1189,32 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
         VR::OW,
         PrimitiveValue::from(pixel_data),
     ));
+    obj.put(shared_metadata.view_code_sequence.clone());
+    if obj.element(tags::ACQUISITION_CONTEXT_SEQUENCE).is_err() {
+        obj.put(sequence_element(
+            tags::ACQUISITION_CONTEXT_SEQUENCE,
+            Vec::new(),
+        ));
+    }
+    obj.put(build_shared_functional_groups(&shared_metadata));
+    obj.put(build_per_frame_functional_groups(&frame_metadata)?);
     obj.remove_element(tags::SLICE_LOCATION);
     obj.remove_element(tags::IMAGE_POSITION_PATIENT);
+    obj.remove_element(tags::IMAGE_ORIENTATION_PATIENT);
+    obj.remove_element(tags::PIXEL_SPACING);
+    obj.remove_element(tags::SLICE_THICKNESS);
+    obj.remove_element(tags::SPACING_BETWEEN_SLICES);
+    obj.remove_element(tags::WINDOW_CENTER);
+    obj.remove_element(tags::WINDOW_WIDTH);
+    obj.remove_element(tags::WINDOW_CENTER_WIDTH_EXPLANATION);
+    obj.remove_element(tags::VOILUT_FUNCTION);
+    obj.remove_element(tags::RESCALE_INTERCEPT);
+    obj.remove_element(tags::RESCALE_SLOPE);
+    obj.remove_element(tags::RESCALE_TYPE);
+    obj.remove_element(tags::ANATOMIC_REGION_SEQUENCE);
+    obj.remove_element(tags::VIEW_POSITION);
+    obj.remove_element(tags::IMAGE_LATERALITY);
+    obj.remove_element(tags::LATERALITY);
 
     let file_obj = obj
         .with_meta(
@@ -1093,6 +1225,576 @@ fn combine_series(input: &Path, series: &DbtSeriesFinding, output_path: &Path) -
         )
         .map_err(|e| MammocatError::DicomError(format!("failed to build output meta: {}", e)))?;
     write_dicom_atomic(&file_obj, output_path)
+}
+
+fn extract_shared_functional_metadata(
+    dcm: &FileDicomObject<InMemDicomObject>,
+    source_path: &Path,
+) -> Result<DbtSharedFunctionalMetadata> {
+    let pixel_spacing =
+        required_multi_string(dcm, tags::PIXEL_SPACING, "PixelSpacing", source_path)?;
+    if pixel_spacing.len() != 2 {
+        return Err(invalid_value_count(
+            "PixelSpacing",
+            2,
+            pixel_spacing.len(),
+            source_path,
+        ));
+    }
+    validate_numeric_values("PixelSpacing", &pixel_spacing, true, source_path)?;
+
+    let image_orientation = required_multi_string(
+        dcm,
+        tags::IMAGE_ORIENTATION_PATIENT,
+        "ImageOrientationPatient",
+        source_path,
+    )?;
+    if image_orientation.len() != 6 {
+        return Err(invalid_value_count(
+            "ImageOrientationPatient",
+            6,
+            image_orientation.len(),
+            source_path,
+        ));
+    }
+    validate_numeric_values(
+        "ImageOrientationPatient",
+        &image_orientation,
+        false,
+        source_path,
+    )?;
+
+    let rescale_intercept = required_string(
+        dcm,
+        tags::RESCALE_INTERCEPT,
+        "RescaleIntercept",
+        source_path,
+    )?;
+    let rescale_slope = required_string(dcm, tags::RESCALE_SLOPE, "RescaleSlope", source_path)?;
+    let rescale_type = required_string(dcm, tags::RESCALE_TYPE, "RescaleType", source_path)?;
+    if rescale_intercept.parse::<f64>().ok() != Some(0.0)
+        || rescale_slope.parse::<f64>().ok() != Some(1.0)
+        || !rescale_type.eq_ignore_ascii_case("US")
+    {
+        return Err(MammocatError::ExtractionError(format!(
+            "non-identity pixel value transformation in {}",
+            source_path.display()
+        )));
+    }
+
+    let slice_thickness =
+        required_string(dcm, tags::SLICE_THICKNESS, "SliceThickness", source_path)?;
+    validate_numeric_values(
+        "SliceThickness",
+        std::slice::from_ref(&slice_thickness),
+        true,
+        source_path,
+    )?;
+    let window_center =
+        required_multi_string(dcm, tags::WINDOW_CENTER, "WindowCenter", source_path)?;
+    validate_numeric_values("WindowCenter", &window_center, false, source_path)?;
+    let window_width = required_multi_string(dcm, tags::WINDOW_WIDTH, "WindowWidth", source_path)?;
+    validate_numeric_values("WindowWidth", &window_width, true, source_path)?;
+    if window_center.len() != window_width.len() {
+        return Err(MammocatError::ExtractionError(format!(
+            "WindowCenter and WindowWidth in {} have different value counts",
+            source_path.display()
+        )));
+    }
+
+    let frame_laterality = get_string(dcm, tags::IMAGE_LATERALITY)
+        .or_else(|| get_string(dcm, tags::LATERALITY))
+        .ok_or_else(|| {
+            MammocatError::ExtractionError(format!(
+                "missing ImageLaterality or Laterality in {}",
+                source_path.display()
+            ))
+        })?;
+    let frame_laterality = normalize_frame_laterality(&frame_laterality, source_path)?;
+
+    let breast_implant_present = required_string(
+        dcm,
+        tags::BREAST_IMPLANT_PRESENT,
+        "BreastImplantPresent",
+        source_path,
+    )?;
+    validate_enumerated_value(
+        "BreastImplantPresent",
+        &breast_implant_present,
+        &["YES", "NO"],
+        source_path,
+    )?;
+    let burned_in_annotation = required_string(
+        dcm,
+        tags::BURNED_IN_ANNOTATION,
+        "BurnedInAnnotation",
+        source_path,
+    )?;
+    validate_enumerated_value(
+        "BurnedInAnnotation",
+        &burned_in_annotation,
+        &["YES", "NO"],
+        source_path,
+    )?;
+    let lossy_image_compression =
+        get_string(dcm, tags::LOSSY_IMAGE_COMPRESSION).unwrap_or_else(|| "00".to_string());
+    validate_enumerated_value(
+        "LossyImageCompression",
+        &lossy_image_compression,
+        &["00", "01"],
+        source_path,
+    )?;
+
+    Ok(DbtSharedFunctionalMetadata {
+        pixel_spacing,
+        slice_thickness,
+        image_orientation,
+        frame_of_reference_uid: required_string(
+            dcm,
+            tags::FRAME_OF_REFERENCE_UID,
+            "FrameOfReferenceUID",
+            source_path,
+        )?,
+        window_center,
+        window_width,
+        anatomic_region_sequence: required_element(
+            dcm,
+            tags::ANATOMIC_REGION_SEQUENCE,
+            "AnatomicRegionSequence",
+            source_path,
+        )?,
+        anatomic_region_signature: required_code_sequence_signature(
+            dcm,
+            tags::ANATOMIC_REGION_SEQUENCE,
+            "AnatomicRegionSequence",
+            source_path,
+        )?,
+        view_code_sequence: normalized_view_code_sequence(dcm, source_path)?,
+        view_code_signature: required_code_sequence_signature(
+            dcm,
+            tags::VIEW_CODE_SEQUENCE,
+            "ViewCodeSequence",
+            source_path,
+        )?,
+        frame_laterality,
+        breast_implant_present,
+        burned_in_annotation,
+        lossy_image_compression,
+    })
+}
+
+fn shared_functional_metadata_matches(
+    left: &DbtSharedFunctionalMetadata,
+    right: &DbtSharedFunctionalMetadata,
+) -> bool {
+    numeric_values_match(&left.pixel_spacing, &right.pixel_spacing)
+        && numeric_values_match(
+            std::slice::from_ref(&left.slice_thickness),
+            std::slice::from_ref(&right.slice_thickness),
+        )
+        && numeric_values_match(&left.image_orientation, &right.image_orientation)
+        && left.frame_of_reference_uid == right.frame_of_reference_uid
+        && numeric_values_match(&left.window_center, &right.window_center)
+        && numeric_values_match(&left.window_width, &right.window_width)
+        && left.anatomic_region_signature == right.anatomic_region_signature
+        && left.view_code_signature == right.view_code_signature
+        && left.frame_laterality == right.frame_laterality
+        && left.breast_implant_present == right.breast_implant_present
+        && left.burned_in_annotation == right.burned_in_annotation
+        && left.lossy_image_compression == right.lossy_image_compression
+}
+
+fn extract_source_frame_metadata(
+    dcm: &FileDicomObject<InMemDicomObject>,
+    source_path: &Path,
+) -> Result<DbtSourceFrameMetadata> {
+    let image_position = required_multi_string(
+        dcm,
+        tags::IMAGE_POSITION_PATIENT,
+        "ImagePositionPatient",
+        source_path,
+    )?;
+    if image_position.len() != 3 {
+        return Err(invalid_value_count(
+            "ImagePositionPatient",
+            3,
+            image_position.len(),
+            source_path,
+        ));
+    }
+    validate_numeric_values("ImagePositionPatient", &image_position, false, source_path)?;
+
+    Ok(DbtSourceFrameMetadata {
+        image_position,
+        source_sop_class_uid: required_string(
+            dcm,
+            tags::SOP_CLASS_UID,
+            "SOPClassUID",
+            source_path,
+        )?,
+        source_sop_instance_uid: required_string(
+            dcm,
+            tags::SOP_INSTANCE_UID,
+            "SOPInstanceUID",
+            source_path,
+        )?,
+    })
+}
+
+fn build_shared_functional_groups(
+    metadata: &DbtSharedFunctionalMetadata,
+) -> DataElement<InMemDicomObject> {
+    let pixel_measures_item = InMemDicomObject::from_element_iter([
+        multi_string_element(tags::PIXEL_SPACING, VR::DS, &metadata.pixel_spacing),
+        DataElement::new(
+            tags::SLICE_THICKNESS,
+            VR::DS,
+            metadata.slice_thickness.as_str(),
+        ),
+    ]);
+    let plane_orientation_item = InMemDicomObject::from_element_iter([multi_string_element(
+        tags::IMAGE_ORIENTATION_PATIENT,
+        VR::DS,
+        &metadata.image_orientation,
+    )]);
+
+    let mut frame_anatomy_item = InMemDicomObject::new_empty();
+    frame_anatomy_item.put(DataElement::new(
+        tags::FRAME_LATERALITY,
+        VR::CS,
+        metadata.frame_laterality.as_str(),
+    ));
+    frame_anatomy_item.put(metadata.anatomic_region_sequence.clone());
+
+    let pixel_value_item = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::RESCALE_INTERCEPT, VR::DS, "0"),
+        DataElement::new(tags::RESCALE_SLOPE, VR::DS, "1"),
+        DataElement::new(tags::RESCALE_TYPE, VR::LO, "US"),
+    ]);
+    let frame_voi_item = InMemDicomObject::from_element_iter([
+        multi_string_element(tags::WINDOW_CENTER, VR::DS, &metadata.window_center),
+        multi_string_element(tags::WINDOW_WIDTH, VR::DS, &metadata.window_width),
+    ]);
+
+    let shared_item = InMemDicomObject::from_element_iter([
+        sequence_element(tags::PIXEL_MEASURES_SEQUENCE, vec![pixel_measures_item]),
+        sequence_element(
+            tags::PLANE_ORIENTATION_SEQUENCE,
+            vec![plane_orientation_item],
+        ),
+        sequence_element(tags::FRAME_ANATOMY_SEQUENCE, vec![frame_anatomy_item]),
+        sequence_element(
+            tags::PIXEL_VALUE_TRANSFORMATION_SEQUENCE,
+            vec![pixel_value_item],
+        ),
+        sequence_element(tags::FRAME_VOILUT_SEQUENCE, vec![frame_voi_item]),
+    ]);
+
+    sequence_element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE, vec![shared_item])
+}
+
+fn build_per_frame_functional_groups(
+    frames: &[DbtSourceFrameMetadata],
+) -> Result<DataElement<InMemDicomObject>> {
+    let mut items = Vec::with_capacity(frames.len());
+    for (index, frame) in frames.iter().enumerate() {
+        let frame_number = u32::try_from(index + 1).map_err(|_| {
+            MammocatError::ExtractionError("DBT frame count exceeds u32".to_string())
+        })?;
+        let frame_content_item = InMemDicomObject::from_element_iter([
+            DataElement::new(tags::STACK_ID, VR::SH, "1"),
+            DataElement::new(
+                tags::IN_STACK_POSITION_NUMBER,
+                VR::UL,
+                PrimitiveValue::from(frame_number),
+            ),
+        ]);
+        let plane_position_item = InMemDicomObject::from_element_iter([multi_string_element(
+            tags::IMAGE_POSITION_PATIENT,
+            VR::DS,
+            &frame.image_position,
+        )]);
+        let frame_type_item = InMemDicomObject::from_element_iter([
+            multi_string_element(
+                tags::FRAME_TYPE,
+                VR::CS,
+                &[
+                    "DERIVED".to_string(),
+                    "PRIMARY".to_string(),
+                    "TOMOSYNTHESIS".to_string(),
+                    "NONE".to_string(),
+                ],
+            ),
+            DataElement::new(tags::PIXEL_PRESENTATION, VR::CS, "MONOCHROME"),
+            DataElement::new(tags::VOLUMETRIC_PROPERTIES, VR::CS, "VOLUME"),
+            DataElement::new(
+                tags::VOLUME_BASED_CALCULATION_TECHNIQUE,
+                VR::CS,
+                "TOMOSYNTHESIS",
+            ),
+        ]);
+        let source_image_item = InMemDicomObject::from_element_iter([
+            DataElement::new(
+                tags::REFERENCED_SOP_CLASS_UID,
+                VR::UI,
+                frame.source_sop_class_uid.as_str(),
+            ),
+            DataElement::new(
+                tags::REFERENCED_SOP_INSTANCE_UID,
+                VR::UI,
+                frame.source_sop_instance_uid.as_str(),
+            ),
+            sequence_element(
+                tags::PURPOSE_OF_REFERENCE_CODE_SEQUENCE,
+                vec![code_item(
+                    "121322",
+                    "DCM",
+                    "Source image for image processing operation",
+                )],
+            ),
+            DataElement::new(tags::SPATIAL_LOCATIONS_PRESERVED, VR::CS, "YES"),
+        ]);
+        let derivation_item = InMemDicomObject::from_element_iter([
+            DataElement::new(
+                tags::DERIVATION_DESCRIPTION,
+                VR::ST,
+                "Combined single-frame slices into a multi-frame image without changing pixels",
+            ),
+            sequence_element(
+                tags::DERIVATION_CODE_SEQUENCE,
+                vec![code_item(
+                    "MCAT-MULTIFRAME",
+                    "99MAMMOCAT",
+                    "Combined into multi-frame image",
+                )],
+            ),
+            sequence_element(tags::SOURCE_IMAGE_SEQUENCE, vec![source_image_item]),
+        ]);
+
+        items.push(InMemDicomObject::from_element_iter([
+            sequence_element(tags::FRAME_CONTENT_SEQUENCE, vec![frame_content_item]),
+            sequence_element(tags::PLANE_POSITION_SEQUENCE, vec![plane_position_item]),
+            sequence_element(tags::X_RAY3_D_FRAME_TYPE_SEQUENCE, vec![frame_type_item]),
+            sequence_element(tags::DERIVATION_IMAGE_SEQUENCE, vec![derivation_item]),
+        ]));
+    }
+
+    Ok(sequence_element(
+        tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE,
+        items,
+    ))
+}
+
+fn sequence_element(tag: Tag, items: Vec<InMemDicomObject>) -> DataElement<InMemDicomObject> {
+    DataElement::new(tag, VR::SQ, DataSetSequence::from(items))
+}
+
+fn multi_string_element(tag: Tag, vr: VR, values: &[String]) -> DataElement<InMemDicomObject> {
+    DataElement::new(tag, vr, PrimitiveValue::Strs(values.to_vec().into()))
+}
+
+fn code_item(code_value: &str, scheme: &str, meaning: &str) -> InMemDicomObject {
+    InMemDicomObject::from_element_iter([
+        DataElement::new(tags::CODE_VALUE, VR::SH, code_value),
+        DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, scheme),
+        DataElement::new(tags::CODE_MEANING, VR::LO, meaning),
+    ])
+}
+
+fn required_string(
+    dcm: &impl DicomObject,
+    tag: Tag,
+    name: &str,
+    source_path: &Path,
+) -> Result<String> {
+    get_string(dcm, tag).ok_or_else(|| {
+        MammocatError::ExtractionError(format!("missing {name} in {}", source_path.display()))
+    })
+}
+
+fn required_multi_string(
+    dcm: &impl DicomObject,
+    tag: Tag,
+    name: &str,
+    source_path: &Path,
+) -> Result<Vec<String>> {
+    let values = get_multi_string(dcm, tag);
+    if values.is_empty() {
+        return Err(MammocatError::ExtractionError(format!(
+            "missing {name} in {}",
+            source_path.display()
+        )));
+    }
+    Ok(values)
+}
+
+fn required_element(
+    dcm: &FileDicomObject<InMemDicomObject>,
+    tag: Tag,
+    name: &str,
+    source_path: &Path,
+) -> Result<DataElement<InMemDicomObject>> {
+    dcm.element(tag).cloned().map_err(|_| {
+        MammocatError::ExtractionError(format!("missing {name} in {}", source_path.display()))
+    })
+}
+
+fn required_code_sequence_signature(
+    dcm: &FileDicomObject<InMemDicomObject>,
+    tag: Tag,
+    name: &str,
+    source_path: &Path,
+) -> Result<Vec<CodeSequenceSignature>> {
+    let element = dcm.element(tag).map_err(|_| {
+        MammocatError::ExtractionError(format!("missing {name} in {}", source_path.display()))
+    })?;
+    let signature = code_sequence_signature(element);
+    if signature.is_empty() {
+        return Err(MammocatError::ExtractionError(format!(
+            "empty {name} in {}",
+            source_path.display()
+        )));
+    }
+    Ok(signature)
+}
+
+fn normalized_view_code_sequence(
+    dcm: &FileDicomObject<InMemDicomObject>,
+    source_path: &Path,
+) -> Result<DataElement<InMemDicomObject>> {
+    let element = dcm.element(tags::VIEW_CODE_SEQUENCE).map_err(|_| {
+        MammocatError::ExtractionError(format!(
+            "missing ViewCodeSequence in {}",
+            source_path.display()
+        ))
+    })?;
+    let mut items = element
+        .items()
+        .map(|items| items.to_vec())
+        .unwrap_or_default();
+    if items.len() != 1 {
+        return Err(MammocatError::ExtractionError(format!(
+            "ViewCodeSequence in {} has {} items; expected 1",
+            source_path.display(),
+            items.len()
+        )));
+    }
+    if items[0].element(tags::VIEW_MODIFIER_CODE_SEQUENCE).is_err() {
+        items[0].put(sequence_element(
+            tags::VIEW_MODIFIER_CODE_SEQUENCE,
+            Vec::new(),
+        ));
+    }
+    Ok(sequence_element(tags::VIEW_CODE_SEQUENCE, items))
+}
+
+fn code_sequence_signature(element: &DataElement<InMemDicomObject>) -> Vec<CodeSequenceSignature> {
+    element
+        .items()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    let nested = [
+                        tags::ANATOMIC_REGION_MODIFIER_SEQUENCE,
+                        tags::PRIMARY_ANATOMIC_STRUCTURE_SEQUENCE,
+                        tags::PRIMARY_ANATOMIC_STRUCTURE_MODIFIER_SEQUENCE,
+                        tags::VIEW_MODIFIER_CODE_SEQUENCE,
+                    ]
+                    .into_iter()
+                    .filter_map(|nested_tag| item.element(nested_tag).ok())
+                    .flat_map(code_sequence_signature)
+                    .collect();
+                    CodeSequenceSignature {
+                        code_value: get_string(item, tags::CODE_VALUE),
+                        coding_scheme_designator: get_string(item, tags::CODING_SCHEME_DESIGNATOR),
+                        code_meaning: get_string(item, tags::CODE_MEANING),
+                        nested,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_numeric_values(
+    name: &str,
+    values: &[String],
+    require_positive: bool,
+    source_path: &Path,
+) -> Result<()> {
+    for value in values {
+        let parsed = value.parse::<f64>().map_err(|_| {
+            MammocatError::ExtractionError(format!(
+                "invalid {name} value in {}",
+                source_path.display()
+            ))
+        })?;
+        if !parsed.is_finite() || (require_positive && parsed <= 0.0) {
+            return Err(MammocatError::ExtractionError(format!(
+                "invalid {name} value in {}",
+                source_path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn numeric_values_match(left: &[String], right: &[String]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            match (left.parse::<f64>(), right.parse::<f64>()) {
+                (Ok(left), Ok(right)) => left == right,
+                _ => false,
+            }
+        })
+}
+
+fn validate_enumerated_value(
+    name: &str,
+    value: &str,
+    allowed: &[&str],
+    source_path: &Path,
+) -> Result<()> {
+    if allowed
+        .iter()
+        .any(|allowed| value.eq_ignore_ascii_case(allowed))
+    {
+        Ok(())
+    } else {
+        Err(MammocatError::ExtractionError(format!(
+            "invalid {name} value in {}",
+            source_path.display()
+        )))
+    }
+}
+
+fn normalize_frame_laterality(value: &str, source_path: &Path) -> Result<String> {
+    let normalized = match value.trim().to_ascii_uppercase().as_str() {
+        "L" | "LEFT" => "L",
+        "R" | "RIGHT" => "R",
+        "B" | "BILATERAL" => "B",
+        "U" | "UNKNOWN" | "NONE" => "U",
+        _ => {
+            return Err(MammocatError::ExtractionError(format!(
+                "invalid frame laterality in {}",
+                source_path.display()
+            )));
+        }
+    };
+    Ok(normalized.to_string())
+}
+
+fn invalid_value_count(
+    name: &str,
+    expected: usize,
+    actual: usize,
+    source_path: &Path,
+) -> MammocatError {
+    MammocatError::ExtractionError(format!(
+        "{name} in {} has {actual} values; expected {expected}",
+        source_path.display()
+    ))
 }
 
 fn write_dicom_atomic(
@@ -1349,13 +2051,49 @@ mod tests {
             Some(BREAST_TOMOSYNTHESIS_SOP_CLASS_UID)
         );
         assert_eq!(get_string(&combined, tags::MODALITY).as_deref(), Some("MG"));
-        assert_eq!(
-            get_string(&combined, tags::VIEW_POSITION).as_deref(),
-            Some("MLO")
-        );
+        assert!(combined.element(tags::VIEW_CODE_SEQUENCE).is_ok());
         assert_eq!(get_i32(&combined, tags::NUMBER_OF_FRAMES), Some(2));
         assert_eq!(get_u16(&combined, tags::ROWS), Some(ROWS));
         assert_eq!(get_u16(&combined, tags::COLUMNS), Some(COLUMNS));
+
+        let shared_groups = combined
+            .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
+            .expect("converted DBT has shared functional groups")
+            .items()
+            .expect("shared functional groups is a sequence");
+        assert_eq!(shared_groups.len(), 1);
+        for required_group in [
+            tags::PIXEL_MEASURES_SEQUENCE,
+            tags::PLANE_ORIENTATION_SEQUENCE,
+            tags::FRAME_ANATOMY_SEQUENCE,
+            tags::PIXEL_VALUE_TRANSFORMATION_SEQUENCE,
+            tags::FRAME_VOILUT_SEQUENCE,
+        ] {
+            assert!(
+                shared_groups[0].element(required_group).is_ok(),
+                "missing shared functional group {required_group}"
+            );
+        }
+
+        let per_frame_groups = combined
+            .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)
+            .expect("converted DBT has per-frame functional groups")
+            .items()
+            .expect("per-frame functional groups is a sequence");
+        assert_eq!(per_frame_groups.len(), 2);
+        for frame in per_frame_groups {
+            for required_group in [
+                tags::FRAME_CONTENT_SEQUENCE,
+                tags::PLANE_POSITION_SEQUENCE,
+                tags::DERIVATION_IMAGE_SEQUENCE,
+                tags::X_RAY3_D_FRAME_TYPE_SEQUENCE,
+            ] {
+                assert!(
+                    frame.element(required_group).is_ok(),
+                    "missing per-frame functional group {required_group}"
+                );
+            }
+        }
 
         let pixels = combined
             .element(tags::PIXEL_DATA)
@@ -1479,6 +2217,48 @@ mod tests {
                 .into(),
             ),
         ));
+        obj.put(DataElement::new(
+            tags::IMAGE_ORIENTATION_PATIENT,
+            VR::DS,
+            PrimitiveValue::Strs(
+                vec![
+                    "1".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "1".to_string(),
+                    "0".to_string(),
+                ]
+                .into(),
+            ),
+        ));
+        obj.put(DataElement::new(
+            tags::PIXEL_SPACING,
+            VR::DS,
+            PrimitiveValue::Strs(vec!["0.1".to_string(), "0.1".to_string()].into()),
+        ));
+        obj.put(DataElement::new(tags::SLICE_THICKNESS, VR::DS, "1"));
+        obj.put(DataElement::new(
+            tags::FRAME_OF_REFERENCE_UID,
+            VR::UI,
+            "1.2.826.0.1.3680043.10.100.4",
+        ));
+        obj.put(DataElement::new(tags::WINDOW_CENTER, VR::DS, "2048"));
+        obj.put(DataElement::new(tags::WINDOW_WIDTH, VR::DS, "4096"));
+        obj.put(DataElement::new(tags::RESCALE_INTERCEPT, VR::DS, "0"));
+        obj.put(DataElement::new(tags::RESCALE_SLOPE, VR::DS, "1"));
+        obj.put(DataElement::new(tags::RESCALE_TYPE, VR::LO, "US"));
+        obj.put(sequence_element(
+            tags::ANATOMIC_REGION_SEQUENCE,
+            vec![code_item("76752008", "SCT", "Breast")],
+        ));
+        obj.put(sequence_element(
+            tags::VIEW_CODE_SEQUENCE,
+            vec![code_item("399368009", "SCT", "medio-lateral oblique")],
+        ));
+        put_str(&mut obj, tags::BREAST_IMPLANT_PRESENT, "NO");
+        put_str(&mut obj, tags::BURNED_IN_ANNOTATION, "NO");
+        put_str(&mut obj, tags::LOSSY_IMAGE_COMPRESSION, "00");
         put_u16(&mut obj, tags::ROWS, rows);
         put_u16(&mut obj, tags::COLUMNS, COLUMNS);
         put_u16(&mut obj, tags::SAMPLES_PER_PIXEL, 1);

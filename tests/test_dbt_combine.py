@@ -11,7 +11,16 @@ import pytest
 from pydicom.filewriter import dcmwrite
 from pydicom.uid import UID, ExplicitVRBigEndian
 
-from mammocat import BREAST_TOMOSYNTHESIS_SOP_CLASS_UID, convert_dbt_study, scan_dbt_study
+from mammocat import (
+    BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
+    DbtObjectKind,
+    Laterality,
+    MammogramExtractor,
+    MammogramType,
+    ViewPosition,
+    convert_dbt_study,
+    scan_dbt_study,
+)
 
 from .conftest import (
     BREAST_TOMOSYNTHESIS_SOP_CLASS_UID as EXPECTED_DBT_SOP_CLASS_UID,
@@ -113,7 +122,7 @@ def test_convert_combines_dbt_and_copies_ffdm(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
-    create_old_format_dbt_series(input_dir)
+    source_paths = create_old_format_dbt_series(input_dir)
     _write_ffdm(input_dir / "ffdm.dcm")
 
     report = convert_dbt_study(input_dir, output_dir)
@@ -129,9 +138,54 @@ def test_convert_combines_dbt_and_copies_ffdm(tmp_path: Path) -> None:
     assert ds.SOPClassUID == EXPECTED_DBT_SOP_CLASS_UID
     assert ds.file_meta.MediaStorageSOPClassUID == EXPECTED_DBT_SOP_CLASS_UID
     assert ds.NumberOfFrames == "3"
-    assert ds.ViewPosition == "MLO"
-    assert ds.ImageLaterality == "L"
+    assert "ViewPosition" not in ds
+    assert "ImageLaterality" not in ds
     assert len(ds.PixelData) == 3 * ds.Rows * ds.Columns * 2
+    assert ds.ImageType == ["DERIVED", "PRIMARY", "TOMOSYNTHESIS", "NONE"]
+    assert ds.VolumetricProperties == "VOLUME"
+    assert ds.VolumeBasedCalculationTechnique == "TOMOSYNTHESIS"
+    assert ds.PresentationLUTShape == "IDENTITY"
+
+    assert len(ds.SharedFunctionalGroupsSequence) == 1
+    shared = ds.SharedFunctionalGroupsSequence[0]
+    assert shared.PixelMeasuresSequence[0].PixelSpacing == [0.1, 0.1]
+    assert shared.PixelMeasuresSequence[0].SliceThickness == 1.0
+    assert shared.PlaneOrientationSequence[0].ImageOrientationPatient == [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+    ]
+    assert shared.FrameAnatomySequence[0].FrameLaterality == "L"
+    assert shared.PixelValueTransformationSequence[0].RescaleIntercept == 0
+    assert shared.PixelValueTransformationSequence[0].RescaleSlope == 1
+    assert shared.FrameVOILUTSequence[0].WindowCenter == 2048
+    assert shared.FrameVOILUTSequence[0].WindowWidth == 4096
+
+    assert len(ds.PerFrameFunctionalGroupsSequence) == 3
+    source_uids = [
+        pydicom.dcmread(path, stop_before_pixels=True).SOPInstanceUID for path in source_paths
+    ]
+    for index, frame in enumerate(ds.PerFrameFunctionalGroupsSequence, start=1):
+        assert frame.FrameContentSequence[0].InStackPositionNumber == index
+        assert frame.PlanePositionSequence[0].ImagePositionPatient == [0.0, 0.0, float(index - 1)]
+        assert frame.XRay3DFrameTypeSequence[0].FrameType == [
+            "DERIVED",
+            "PRIMARY",
+            "TOMOSYNTHESIS",
+            "NONE",
+        ]
+        source = frame.DerivationImageSequence[0].SourceImageSequence[0]
+        assert source.ReferencedSOPInstanceUID == source_uids[index - 1]
+        assert source.SpatialLocationsPreserved == "YES"
+
+    metadata = MammogramExtractor.extract_from_file(output_path)
+    assert metadata.mammogram_type == MammogramType.TOMO
+    assert metadata.dbt_object_kind == DbtObjectKind.VOLUME
+    assert metadata.laterality == Laterality.LEFT
+    assert metadata.view_position == ViewPosition.MLO
 
 
 def test_convert_dry_run_reports_planned_outputs_without_writes(tmp_path: Path) -> None:
@@ -170,6 +224,36 @@ def test_convert_rejects_invalid_pixel_data_length(tmp_path: Path) -> None:
     ds.save_as(path, enforce_file_format=True)
 
     with pytest.raises(Exception, match="PixelData length"):
+        convert_dbt_study(input_dir, output_dir)
+
+    assert not output_dir.exists()
+
+
+def test_convert_rejects_missing_functional_group_metadata(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    paths = create_old_format_dbt_series(input_dir)
+    ds = pydicom.dcmread(paths[0])
+    del ds.PixelSpacing
+    ds.save_as(paths[0], enforce_file_format=True)
+
+    with pytest.raises(Exception, match="missing PixelSpacing"):
+        convert_dbt_study(input_dir, output_dir)
+
+    assert not output_dir.exists()
+
+
+def test_convert_rejects_inconsistent_functional_group_metadata(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    paths = create_old_format_dbt_series(input_dir)
+    ds = pydicom.dcmread(paths[-1])
+    ds.WindowCenter = 1024
+    ds.save_as(paths[-1], enforce_file_format=True)
+
+    with pytest.raises(Exception, match="inconsistent functional-group metadata"):
         convert_dbt_study(input_dir, output_dir)
 
     assert not output_dir.exists()
