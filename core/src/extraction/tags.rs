@@ -26,6 +26,8 @@ pub const IMAGER_PIXEL_SPACING: Tag = Tag(0x0018, 0x1164);
 pub const VIEW_POSITION: Tag = Tag(0x0018, 0x5101);
 pub const VIEW_CODE_SEQUENCE: Tag = Tag(0x0054, 0x0220);
 pub const VIEW_MODIFIER_CODE_SEQUENCE: Tag = Tag(0x0054, 0x0222);
+pub const CODE_VALUE: Tag = Tag(0x0008, 0x0100);
+pub const CODING_SCHEME_DESIGNATOR: Tag = Tag(0x0008, 0x0102);
 pub const CODE_MEANING: Tag = Tag(0x0008, 0x0104);
 pub const FRAME_LATERALITY: Tag = Tag(0x0020, 0x9072);
 pub const FRAME_ANATOMY_SEQUENCE: Tag = Tag(0x0020, 0x9071);
@@ -76,7 +78,7 @@ pub const INSTITUTION_NAME: Tag = Tag(0x0008, 0x0080);
 pub const INSTITUTION_ADDRESS: Tag = Tag(0x0008, 0x0081);
 
 // Breast-Specific Tags
-pub const PADDLE_DESCRIPTION: Tag = Tag(0x0018, 0x1405);
+pub const PADDLE_DESCRIPTION: Tag = Tag(0x0018, 0x11A4);
 pub const BREAST_IMPLANT_PRESENT: Tag = Tag(0x0028, 0x1300);
 pub const BODY_PART_THICKNESS: Tag = Tag(0x0018, 0x1075);
 
@@ -170,5 +172,6 @@ mod tests {
         assert_eq!(CONCATENATION_UID, Tag(0x0020, 0x9161));
         assert_eq!(LATERALITY, Tag(0x0020, 0x0060));
         assert_eq!(VIEW_POSITION, Tag(0x0018, 0x5101));
+        assert_eq!(PADDLE_DESCRIPTION, Tag(0x0018, 0x11A4));
     }
 }

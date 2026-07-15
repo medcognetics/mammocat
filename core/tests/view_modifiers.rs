@@ -18,14 +18,14 @@ fn nested_view_modifiers_match_top_level_in_rust_and_cli() -> Result<(), Box<dyn
     let top_level = MammogramExtractor::extract_file(&dicom_object::open_file(&top_level_path)?)?;
     let nested = MammogramExtractor::extract_file(&dicom_object::open_file(&nested_path)?)?;
     let top_level_flags = (
-        top_level.is_implant_displaced,
-        top_level.is_spot_compression,
-        top_level.is_magnified,
+        top_level.is_implant_displaced(),
+        top_level.is_spot_compression(),
+        top_level.is_magnified(),
     );
     let nested_flags = (
-        nested.is_implant_displaced,
-        nested.is_spot_compression,
-        nested.is_magnified,
+        nested.is_implant_displaced(),
+        nested.is_spot_compression(),
+        nested.is_magnified(),
     );
     assert_eq!(top_level_flags, (true, true, true));
     assert_eq!(nested_flags, top_level_flags);
@@ -88,7 +88,9 @@ fn write_mammogram(path: &Path, nested_modifiers: bool) -> Result<(), Box<dyn st
 
     if nested_modifiers {
         let view_item = InMemDicomObject::from_element_iter([
-            DataElement::new(tags::CODE_MEANING, VR::LO, "MLO"),
+            DataElement::new(tags::CODE_VALUE, VR::SH, "399368009"),
+            DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, "SCT"),
+            DataElement::new(tags::CODE_MEANING, VR::LO, "medio-lateral oblique"),
             modifier_sequence(tags::VIEW_MODIFIER_CODE_SEQUENCE),
         ]);
         object.put(sequence(tags::VIEW_CODE_SEQUENCE, vec![view_item]));
@@ -112,16 +114,20 @@ fn write_mammogram(path: &Path, nested_modifiers: bool) -> Result<(), Box<dyn st
 fn modifier_sequence(tag: Tag) -> DataElement<InMemDicomObject> {
     sequence(
         tag,
-        ["Implant Displaced", "Spot Compression", "Magnification"]
-            .into_iter()
-            .map(|meaning| {
-                InMemDicomObject::from_element_iter([DataElement::new(
-                    tags::CODE_MEANING,
-                    VR::LO,
-                    meaning,
-                )])
-            })
-            .collect(),
+        [
+            ("399209000", "Implant Displaced"),
+            ("399055006", "Spot Compression"),
+            ("399163009", "Magnification"),
+        ]
+        .into_iter()
+        .map(|(code_value, meaning)| {
+            InMemDicomObject::from_element_iter([
+                DataElement::new(tags::CODE_VALUE, VR::SH, code_value),
+                DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, "SCT"),
+                DataElement::new(tags::CODE_MEANING, VR::LO, meaning),
+            ])
+        })
+        .collect(),
     )
 }
 

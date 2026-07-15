@@ -19,6 +19,12 @@ pub use laterality::extract_laterality;
 pub use mammo_type::{extract_dbt_object_kind, extract_image_type, extract_mammogram_type};
 pub use tags::*;
 pub use view_modifiers::{
-    extract_view_modifier_meanings, is_implant_displaced, is_magnified, is_spot_compression,
+    extract_view_modifier_meanings, extract_view_modifiers, is_implant_displaced, is_magnified,
+    is_spot_compression,
 };
-pub use view_position::{extract_view_position, from_str as parse_view_position};
+pub use view_position::{
+    extract_view_descriptor, extract_view_position, from_str as parse_view_position,
+    view_code_definition, view_modifier_code_definition, Confidence, Evidence,
+    MammographyViewDescriptor, ViewCodeDefinition, ViewModifierCodeDefinition,
+    VIEW_CODE_DEFINITIONS, VIEW_MODIFIER_CODE_DEFINITIONS,
+};

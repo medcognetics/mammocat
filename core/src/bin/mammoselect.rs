@@ -411,7 +411,7 @@ fn output_json(
                 image_area: r.image_area(),
                 transfer_syntax_uid: r.transfer_syntax_uid.clone(),
                 is_lossy_compressed: r.is_lossy_compressed,
-                is_implant_displaced: r.is_implant_displaced,
+                is_implant_displaced: r.is_implant_displaced(),
             });
             (key, value)
         })
@@ -471,7 +471,7 @@ impl<'a> fmt::Display for TextReport<'a> {
                         area
                     )?;
                 }
-                if record.is_implant_displaced {
+                if record.is_implant_displaced() {
                     writeln!(f, "  Implant Displaced: yes")?;
                 }
                 if record.is_lossy_compressed {
@@ -526,6 +526,7 @@ mod tests {
                 dbt_object_kind: default_dbt_object_kind(mammo_type),
                 laterality,
                 view_position,
+                view_modifiers: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -534,9 +535,6 @@ mod tests {
                 ),
                 is_for_processing: false,
                 has_implant: false,
-                is_spot_compression: false,
-                is_magnified: false,
-                is_implant_displaced: false,
                 manufacturer: None,
                 model: None,
                 number_of_frames: 1,
@@ -560,9 +558,6 @@ mod tests {
             columns: Some(3328),
             transfer_syntax_uid: Some(transfer_syntax_uid.to_string()),
             is_lossy_compressed,
-            is_implant_displaced: false,
-            is_spot_compression: false,
-            is_magnified: false,
             series_instance_uid: Some(format!("{study_uid}.series")),
         }
     }

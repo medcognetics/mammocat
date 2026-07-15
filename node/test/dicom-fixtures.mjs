@@ -5,6 +5,15 @@ const DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.1.2"
 const BREAST_TOMOSYNTHESIS_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.13.1.3"
 const EXPLICIT_VR_LITTLE_ENDIAN = "1.2.840.10008.1.2.1"
 const IMPLEMENTATION_CLASS_UID = "1.2.826.0.1.3680043.10.543.74"
+const VIEW_CODES = {
+  CC: ["399162004", "cranio-caudal"],
+  MLO: ["399368009", "medio-lateral oblique"],
+}
+const VIEW_MODIFIER_CODES = {
+  "implant displaced": ["399209000", "Implant Displaced"],
+  magnification: ["399163009", "Magnification"],
+  "spot compression": ["399055006", "Spot Compression"],
+}
 
 export async function writeMammogramFile(directory, fileName, options = {}) {
   await mkdir(directory, { recursive: true })
@@ -71,17 +80,19 @@ export function createMammogramBytes(options = {}) {
 }
 
 function viewCodeSequence(viewPosition, modifierMeanings) {
-  const modifierItems = modifierMeanings.map((meaning, index) =>
-    concat([
-      element(0x0008, 0x0100, "SH", `MOD-${index + 1}`),
-      element(0x0008, 0x0102, "SH", "99MAMMOCAT"),
-      element(0x0008, 0x0104, "LO", meaning),
-    ]),
-  )
+  const modifierItems = modifierMeanings.map((meaning) => {
+    const [codeValue, codeMeaning] = VIEW_MODIFIER_CODES[meaning.toLowerCase()]
+    return concat([
+      element(0x0008, 0x0100, "SH", codeValue),
+      element(0x0008, 0x0102, "SH", "SCT"),
+      element(0x0008, 0x0104, "LO", codeMeaning),
+    ])
+  })
+  const [viewCodeValue, viewCodeMeaning] = VIEW_CODES[viewPosition]
   const viewItem = concat([
-    element(0x0008, 0x0100, "SH", viewPosition),
-    element(0x0008, 0x0102, "SH", "99MAMMOCAT"),
-    element(0x0008, 0x0104, "LO", viewPosition),
+    element(0x0008, 0x0100, "SH", viewCodeValue),
+    element(0x0008, 0x0102, "SH", "SCT"),
+    element(0x0008, 0x0104, "LO", viewCodeMeaning),
     sequenceElement(0x0054, 0x0222, modifierItems),
   ])
   return sequenceElement(0x0054, 0x0220, [viewItem])

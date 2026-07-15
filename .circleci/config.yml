@@ -19,7 +19,8 @@ jobs:
                 command: curl -LsSf https://astral.sh/uv/install.sh | sh
             - restore_cache:
                 keys:
-                    - quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
+                    - quality-cache-v2-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "package-lock.json" }}-{{ checksum "node/package-lock.json" }}
+                    - quality-cache-v2-
                     - quality-cache-v1-
             - run:
                 name: Install Python dependencies
@@ -53,9 +54,10 @@ jobs:
                 name: Type-check Node bindings
                 command: make node-typecheck
             - save_cache:
-                key: quality-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
+                key: quality-cache-v2-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "package-lock.json" }}-{{ checksum "node/package-lock.json" }}
                 paths:
                     - "~/.cargo"
+                    - "~/.npm"
                     - "./target"
                     - "./.venv"
                     - "./node/node_modules"
@@ -75,7 +77,8 @@ jobs:
                 command: curl -LsSf https://astral.sh/uv/install.sh | sh
             - restore_cache:
                 keys:
-                    - build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
+                    - build-cache-v2-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "package-lock.json" }}-{{ checksum "node/package-lock.json" }}
+                    - build-cache-v2-
                     - build-cache-v1-
             - run:
                 name: Install Python dependencies
@@ -111,10 +114,16 @@ jobs:
             - run:
                 name: Verify Node package
                 command: make node-pack
+            - run:
+                name: Test Node 18 commit-pinned package installation
+                command: |
+                    npx --yes --package node@18.20.8 --package npm@10.9.8 \
+                        --call 'npm --prefix node run test:git-install'
             - save_cache:
-                key: build-cache-v1-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "node/package-lock.json" }}
+                key: build-cache-v2-{{ checksum "Cargo.lock" }}-{{ checksum "pyproject.toml" }}-{{ checksum "package-lock.json" }}-{{ checksum "node/package-lock.json" }}
                 paths:
                     - "~/.cargo"
+                    - "~/.npm"
                     - "./target"
                     - "./.venv"
                     - "./node/node_modules"

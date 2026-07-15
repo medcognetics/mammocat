@@ -8,6 +8,11 @@ BREAST_TOMOSYNTHESIS_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.13.1.3"
 CT_IMAGE_STORAGE_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.2"
 DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.1.2"
 
+VIEW_CODES = {
+    "CC": ("399162004", "cranio-caudal"),
+    "MLO": ("399368009", "medio-lateral oblique"),
+}
+
 
 def _apply_mammogram_type(ds: Dataset, mammogram_type: str) -> None:
     """Apply mammogram-type-specific synthetic tags."""
@@ -129,25 +134,27 @@ def create_mammogram_dicom(
     if has_implant:
         ds.BreastImplantPresent = "YES"
 
-    # View modifiers for spot compression, magnification, implant displaced
+    # Canonical CID 4014/4015 view coding. Tests that exercise malformed vendor
+    # codes construct those sequences explicitly.
     view_modifier_codes = []
     if is_spot_compression:
-        view_modifier_codes.append(("R-102D1", "99SDM", "spot compression"))
+        view_modifier_codes.append(("399055006", "SCT", "Spot Compression"))
     if is_magnified:
-        view_modifier_codes.append(("R-102D3", "99SDM", "magnification"))
+        view_modifier_codes.append(("399163009", "SCT", "Magnification"))
     if is_implant_displaced:
-        view_modifier_codes.append(("R-4092C", "99SDM", "implant displaced"))
+        view_modifier_codes.append(("399209000", "SCT", "Implant Displaced"))
+
+    view_code = None
+    if view_position in VIEW_CODES:
+        code_value, code_meaning = VIEW_CODES[view_position]
+        view_code = Dataset()
+        view_code.CodeValue = code_value
+        view_code.CodingSchemeDesignator = "SCT"
+        view_code.CodeMeaning = code_meaning
+        ds.ViewCodeSequence = [view_code]
 
     if view_modifier_codes:
-        modifier_parent = ds
-        if nested_view_modifiers:
-            view_code = Dataset()
-            view_code.CodeValue = view_position
-            view_code.CodingSchemeDesignator = "99MAMMOCAT"
-            view_code.CodeMeaning = view_position
-            ds.ViewCodeSequence = [view_code]
-            modifier_parent = view_code
-
+        modifier_parent = view_code if nested_view_modifiers and view_code is not None else ds
         modifier_parent.ViewModifierCodeSequence = []
         for code_value, coding_scheme, code_meaning in view_modifier_codes:
             modifier = Dataset()
@@ -191,6 +198,9 @@ def create_old_format_dbt_slice(
     ds.StudyInstanceUID = study_uid
     ds.StudyDate = "20240102"
     ds.StudyTime = "130000"
+    ds.ReferringPhysicianName = ""
+    ds.StudyID = ""
+    ds.AccessionNumber = ""
     ds.SeriesInstanceUID = series_uid
     ds.SeriesNumber = "7"
     ds.SeriesDescription = f"TOMO {laterality}-{view} 2D+, Diagnosis"
@@ -199,6 +209,38 @@ def create_old_format_dbt_slice(
     ds.SOPInstanceUID = sop_uid
     ds.InstanceNumber = str(instance_number)
     ds.ImagePositionPatient = [0.0, 0.0, float(instance_number)]
+    ds.ImageOrientationPatient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    ds.PixelSpacing = [0.1, 0.1]
+    ds.SliceThickness = 1.0
+    ds.FrameOfReferenceUID = f"{study_uid}.99"
+    ds.PositionReferenceIndicator = ""
+    ds.WindowCenter = 2048
+    ds.WindowWidth = 4096
+    ds.RescaleIntercept = 0
+    ds.RescaleSlope = 1
+    ds.RescaleType = "US"
+    ds.ContentDate = "20240102"
+    ds.ContentTime = "130000"
+    ds.Manufacturer = "TEST_MANUFACTURER"
+    ds.ManufacturerModelName = "TEST_MODEL"
+    ds.DeviceSerialNumber = "TEST_SERIAL"
+    ds.SoftwareVersions = "TEST_SOFTWARE"
+    ds.BurnedInAnnotation = "NO"
+    ds.LossyImageCompression = "00"
+    ds.BreastImplantPresent = "NO"
+    ds.AcquisitionContextSequence = []
+
+    anatomy = Dataset()
+    anatomy.CodeValue = "76752008"
+    anatomy.CodingSchemeDesignator = "SCT"
+    anatomy.CodeMeaning = "Breast"
+    ds.AnatomicRegionSequence = [anatomy]
+
+    view_code = Dataset()
+    view_code.CodeValue = "399368009" if view == "MLO" else "399162004"
+    view_code.CodingSchemeDesignator = "SCT"
+    view_code.CodeMeaning = "medio-lateral oblique" if view == "MLO" else "cranio-caudal"
+    ds.ViewCodeSequence = [view_code]
     ds.Rows = rows
     ds.Columns = columns
     ds.SamplesPerPixel = 1
