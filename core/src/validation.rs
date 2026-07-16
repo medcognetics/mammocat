@@ -2,13 +2,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use dicom::parser::dataset::lazy_read::LazyDataSetReader;
+use dicom::parser::dataset::LazyDataToken;
+use dicom::parser::stateful::decode::StatefulDecode;
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_core::header::HasLength;
 use dicom_core::{DataElement, DicomValue, Tag};
-use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
+use dicom_object::{open_file, FileDicomObject, FileMetaTable, InMemDicomObject, OpenFileOptions};
 
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::completion::{plan_completion, CompletionOptions};
@@ -645,6 +648,162 @@ struct FileValidationOutcome {
     record: Option<MammogramRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PixelDataState {
+    Present(String),
+    Empty,
+    Missing,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PixelDataProbeError {
+    #[error("{0}")]
+    InvalidPixelData(String),
+    #[error("{0}")]
+    Unsupported(String),
+}
+
+impl PixelDataProbeError {
+    fn invalid_pixel_data(source: impl ToString) -> Self {
+        Self::InvalidPixelData(source.to_string())
+    }
+
+    fn unsupported(source: impl ToString) -> Self {
+        Self::Unsupported(source.to_string())
+    }
+}
+
+fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, PixelDataProbeError> {
+    let file = File::open(path).map_err(PixelDataProbeError::unsupported)?;
+    let file_length = file
+        .metadata()
+        .map_err(PixelDataProbeError::unsupported)?
+        .len();
+    let mut reader = BufReader::new(file);
+    let mut prefix = [0_u8; 132];
+    let prefix_len = reader
+        .read(&mut prefix)
+        .map_err(PixelDataProbeError::unsupported)?;
+    let dataset_start = if prefix_len >= prefix.len() && &prefix[128..] == b"DICM" {
+        128
+    } else {
+        0
+    };
+    reader
+        .seek(SeekFrom::Start(dataset_start))
+        .map_err(PixelDataProbeError::unsupported)?;
+
+    let meta = FileMetaTable::from_reader(&mut reader).map_err(PixelDataProbeError::unsupported)?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .ok_or_else(|| {
+            PixelDataProbeError::unsupported(format!(
+                "unsupported transfer syntax: {}",
+                meta.transfer_syntax()
+            ))
+        })?;
+    let mut dataset = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
+        .map_err(PixelDataProbeError::unsupported)?;
+    let mut sequence_depth = 0_usize;
+
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(PixelDataProbeError::unsupported)?;
+        match token {
+            LazyDataToken::ElementHeader(header)
+                if sequence_depth == 0 && header.tag == PIXEL_DATA_TAG =>
+            {
+                let length = header.len.get().ok_or_else(|| {
+                    PixelDataProbeError::invalid_pixel_data("native PixelData has undefined length")
+                })?;
+                let value = dataset
+                    .advance()
+                    .ok_or_else(|| {
+                        PixelDataProbeError::invalid_pixel_data("native PixelData value is missing")
+                    })?
+                    .map_err(PixelDataProbeError::invalid_pixel_data)?;
+                match value {
+                    LazyDataToken::LazyValue { header, decoder }
+                        if header.tag == PIXEL_DATA_TAG =>
+                    {
+                        let value_end = decoder
+                            .position()
+                            .checked_add(u64::from(length))
+                            .ok_or_else(|| {
+                                PixelDataProbeError::invalid_pixel_data(
+                                    "native PixelData length overflows file",
+                                )
+                            })?;
+                        if value_end > file_length {
+                            return Err(PixelDataProbeError::invalid_pixel_data(format!(
+                                "native PixelData declares {length} bytes beyond the end of the file"
+                            )));
+                        }
+                    }
+                    _ => {
+                        return Err(PixelDataProbeError::invalid_pixel_data(
+                            "native PixelData value is missing",
+                        ));
+                    }
+                }
+                return if length == 0 {
+                    Ok(PixelDataState::Empty)
+                } else {
+                    Ok(PixelDataState::Present(format!("{length} bytes")))
+                };
+            }
+            LazyDataToken::PixelSequenceStart if sequence_depth == 0 => {
+                return probe_pixel_sequence(&mut dataset);
+            }
+            LazyDataToken::SequenceStart { .. } | LazyDataToken::PixelSequenceStart => {
+                sequence_depth += 1;
+            }
+            LazyDataToken::SequenceEnd => {
+                sequence_depth = sequence_depth.saturating_sub(1);
+            }
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip().map_err(PixelDataProbeError::unsupported)?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(PixelDataState::Missing)
+}
+
+fn probe_pixel_sequence<S>(
+    dataset: &mut LazyDataSetReader<S>,
+) -> std::result::Result<PixelDataState, PixelDataProbeError>
+where
+    S: dicom::parser::stateful::decode::StatefulDecode,
+{
+    let mut item_count = 0_usize;
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(PixelDataProbeError::invalid_pixel_data)?;
+        match token {
+            LazyDataToken::ItemStart { .. } => item_count += 1,
+            LazyDataToken::SequenceEnd => {
+                let fragment_count = item_count.saturating_sub(1);
+                return if fragment_count == 0 {
+                    Ok(PixelDataState::Empty)
+                } else {
+                    Ok(PixelDataState::Present(format!(
+                        "{fragment_count} fragments"
+                    )))
+                };
+            }
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip()
+                    .map_err(PixelDataProbeError::invalid_pixel_data)?;
+            }
+            _ => {}
+        }
+    }
+
+    Err(PixelDataProbeError::invalid_pixel_data(
+        "encapsulated PixelData ended before its sequence delimiter",
+    ))
+}
+
 pub fn validate_path(
     path: &Path,
     options: &ValidationOptions,
@@ -991,7 +1150,25 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
         };
     }
 
-    validate_open_result_with_record(path.to_path_buf(), open_file(path), options)
+    match probe_pixel_data(path) {
+        Ok(pixel_data_state) => validate_open_result_with_record(
+            path.to_path_buf(),
+            OpenFileOptions::new()
+                .read_until(PIXEL_DATA_TAG)
+                .open_file(path),
+            options,
+            Some(pixel_data_state),
+        ),
+        Err(PixelDataProbeError::Unsupported(_)) => {
+            validate_open_result_with_record(path.to_path_buf(), open_file(path), options, None)
+        }
+        Err(PixelDataProbeError::InvalidPixelData(source)) => validate_open_result_with_record(
+            path.to_path_buf(),
+            Err(format!("PixelData probe failed: {source}")),
+            options,
+            None,
+        ),
+    }
 }
 
 fn validate_dicom_bytes_with_record(
@@ -1000,13 +1177,19 @@ fn validate_dicom_bytes_with_record(
     options: &ValidationOptions,
 ) -> FileValidationOutcome {
     let cursor = Cursor::new(bytes);
-    validate_open_result_with_record(source_path, FileDicomObject::from_reader(cursor), options)
+    validate_open_result_with_record(
+        source_path,
+        FileDicomObject::from_reader(cursor),
+        options,
+        None,
+    )
 }
 
 fn validate_open_result_with_record<E>(
     source_path: PathBuf,
     dcm: Result<FileDicomObject<InMemDicomObject>, E>,
     options: &ValidationOptions,
+    pixel_data_state: Option<PixelDataState>,
 ) -> FileValidationOutcome
 where
     E: std::fmt::Display,
@@ -1033,7 +1216,12 @@ where
     collect_file_meta(&mut report, &dcm);
     validate_identity(&mut report, &dcm, options.profile, allow_non_mg_modality);
     validate_image_fields(&mut report, &dcm, options.profile);
-    validate_pixel_fields(&mut report, &dcm, options.profile);
+    validate_pixel_fields(
+        &mut report,
+        &dcm,
+        options.profile,
+        pixel_data_state.as_ref(),
+    );
     validate_canonical_completion(&mut report, &dcm);
     let metadata = validate_extraction(&mut report, &dcm, options.profile, allow_non_mg_modality);
     let record = metadata.as_ref().and_then(|metadata| {
@@ -1413,6 +1601,7 @@ fn validate_pixel_fields(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
+    pixel_data_state: Option<&PixelDataState>,
 ) {
     let strict = profile == ValidationProfile::Selection;
     report.pixel.bits_allocated = validate_positive_u16(
@@ -1442,7 +1631,7 @@ fn validate_pixel_fields(
         strict,
     );
     validate_bit_relationships(report, strict);
-    validate_pixel_data(report, dcm, strict);
+    validate_pixel_data(report, dcm, strict, pixel_data_state);
 }
 
 fn validate_extraction(
@@ -2019,48 +2208,64 @@ fn validate_pixel_data(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     strict: bool,
+    pixel_data_state: Option<&PixelDataState>,
 ) {
+    if let Some(pixel_data_state) = pixel_data_state {
+        validate_pixel_data_state(report, strict, pixel_data_state);
+        return;
+    }
+
     match dcm.element(PIXEL_DATA_TAG) {
         Ok(element) if !element.is_empty() => {
-            report.pixel.pixel_data_present = true;
             let description = pixel_data_description(element);
+            validate_pixel_data_state(report, strict, &PixelDataState::Present(description));
+        }
+        Ok(_) => validate_pixel_data_state(report, strict, &PixelDataState::Empty),
+        Err(_) => validate_pixel_data_state(report, strict, &PixelDataState::Missing),
+    }
+}
+
+fn validate_pixel_data_state(
+    report: &mut FileValidationReport,
+    strict: bool,
+    pixel_data_state: &PixelDataState,
+) {
+    match pixel_data_state {
+        PixelDataState::Present(description) => {
+            report.pixel.pixel_data_present = true;
             report.pixel.pixel_data_description = Some(description.clone());
             report.pass(
                 "PixelData",
                 "PixelData is present".to_string(),
                 Some(PIXEL_DATA_TAG),
-                Some(description),
+                Some(description.clone()),
             );
         }
-        Ok(_) if strict => report.record_tag(
-            MessageKind::Error,
+        PixelDataState::Empty => report.record_tag(
+            if strict {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
             "empty_pixel_data",
             "PixelData",
             "PixelData is present but empty".to_string(),
             (PIXEL_DATA_TAG, "PixelData"),
             None,
         ),
-        Ok(_) => report.record_tag(
-            MessageKind::Warning,
-            "empty_pixel_data",
-            "PixelData",
-            "PixelData is present but empty".to_string(),
-            (PIXEL_DATA_TAG, "PixelData"),
-            None,
-        ),
-        Err(_) if strict => report.record_tag(
-            MessageKind::Error,
+        PixelDataState::Missing => report.record_tag(
+            if strict {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
             "missing_pixel_data",
             "PixelData",
-            "PixelData is required for selection readiness".to_string(),
-            (PIXEL_DATA_TAG, "PixelData"),
-            None,
-        ),
-        Err(_) => report.record_tag(
-            MessageKind::Warning,
-            "missing_pixel_data",
-            "PixelData",
-            "PixelData is absent; metadata extraction can still succeed".to_string(),
+            if strict {
+                "PixelData is required for selection readiness".to_string()
+            } else {
+                "PixelData is absent; metadata extraction can still succeed".to_string()
+            },
             (PIXEL_DATA_TAG, "PixelData"),
             None,
         ),
@@ -2159,6 +2364,10 @@ mod tests {
         VIEW_MODIFIER_CODE_SEQUENCE, VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
     };
     use dicom_core::value::DataSetSequence;
+    #[cfg(feature = "json")]
+    use dicom_core::value::PixelFragmentSequence;
+    #[cfg(feature = "json")]
+    use dicom_core::DicomValue;
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_object::InMemDicomObject;
 
@@ -2282,7 +2491,7 @@ mod tests {
         collect_file_meta(&mut report, dcm);
         validate_identity(&mut report, dcm, profile, false);
         validate_image_fields(&mut report, dcm, profile);
-        validate_pixel_fields(&mut report, dcm, profile);
+        validate_pixel_fields(&mut report, dcm, profile, None);
         validate_canonical_completion(&mut report, dcm);
         let metadata = validate_extraction(&mut report, dcm, profile, false);
         validate_selection_eligibility(&mut report, metadata.as_ref(), &FilterConfig::default());
@@ -2314,6 +2523,111 @@ mod tests {
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.status, ValidationStatus::Pass);
         assert!(report.pixel.pixel_data_present);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn metadata_only_file_validation_matches_eager_report() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("synthetic.dcm");
+        valid_metadata_object().write_to_file(&path).unwrap();
+        let options = ValidationOptions::default();
+
+        let eager =
+            validate_open_result_with_record(path.clone(), open_file(&path), &options, None).report;
+        let metadata_only = validate_file_with_record(&path, &options).report;
+
+        assert_eq!(
+            serde_json::to_value(metadata_only).unwrap(),
+            serde_json::to_value(eager).unwrap()
+        );
+    }
+
+    #[test]
+    fn metadata_only_validation_rejects_truncated_native_pixel_data() {
+        const PIXEL_VALUE_LENGTH: u64 = 64 * 2;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("truncated-pixel-data.dcm");
+        valid_metadata_object().write_to_file(&path).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let file_length = file.metadata().unwrap().len();
+        file.set_len(file_length - PIXEL_VALUE_LENGTH).unwrap();
+
+        let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
+
+        let error = report
+            .errors
+            .iter()
+            .find(|error| error.code == "dicom_read_failed")
+            .expect("missing DICOM read failure");
+        assert!(error.message.contains("PixelData probe failed"));
+        assert!(error.message.contains("beyond the end of the file"));
+        assert!(!report.pixel.pixel_data_present);
+    }
+
+    #[test]
+    fn metadata_only_validation_ignores_nested_pixel_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("nested-pixel-data.dcm");
+        let mut dcm = valid_metadata_object();
+        dcm.remove_element(PIXEL_DATA_TAG);
+        let icon = InMemDicomObject::from_element_iter([DataElement::new(
+            PIXEL_DATA_TAG,
+            VR::OW,
+            PrimitiveValue::U16(vec![0_u16; 4].into()),
+        )]);
+        dcm.put(DataElement::new(
+            dicom_dictionary_std::tags::ICON_IMAGE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![icon]),
+        ));
+        dcm.write_to_file(&path).unwrap();
+
+        let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
+
+        assert!(error_codes(&report).contains("missing_pixel_data"));
+        assert!(!report.pixel.pixel_data_present);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn metadata_only_validation_preserves_encapsulated_fragment_count() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("synthetic-encapsulated.dcm");
+        let mut inner = valid_metadata_object().into_inner();
+        inner.put(DataElement::new(
+            PIXEL_DATA_TAG,
+            VR::OB,
+            DicomValue::PixelSequence(PixelFragmentSequence::new_fragments(vec![
+                vec![1_u8, 2],
+                vec![3_u8, 4],
+            ])),
+        ));
+        inner
+            .with_meta(
+                dicom_object::FileMetaTableBuilder::new()
+                    .transfer_syntax("1.2.840.10008.1.2.4.50")
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.9"),
+            )
+            .unwrap()
+            .write_to_file(&path)
+            .unwrap();
+        let options = ValidationOptions::default();
+
+        let eager =
+            validate_open_result_with_record(path.clone(), open_file(&path), &options, None).report;
+        let metadata_only = validate_file_with_record(&path, &options).report;
+
+        assert_eq!(
+            metadata_only.pixel.pixel_data_description.as_deref(),
+            Some("2 fragments")
+        );
+        assert_eq!(
+            serde_json::to_value(metadata_only).unwrap(),
+            serde_json::to_value(eager).unwrap()
+        );
     }
 
     #[test]

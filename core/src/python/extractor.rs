@@ -1,5 +1,6 @@
 //! Python wrapper for MammogramExtractor
 
+use dicom_object::OpenFileOptions;
 use pyo3::prelude::*;
 
 use super::errors::convert_error;
@@ -40,9 +41,12 @@ impl PyMammogramExtractor {
         let path_buf = path_to_pathbuf(path)?;
 
         // Open DICOM file
-        let dcm = dicom_object::open_file(&path_buf).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("Failed to open DICOM file: {}", e))
-        })?;
+        let dcm = OpenFileOptions::new()
+            .read_until(crate::extraction::tags::PIXEL_DATA_TAG)
+            .open_file(&path_buf)
+            .map_err(|e| {
+                pyo3::exceptions::PyIOError::new_err(format!("Failed to open DICOM file: {}", e))
+            })?;
 
         // Extract metadata
         let metadata = crate::api::MammogramExtractor::extract_file(&dcm).map_err(convert_error)?;
@@ -80,9 +84,12 @@ impl PyMammogramExtractor {
         let path_buf = path_to_pathbuf(path)?;
 
         // Open DICOM file
-        let dcm = dicom_object::open_file(&path_buf).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("Failed to open DICOM file: {}", e))
-        })?;
+        let dcm = OpenFileOptions::new()
+            .read_until(crate::extraction::tags::PIXEL_DATA_TAG)
+            .open_file(&path_buf)
+            .map_err(|e| {
+                pyo3::exceptions::PyIOError::new_err(format!("Failed to open DICOM file: {}", e))
+            })?;
 
         // Extract metadata with options
         let metadata = crate::api::MammogramExtractor::extract_file_with_options(&dcm, is_sfm)
