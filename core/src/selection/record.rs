@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 /// Transfer syntax UIDs that imply lossy image compression.
 ///
-/// This excludes DICOM syntaxes explicitly named lossless or lossless-only.
+/// This excludes lossless-only and reversible-capable syntaxes.
 pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     // JPEG lossy and retired lossy forms
     "1.2.840.10008.1.2.4.50",
@@ -27,13 +27,8 @@ pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     "1.2.840.10008.1.2.4.62",
     "1.2.840.10008.1.2.4.63",
     "1.2.840.10008.1.2.4.64",
-    // JPEG-LS near-lossless
+    // JPEG-LS lossy (near-lossless)
     "1.2.840.10008.1.2.4.81",
-    // JPEG 2000 / JPIP forms not marked lossless-only
-    "1.2.840.10008.1.2.4.91",
-    "1.2.840.10008.1.2.4.93",
-    "1.2.840.10008.1.2.4.94",
-    "1.2.840.10008.1.2.4.95",
     // MPEG / HEVC video transfer syntaxes
     "1.2.840.10008.1.2.4.100",
     "1.2.840.10008.1.2.4.100.1",
@@ -51,14 +46,26 @@ pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     "1.2.840.10008.1.2.4.106.1",
     "1.2.840.10008.1.2.4.107",
     "1.2.840.10008.1.2.4.108",
-    // JPEG XL non-lossless and recompression forms
-    "1.2.840.10008.1.2.4.111",
-    "1.2.840.10008.1.2.4.112",
-    // High-throughput JPEG 2000 forms not marked lossless-only
-    "1.2.840.10008.1.2.4.203",
-    "1.2.840.10008.1.2.4.204",
-    "1.2.840.10008.1.2.4.205",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LossyCompressionSource {
+    Metadata,
+    TransferSyntax,
+}
+
+pub(crate) fn lossy_compression_source(
+    lossy_image_compression: Option<&str>,
+    transfer_syntax_uid: Option<&str>,
+) -> Option<LossyCompressionSource> {
+    match lossy_image_compression.and_then(parse_lossy_image_compression_value) {
+        Some(true) => Some(LossyCompressionSource::Metadata),
+        Some(false) => None,
+        None => transfer_syntax_uid
+            .filter(|uid| is_lossy_transfer_syntax_uid(uid))
+            .map(|_| LossyCompressionSource::TransferSyntax),
+    }
+}
 
 /// Mammogram record combining file path and extracted metadata
 ///
@@ -414,19 +421,8 @@ fn normalized_transfer_syntax_uid(uid: &str) -> &str {
 }
 
 fn is_lossy_compressed(dcm: &InMemDicomObject, transfer_syntax_uid: Option<&str>) -> bool {
-    if let Some(is_lossy) = lossy_image_compression_tag(dcm) {
-        return is_lossy;
-    }
-
-    transfer_syntax_uid
-        .map(is_lossy_transfer_syntax_uid)
-        .unwrap_or(false)
-}
-
-fn lossy_image_compression_tag(dcm: &InMemDicomObject) -> Option<bool> {
-    get_string_value(dcm, LOSSY_IMAGE_COMPRESSION)
-        .as_deref()
-        .and_then(parse_lossy_image_compression_value)
+    let lossy_image_compression = get_string_value(dcm, LOSSY_IMAGE_COMPRESSION);
+    lossy_compression_source(lossy_image_compression.as_deref(), transfer_syntax_uid).is_some()
 }
 
 fn parse_lossy_image_compression_value(value: &str) -> Option<bool> {
@@ -590,18 +586,63 @@ mod tests {
     fn test_lossy_image_compression_falls_back_to_transfer_syntax_when_missing() {
         let dcm = InMemDicomObject::new_empty();
         assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.50")));
+        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.81")));
     }
 
     #[test]
     fn test_lossy_image_compression_falls_back_to_transfer_syntax_when_invalid() {
         let dcm = dicom_with_lossy_image_compression("MAYBE");
-        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.81")));
+        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.50")));
     }
 
     #[test]
     fn test_lossless_transfer_syntax_is_not_lossy() {
         let dcm = InMemDicomObject::new_empty();
         assert!(!is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.90")));
+    }
+
+    #[test]
+    fn lossy_compression_policy_covers_all_transfer_syntaxes_and_metadata_precedence() {
+        for uid in LOSSY_TRANSFER_SYNTAX_UIDS {
+            assert_eq!(
+                lossy_compression_source(None, Some(uid)),
+                Some(LossyCompressionSource::TransferSyntax),
+                "{uid}"
+            );
+            assert_eq!(
+                lossy_compression_source(Some("00"), Some(uid)),
+                None,
+                "explicit lossless metadata should override {uid}"
+            );
+        }
+
+        for uid in [
+            "1.2.840.10008.1.2",
+            "1.2.840.10008.1.2.1",
+            "1.2.840.10008.1.2.4.80",
+            "1.2.840.10008.1.2.4.90",
+            "1.2.840.10008.1.2.4.91",
+            "1.2.840.10008.1.2.4.93",
+            "1.2.840.10008.1.2.4.94",
+            "1.2.840.10008.1.2.4.95",
+            "1.2.840.10008.1.2.4.111",
+            "1.2.840.10008.1.2.4.112",
+            "1.2.840.10008.1.2.4.203",
+            "1.2.840.10008.1.2.4.204",
+            "1.2.840.10008.1.2.4.205",
+        ] {
+            assert_eq!(lossy_compression_source(None, Some(uid)), None, "{uid}");
+            assert_eq!(
+                lossy_compression_source(Some("01"), Some(uid)),
+                Some(LossyCompressionSource::Metadata),
+                "explicit lossy metadata should override {uid}"
+            );
+        }
+
+        assert_eq!(
+            lossy_compression_source(Some("invalid"), Some("1.2.840.10008.1.2.4.91")),
+            None
+        );
     }
 
     #[test]
