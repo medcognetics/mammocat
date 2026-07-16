@@ -262,11 +262,12 @@ impl MammogramRecord {
     /// Priority order:
     /// 1. Standard views beat non-standard views
     /// 2. Views without deprioritized CID 4015 modifiers beat modified views
-    /// 3. Implant displaced beats non-displaced (same study only)
-    /// 4. Lossless beats lossy compressed
-    /// 5. Type preference (FFDM > SYNTH > TOMO > SFM)
-    /// 6. Higher resolution beats lower resolution
-    /// 7. Fallback to SOPInstanceUID comparison
+    /// 3. Records are partitioned by StudyInstanceUID for stable cross-study ordering
+    /// 4. Implant displaced beats non-displaced within a study
+    /// 5. Lossless beats lossy compressed
+    /// 6. Type preference (FFDM > SYNTH > TOMO > SFM)
+    /// 7. Higher resolution beats lower resolution
+    /// 8. Stable source identifiers break remaining ties
     ///
     /// # Arguments
     ///
@@ -286,11 +287,12 @@ impl MammogramRecord {
     /// Priority order:
     /// 1. Standard views beat non-standard views
     /// 2. Views without deprioritized CID 4015 modifiers beat modified views
-    /// 3. Implant displaced beats non-displaced (same study only)
-    /// 4. Lossless beats lossy compressed
-    /// 5. Type preference (according to the provided preference order)
-    /// 6. Higher resolution beats lower resolution
-    /// 7. Fallback to SOPInstanceUID comparison
+    /// 3. Records are partitioned by StudyInstanceUID for stable cross-study ordering
+    /// 4. Implant displaced beats non-displaced within a study
+    /// 5. Lossless beats lossy compressed
+    /// 6. Type preference (according to the provided preference order)
+    /// 7. Higher resolution beats lower resolution
+    /// 8. Stable source identifiers break remaining ties
     ///
     /// # Arguments
     ///
@@ -318,61 +320,84 @@ impl MammogramRecord {
         preference_order: PreferenceOrder,
         deprioritize_lossy_compressed: bool,
     ) -> bool {
-        // 1. Standard views take priority
-        if self.metadata.is_standard_view() && !other.metadata.is_standard_view() {
-            return true;
-        }
-        if !self.metadata.is_standard_view() && other.metadata.is_standard_view() {
-            return false;
-        }
-
-        // 2. Unmodified views take priority over special views. Implant
-        // displaced alone is not a deprioritized modifier.
-        if !self.has_deprioritized_view_modifier() && other.has_deprioritized_view_modifier() {
-            return true;
-        }
-        if self.has_deprioritized_view_modifier() && !other.has_deprioritized_view_modifier() {
-            return false;
-        }
-
-        // 3. Implant displaced views take priority (same study only)
-        if let (Some(self_study), Some(other_study)) =
-            (&self.study_instance_uid, &other.study_instance_uid)
-        {
-            if self_study == other_study
-                && self.is_implant_displaced() != other.is_implant_displaced()
-            {
-                return self.is_implant_displaced();
-            }
-        }
-
-        // 4. Lossless images take priority when requested
-        if deprioritize_lossy_compressed && self.is_lossy_compressed != other.is_lossy_compressed {
-            return !self.is_lossy_compressed && other.is_lossy_compressed;
-        }
-
-        // 5. Type preference (using configurable order)
-        let self_type = &self.metadata.mammogram_type;
-        let other_type = &other.metadata.mammogram_type;
-        if self_type != other_type {
-            let self_pref = preference_order.preference_value(self_type);
-            let other_pref = preference_order.preference_value(other_type);
-            return self_pref < other_pref;
-        }
-
-        // 6. Resolution preference (higher is better)
-        if self.image_area() != other.image_area() {
-            let self_area = self.image_area().unwrap_or(0);
-            let other_area = other.image_area().unwrap_or(0);
-            return self_area > other_area;
-        }
-
-        // 7. Fallback to SOP UID comparison (for stable ordering)
-        match (&self.sop_instance_uid, &other.sop_instance_uid) {
-            (Some(a), Some(b)) => a < b,
-            _ => false,
-        }
+        self.preference_cmp_with_options(other, preference_order, deprioritize_lossy_compressed)
+            == Ordering::Less
     }
+
+    pub(crate) fn preference_cmp_with_options(
+        &self,
+        other: &MammogramRecord,
+        preference_order: PreferenceOrder,
+        deprioritize_lossy_compressed: bool,
+    ) -> Ordering {
+        prefer_true(
+            self.metadata.is_standard_view(),
+            other.metadata.is_standard_view(),
+        )
+        .then_with(|| {
+            self.has_deprioritized_view_modifier()
+                .cmp(&other.has_deprioritized_view_modifier())
+        })
+        .then_with(|| {
+            compare_optional_identifier(&self.study_instance_uid, &other.study_instance_uid)
+        })
+        .then_with(|| {
+            let same_known_study = normalized_optional_identifier(&self.study_instance_uid)
+                .zip(normalized_optional_identifier(&other.study_instance_uid))
+                .is_some_and(|(left, right)| left == right);
+            if same_known_study {
+                prefer_true(self.is_implant_displaced(), other.is_implant_displaced())
+            } else {
+                Ordering::Equal
+            }
+        })
+        .then_with(|| {
+            if deprioritize_lossy_compressed {
+                self.is_lossy_compressed.cmp(&other.is_lossy_compressed)
+            } else {
+                Ordering::Equal
+            }
+        })
+        .then_with(|| {
+            preference_order
+                .preference_value(&self.metadata.mammogram_type)
+                .cmp(&preference_order.preference_value(&other.metadata.mammogram_type))
+        })
+        .then_with(|| {
+            other
+                .image_area()
+                .unwrap_or(0)
+                .cmp(&self.image_area().unwrap_or(0))
+        })
+        .then_with(|| compare_optional_identifier(&self.sop_instance_uid, &other.sop_instance_uid))
+        .then_with(|| {
+            compare_optional_identifier(&self.series_instance_uid, &other.series_instance_uid)
+        })
+        .then_with(|| self.file_path.cmp(&other.file_path))
+    }
+}
+
+fn prefer_true(left: bool, right: bool) -> Ordering {
+    right.cmp(&left)
+}
+
+fn compare_optional_identifier(left: &Option<String>, right: &Option<String>) -> Ordering {
+    match (
+        normalized_optional_identifier(left),
+        normalized_optional_identifier(right),
+    ) {
+        (Some(left), Some(right)) => left.cmp(right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn normalized_optional_identifier(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_transfer_syntax_uid(uid: &str) -> Option<String> {
@@ -419,7 +444,7 @@ fn is_lossy_transfer_syntax_uid(uid: &str) -> bool {
 // Implement Ord/PartialOrd for use with min/max
 impl PartialEq for MammogramRecord {
     fn eq(&self, other: &Self) -> bool {
-        self.sop_instance_uid == other.sop_instance_uid
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -433,13 +458,7 @@ impl PartialOrd for MammogramRecord {
 
 impl Ord for MammogramRecord {
     fn cmp(&self, other: &Self) -> Ordering {
-        if self.is_preferred_to(other) {
-            Ordering::Less
-        } else if other.is_preferred_to(self) {
-            Ordering::Greater
-        } else {
-            Ordering::Equal
-        }
+        self.preference_cmp_with_options(other, PreferenceOrder::Default, true)
     }
 }
 
@@ -692,6 +711,39 @@ mod tests {
     }
 
     #[test]
+    fn implant_displaced_preference_is_antisymmetric_when_resolution_conflicts() {
+        let implant_displaced = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(1000),
+            Some(1000),
+            true,
+            true,
+            false,
+            false,
+            Some("1.2.3.4".to_string()),
+            Some("2".to_string()),
+        );
+        let regular = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2000),
+            Some(2000),
+            true,
+            false,
+            false,
+            false,
+            Some("1.2.3.4".to_string()),
+            Some("1".to_string()),
+        );
+
+        assert!(implant_displaced.is_preferred_to(&regular));
+        assert!(!regular.is_preferred_to(&implant_displaced));
+    }
+
+    #[test]
     fn implant_displaced_preference_is_symmetric_before_mammogram_type() {
         let implant_displaced = make_test_record(
             MammogramType::Synth,
@@ -725,7 +777,73 @@ mod tests {
     }
 
     #[test]
-    fn test_is_preferred_to_implant_displaced_different_study() {
+    fn missing_study_uids_do_not_enable_implant_displaced_preference() {
+        let implant_displaced = make_test_record(
+            MammogramType::Synth,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            true,
+            false,
+            false,
+            None,
+            None,
+        );
+        let regular = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+
+        assert!(!implant_displaced.is_preferred_to(&regular));
+        assert!(regular.is_preferred_to(&implant_displaced));
+    }
+
+    #[test]
+    fn blank_and_missing_study_uids_fall_through_to_image_preference() {
+        let blank_study_uid = make_test_record(
+            MammogramType::Synth,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            Some("  ".to_string()),
+            None,
+        );
+        let missing_study_uid = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+
+        assert!(!blank_study_uid.is_preferred_to(&missing_study_uid));
+        assert!(missing_study_uid.is_preferred_to(&blank_study_uid));
+    }
+
+    #[test]
+    fn test_different_studies_are_ordered_before_implant_status() {
         let implant_displaced = make_test_record(
             MammogramType::Ffdm,
             ViewPosition::Cc,
@@ -736,7 +854,7 @@ mod tests {
             true,
             false,
             false,
-            Some("1.2.3.4".to_string()),
+            Some("5.6.7.8".to_string()),
             None,
         );
 
@@ -750,12 +868,12 @@ mod tests {
             false,
             false,
             false,
-            Some("5.6.7.8".to_string()),
+            Some("1.2.3.4".to_string()),
             None,
         );
 
-        // Different studies - implant displaced should NOT be preferred
         assert!(!implant_displaced.is_preferred_to(&regular));
+        assert!(regular.is_preferred_to(&implant_displaced));
     }
 
     #[test]
@@ -886,6 +1004,127 @@ mod tests {
 
         // Min should select the better record
         assert_eq!(std::cmp::min(&better, &worse), &better);
+    }
+
+    #[test]
+    fn ordering_contract_handles_missing_and_duplicate_sop_uids() {
+        let mut missing_a = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2000),
+            Some(2000),
+            true,
+            false,
+            false,
+            false,
+            Some("1.2.3.4".to_string()),
+            None,
+        );
+        missing_a.file_path = PathBuf::from("a.dcm");
+        let mut missing_b = missing_a.clone();
+        missing_b.file_path = PathBuf::from("b.dcm");
+
+        let mut duplicate_a = missing_a.clone();
+        duplicate_a.sop_instance_uid = Some("1.2.3.4.5".to_string());
+        let mut duplicate_b = missing_b.clone();
+        duplicate_b.sop_instance_uid = duplicate_a.sop_instance_uid.clone();
+
+        for (left, right) in [(&missing_a, &missing_b), (&duplicate_a, &duplicate_b)] {
+            assert_ne!(left.cmp(right), Ordering::Equal);
+            assert_eq!(left == right, left.cmp(right) == Ordering::Equal);
+            assert_eq!(right == left, right.cmp(left) == Ordering::Equal);
+            assert_eq!(left.cmp(right), right.cmp(left).reverse());
+        }
+    }
+
+    #[test]
+    fn preference_order_is_antisymmetric_and_transitive_for_candidate_matrix() {
+        let records = [
+            make_test_record(
+                MammogramType::Ffdm,
+                ViewPosition::Cc,
+                Laterality::Left,
+                Some(1000),
+                Some(1000),
+                true,
+                true,
+                false,
+                false,
+                Some("1.2.3.4".to_string()),
+                Some("3".to_string()),
+            ),
+            make_test_record(
+                MammogramType::Ffdm,
+                ViewPosition::Cc,
+                Laterality::Left,
+                Some(2000),
+                Some(2000),
+                true,
+                false,
+                false,
+                false,
+                Some("1.2.3.4".to_string()),
+                Some("2".to_string()),
+            ),
+            make_test_record(
+                MammogramType::Tomo,
+                ViewPosition::Cc,
+                Laterality::Left,
+                Some(3000),
+                Some(3000),
+                true,
+                false,
+                false,
+                false,
+                Some("1.2.3.4".to_string()),
+                Some("1".to_string()),
+            ),
+            make_test_record(
+                MammogramType::Ffdm,
+                ViewPosition::Cc,
+                Laterality::Left,
+                Some(1500),
+                Some(1500),
+                true,
+                false,
+                false,
+                false,
+                Some("5.6.7.8".to_string()),
+                None,
+            ),
+            make_test_record(
+                MammogramType::Ffdm,
+                ViewPosition::Cc,
+                Laterality::Left,
+                Some(2500),
+                Some(2500),
+                true,
+                true,
+                false,
+                false,
+                None,
+                None,
+            ),
+        ];
+
+        for left in &records {
+            for right in &records {
+                assert_eq!(left.cmp(right), right.cmp(left).reverse());
+                assert!(!(left.is_preferred_to(right) && right.is_preferred_to(left)));
+                assert_eq!(left == right, left.cmp(right) == Ordering::Equal);
+            }
+        }
+
+        for left in &records {
+            for middle in &records {
+                for right in &records {
+                    if left < middle && middle < right {
+                        assert!(left < right);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

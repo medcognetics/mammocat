@@ -179,13 +179,7 @@ fn compare_record_preference(
     preference_order: PreferenceOrder,
     deprioritize_lossy_compressed: bool,
 ) -> Ordering {
-    if a.is_preferred_to_with_options(b, preference_order, deprioritize_lossy_compressed) {
-        Ordering::Less
-    } else if b.is_preferred_to_with_options(a, preference_order, deprioritize_lossy_compressed) {
-        Ordering::Greater
-    } else {
-        Ordering::Equal
-    }
+    a.preference_cmp_with_options(b, preference_order, deprioritize_lossy_compressed)
 }
 
 /// Selects preferred inference views from a filtered collection of mammogram records
@@ -967,7 +961,8 @@ mod tests {
     use super::*;
     use crate::error::MammocatError;
     use crate::types::{
-        DbtObjectKind, ImageType, Laterality, MammogramType, PreferenceOrder, ViewPosition,
+        DbtObjectKind, ImageType, Laterality, MammogramType, MammographyViewModifier,
+        PreferenceOrder, ViewPosition,
     };
     use std::path::PathBuf;
 
@@ -1286,6 +1281,55 @@ mod tests {
             .unwrap();
 
         assert_eq!(selected.metadata.mammogram_type, MammogramType::Ffdm);
+    }
+
+    #[test]
+    fn preferred_view_selection_is_deterministic_across_candidate_permutations() {
+        let mut implant_displaced =
+            make_test_record(Laterality::Left, ViewPosition::Cc, MammogramType::Ffdm);
+        implant_displaced.file_path = PathBuf::from("implant-displaced.dcm");
+        implant_displaced.sop_instance_uid = Some("3".to_string());
+        implant_displaced.rows = Some(1000);
+        implant_displaced.columns = Some(1000);
+        implant_displaced
+            .metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::ImplantDisplaced);
+
+        let mut high_resolution = implant_displaced.clone();
+        high_resolution.file_path = PathBuf::from("high-resolution.dcm");
+        high_resolution.sop_instance_uid = Some("1".to_string());
+        high_resolution.rows = Some(3000);
+        high_resolution.columns = Some(3000);
+        high_resolution
+            .metadata
+            .view_modifiers
+            .remove(&MammographyViewModifier::ImplantDisplaced);
+
+        let mut low_resolution = high_resolution.clone();
+        low_resolution.file_path = PathBuf::from("low-resolution.dcm");
+        low_resolution.sop_instance_uid = Some("2".to_string());
+        low_resolution.rows = Some(2000);
+        low_resolution.columns = Some(2000);
+
+        let candidates = [implant_displaced, high_resolution, low_resolution];
+        let permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for permutation in permutations {
+            let records = permutation.map(|index| candidates[index].clone());
+            let selections = get_preferred_views_with_order(&records, PreferenceOrder::Default);
+            let selected = selections[&MammogramView::new(Laterality::Left, ViewPosition::Cc)]
+                .as_ref()
+                .unwrap();
+            assert_eq!(selected.file_path, PathBuf::from("implant-displaced.dcm"));
+        }
     }
 
     #[test]
