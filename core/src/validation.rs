@@ -688,11 +688,14 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
         .ok_or_else(|| format!("unsupported transfer syntax: {}", meta.transfer_syntax()))?;
     let mut dataset = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
         .map_err(|source| source.to_string())?;
+    let mut sequence_depth = 0_usize;
 
     while let Some(token) = dataset.advance() {
         let token = token.map_err(|source| source.to_string())?;
         match token {
-            LazyDataToken::ElementHeader(header) if header.tag == PIXEL_DATA_TAG => {
+            LazyDataToken::ElementHeader(header)
+                if sequence_depth == 0 && header.tag == PIXEL_DATA_TAG =>
+            {
                 let length = header
                     .len
                     .get()
@@ -723,7 +726,15 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
                     Ok(PixelDataState::Present(format!("{length} bytes")))
                 };
             }
-            LazyDataToken::PixelSequenceStart => return probe_pixel_sequence(&mut dataset),
+            LazyDataToken::PixelSequenceStart if sequence_depth == 0 => {
+                return probe_pixel_sequence(&mut dataset);
+            }
+            LazyDataToken::SequenceStart { .. } | LazyDataToken::PixelSequenceStart => {
+                sequence_depth += 1;
+            }
+            LazyDataToken::SequenceEnd => {
+                sequence_depth = sequence_depth.saturating_sub(1);
+            }
             lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
                 lazy.skip().map_err(|source| source.to_string())?;
             }
@@ -2469,6 +2480,30 @@ mod tests {
         let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
 
         assert!(error_codes(&report).contains("dicom_read_failed"));
+        assert!(!report.pixel.pixel_data_present);
+    }
+
+    #[test]
+    fn metadata_only_validation_ignores_nested_pixel_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("nested-pixel-data.dcm");
+        let mut dcm = valid_metadata_object();
+        dcm.remove_element(PIXEL_DATA_TAG);
+        let icon = InMemDicomObject::from_element_iter([DataElement::new(
+            PIXEL_DATA_TAG,
+            VR::OW,
+            PrimitiveValue::U16(vec![0_u16; 4].into()),
+        )]);
+        dcm.put(DataElement::new(
+            dicom_dictionary_std::tags::ICON_IMAGE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![icon]),
+        ));
+        dcm.write_to_file(&path).unwrap();
+
+        let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
+
+        assert!(error_codes(&report).contains("missing_pixel_data"));
         assert!(!report.pixel.pixel_data_present);
     }
 
