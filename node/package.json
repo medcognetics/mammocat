@@ -1,6 +1,6 @@
 {
   "name": "@medcognetics/mammocat",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
   "license": "Apache-2.0",
   "main": "index.js",
@@ -16,6 +16,7 @@
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "test": "node --test test/*.test.mjs",
+    "test:git-install": "node --test test/git-install.integration.mjs",
     "typecheck": "tsc --noEmit",
     "pack:dry-run": "napi artifacts --output-dir . --npm-dir npm && npm pack --dry-run && npm pack --dry-run ./npm/linux-x64-gnu"
   },
@@ -25,10 +26,10 @@
     "typescript": "6.0.3"
   },
   "optionalDependencies": {
-    "@medcognetics/mammocat-darwin-arm64": "0.1.1",
-    "@medcognetics/mammocat-darwin-x64": "0.1.1",
-    "@medcognetics/mammocat-linux-x64-gnu": "0.1.1",
-    "@medcognetics/mammocat-win32-x64-msvc": "0.1.1"
+    "@medcognetics/mammocat-darwin-arm64": "0.2.0",
+    "@medcognetics/mammocat-darwin-x64": "0.2.0",
+    "@medcognetics/mammocat-linux-x64-gnu": "0.2.0",
+    "@medcognetics/mammocat-win32-x64-msvc": "0.2.0"
   },
   "napi": {
     "binaryName": "mammocat",

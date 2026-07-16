@@ -91,15 +91,17 @@ class ViewPosition:
     """View position enumeration."""
 
     UNKNOWN: ViewPosition
+    ML: ViewPosition
+    MLO: ViewPosition
+    LM: ViewPosition
+    LMO: ViewPosition
+    CC: ViewPosition
+    FB: ViewPosition
+    SIO: ViewPosition
+    ISO: ViewPosition
     XCCL: ViewPosition
     XCCM: ViewPosition
-    CC: ViewPosition
-    MLO: ViewPosition
-    ML: ViewPosition
-    LMO: ViewPosition
-    LM: ViewPosition
-    AT: ViewPosition
-    CV: ViewPosition
+    SPECIMEN: ViewPosition
 
     @property
     def value(self) -> str: ...
@@ -117,6 +119,31 @@ class ViewPosition:
     def __le__(self, other: ViewPosition) -> bool: ...
     def __gt__(self, other: ViewPosition) -> bool: ...
     def __ge__(self, other: ViewPosition) -> bool: ...
+
+class MammographyViewModifier:
+    """CID 4015 mammography view modifier."""
+
+    CLEAVAGE: MammographyViewModifier
+    AXILLARY_TAIL: MammographyViewModifier
+    ROLLED_LATERAL: MammographyViewModifier
+    ROLLED_MEDIAL: MammographyViewModifier
+    ROLLED_INFERIOR: MammographyViewModifier
+    ROLLED_SUPERIOR: MammographyViewModifier
+    IMPLANT_DISPLACED: MammographyViewModifier
+    MAGNIFICATION: MammographyViewModifier
+    SPOT_COMPRESSION: MammographyViewModifier
+    TANGENTIAL: MammographyViewModifier
+    NIPPLE_IN_PROFILE: MammographyViewModifier
+    ANTERIOR_COMPRESSION: MammographyViewModifier
+    INFRA_MAMMARY_FOLD: MammographyViewModifier
+    AXILLARY_TISSUE: MammographyViewModifier
+
+    @property
+    def value(self) -> str: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
 
 class PreferenceOrder:
     """Preference ordering strategy for selecting preferred mammogram types."""
@@ -209,6 +236,8 @@ class MammogramMetadata:
     def laterality(self) -> Laterality: ...
     @property
     def view_position(self) -> ViewPosition: ...
+    @property
+    def view_modifiers(self) -> list[MammographyViewModifier]: ...
     @property
     def image_type(self) -> ImageType: ...
     @property

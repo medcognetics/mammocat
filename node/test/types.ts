@@ -15,6 +15,7 @@ const bytesInput: DicomInput = {
 
 const metadata = extractMetadata(pathInput)
 metadata.pixelSpacing?.column.toFixed(3)
+metadata.viewModifiers.map((modifier) => modifier.toUpperCase())
 
 const selection: PreferredViewSelection = selectPreferredViews([pathInput, bytesInput], {
   preferenceOrder: "synthetic-2d-first",

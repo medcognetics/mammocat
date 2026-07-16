@@ -8,6 +8,11 @@ BREAST_TOMOSYNTHESIS_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.13.1.3"
 CT_IMAGE_STORAGE_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.2"
 DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.1.2"
 
+VIEW_CODES = {
+    "CC": ("399162004", "cranio-caudal"),
+    "MLO": ("399368009", "medio-lateral oblique"),
+}
+
 
 def _apply_mammogram_type(ds: Dataset, mammogram_type: str) -> None:
     """Apply mammogram-type-specific synthetic tags."""
@@ -127,23 +132,30 @@ def create_mammogram_dicom(
     if has_implant:
         ds.BreastImplantPresent = "YES"
 
-    # View modifiers for spot compression, magnification, implant displaced
+    # Canonical CID 4014/4015 view coding. Tests that exercise malformed vendor
+    # codes construct those sequences explicitly.
     view_modifier_codes = []
     if is_spot_compression:
-        view_modifier_codes.append(("R-102D1", "99SDM", "spot compression"))
+        view_modifier_codes.append(("399055006", "SCT", "Spot Compression"))
     if is_magnified:
-        view_modifier_codes.append(("R-102D3", "99SDM", "magnification"))
+        view_modifier_codes.append(("399163009", "SCT", "Magnification"))
     if is_implant_displaced:
-        view_modifier_codes.append(("R-4092C", "99SDM", "implant displaced"))
+        view_modifier_codes.append(("399209000", "SCT", "Implant Displaced"))
 
-    if view_modifier_codes:
-        ds.ViewModifierCodeSequence = []
+    if view_position in VIEW_CODES:
+        code_value, code_meaning = VIEW_CODES[view_position]
+        view_code = Dataset()
+        view_code.CodeValue = code_value
+        view_code.CodingSchemeDesignator = "SCT"
+        view_code.CodeMeaning = code_meaning
+        view_code.ViewModifierCodeSequence = []
         for code_value, coding_scheme, code_meaning in view_modifier_codes:
             modifier = Dataset()
             modifier.CodeValue = code_value
             modifier.CodingSchemeDesignator = coding_scheme
             modifier.CodeMeaning = code_meaning
-            ds.ViewModifierCodeSequence.append(modifier)
+            view_code.ViewModifierCodeSequence.append(modifier)
+        ds.ViewCodeSequence = [view_code]
 
     # Equipment Information
     ds.Manufacturer = "TEST_MANUFACTURER"
