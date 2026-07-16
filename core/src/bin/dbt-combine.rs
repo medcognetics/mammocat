@@ -25,18 +25,6 @@ struct Cli {
     /// Emit more details in human-readable output
     #[arg(long, global = true)]
     verbose: bool,
-
-    /// Enable colorized output when supported
-    #[arg(long, global = true, conflicts_with = "no_color")]
-    color: bool,
-
-    /// Disable colorized output
-    #[arg(long, global = true)]
-    no_color: bool,
-
-    /// Progress reporting policy
-    #[arg(long, value_enum, default_value = "auto", global = true)]
-    progress: ProgressMode,
 }
 
 #[derive(Subcommand, Debug)]
@@ -65,13 +53,6 @@ enum Command {
 enum OutputFormat {
     Text,
     Json,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ProgressMode {
-    Auto,
-    Always,
-    Never,
 }
 
 fn main() {
@@ -219,6 +200,54 @@ fn print_convert_report(report: &DbtConvertReport, verbose: bool) {
                     .unwrap_or("<missing>"),
                 unsupported.reason
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn rejects_unsupported_output_control_options() {
+        for option in ["--color", "--no-color", "--progress"] {
+            let arguments = if option == "--progress" {
+                vec!["dbt-combine", option, "always", "check", "input"]
+            } else {
+                vec!["dbt-combine", option, "check", "input"]
+            };
+
+            assert!(
+                Cli::try_parse_from(arguments).is_err(),
+                "{option} should not be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_supported_automation_and_verbosity_options() {
+        assert!(Cli::try_parse_from([
+            "dbt-combine",
+            "--format",
+            "json",
+            "--quiet",
+            "check",
+            "input",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["dbt-combine", "--verbose", "check", "input"]).is_ok());
+    }
+
+    #[test]
+    fn help_only_advertises_supported_output_controls() {
+        let help = Cli::command().render_long_help().to_string();
+
+        for unsupported_option in ["--color", "--no-color", "--progress"] {
+            assert!(!help.contains(unsupported_option));
+        }
+        for supported_option in ["--format", "--quiet", "--verbose"] {
+            assert!(help.contains(supported_option));
         }
     }
 }
