@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use dicom::parser::dataset::lazy_read::LazyDataSetReader;
 use dicom::parser::dataset::LazyDataToken;
+use dicom::parser::stateful::decode::StatefulDecode;
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_core::header::HasLength;
 use dicom_core::{DataElement, DicomValue, Tag};
@@ -666,6 +667,7 @@ enum PixelDataState {
 
 fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> {
     let file = File::open(path).map_err(|source| source.to_string())?;
+    let file_length = file.metadata().map_err(|source| source.to_string())?.len();
     let mut reader = BufReader::new(file);
     let mut prefix = [0_u8; 132];
     let prefix_len = reader
@@ -691,10 +693,34 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
         let token = token.map_err(|source| source.to_string())?;
         match token {
             LazyDataToken::ElementHeader(header) if header.tag == PIXEL_DATA_TAG => {
-                return match header.len.get() {
-                    Some(0) => Ok(PixelDataState::Empty),
-                    Some(length) => Ok(PixelDataState::Present(format!("{length} bytes"))),
-                    None => Err("native PixelData has undefined length".to_string()),
+                let length = header
+                    .len
+                    .get()
+                    .ok_or_else(|| "native PixelData has undefined length".to_string())?;
+                let value = dataset
+                    .advance()
+                    .ok_or_else(|| "native PixelData value is missing".to_string())?
+                    .map_err(|source| source.to_string())?;
+                match value {
+                    LazyDataToken::LazyValue { header, decoder }
+                        if header.tag == PIXEL_DATA_TAG =>
+                    {
+                        let value_end = decoder
+                            .position()
+                            .checked_add(u64::from(length))
+                            .ok_or_else(|| "native PixelData length overflows file".to_string())?;
+                        if value_end > file_length {
+                            return Err(format!(
+                                "native PixelData declares {length} bytes beyond the end of the file"
+                            ));
+                        }
+                    }
+                    _ => return Err("native PixelData value is missing".to_string()),
+                }
+                return if length == 0 {
+                    Ok(PixelDataState::Empty)
+                } else {
+                    Ok(PixelDataState::Present(format!("{length} bytes")))
                 };
             }
             LazyDataToken::PixelSequenceStart => return probe_pixel_sequence(&mut dataset),
@@ -2427,6 +2453,23 @@ mod tests {
             serde_json::to_value(metadata_only).unwrap(),
             serde_json::to_value(eager).unwrap()
         );
+    }
+
+    #[test]
+    fn metadata_only_validation_rejects_truncated_native_pixel_data() {
+        const PIXEL_VALUE_LENGTH: u64 = 64 * 2;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("truncated-pixel-data.dcm");
+        valid_metadata_object().write_to_file(&path).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let file_length = file.metadata().unwrap().len();
+        file.set_len(file_length - PIXEL_VALUE_LENGTH).unwrap();
+
+        let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
+
+        assert!(error_codes(&report).contains("dicom_read_failed"));
+        assert!(!report.pixel.pixel_data_present);
     }
 
     #[cfg(feature = "json")]
