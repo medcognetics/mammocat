@@ -11,8 +11,7 @@ use std::path::PathBuf;
 
 /// Transfer syntax UIDs that imply lossy image compression.
 ///
-/// This excludes lossless-only syntaxes and JPEG 2000 syntaxes that permit
-/// either reversible or irreversible encoding.
+/// This excludes lossless-only and reversible-capable syntaxes.
 pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     // JPEG lossy and retired lossy forms
     "1.2.840.10008.1.2.4.50",
@@ -28,11 +27,6 @@ pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     "1.2.840.10008.1.2.4.62",
     "1.2.840.10008.1.2.4.63",
     "1.2.840.10008.1.2.4.64",
-    // JPEG-LS near-lossless
-    "1.2.840.10008.1.2.4.81",
-    // JPIP forms
-    "1.2.840.10008.1.2.4.94",
-    "1.2.840.10008.1.2.4.95",
     // MPEG / HEVC video transfer syntaxes
     "1.2.840.10008.1.2.4.100",
     "1.2.840.10008.1.2.4.100.1",
@@ -50,13 +44,6 @@ pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     "1.2.840.10008.1.2.4.106.1",
     "1.2.840.10008.1.2.4.107",
     "1.2.840.10008.1.2.4.108",
-    // JPEG XL non-lossless and recompression forms
-    "1.2.840.10008.1.2.4.111",
-    "1.2.840.10008.1.2.4.112",
-    // High-throughput JPEG 2000 forms not marked lossless-only
-    "1.2.840.10008.1.2.4.203",
-    "1.2.840.10008.1.2.4.204",
-    "1.2.840.10008.1.2.4.205",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -583,7 +570,7 @@ mod tests {
     #[test]
     fn test_lossy_image_compression_falls_back_to_transfer_syntax_when_invalid() {
         let dcm = dicom_with_lossy_image_compression("MAYBE");
-        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.81")));
+        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.50")));
     }
 
     #[test]
@@ -611,9 +598,17 @@ mod tests {
             "1.2.840.10008.1.2",
             "1.2.840.10008.1.2.1",
             "1.2.840.10008.1.2.4.80",
+            "1.2.840.10008.1.2.4.81",
             "1.2.840.10008.1.2.4.90",
             "1.2.840.10008.1.2.4.91",
             "1.2.840.10008.1.2.4.93",
+            "1.2.840.10008.1.2.4.94",
+            "1.2.840.10008.1.2.4.95",
+            "1.2.840.10008.1.2.4.111",
+            "1.2.840.10008.1.2.4.112",
+            "1.2.840.10008.1.2.4.203",
+            "1.2.840.10008.1.2.4.204",
+            "1.2.840.10008.1.2.4.205",
         ] {
             assert_eq!(lossy_compression_source(None, Some(uid)), None, "{uid}");
             assert_eq!(
