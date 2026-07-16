@@ -342,10 +342,8 @@ impl MammogramRecord {
             compare_optional_identifier(&self.study_instance_uid, &other.study_instance_uid)
         })
         .then_with(|| {
-            let same_known_study = self
-                .study_instance_uid
-                .as_deref()
-                .zip(other.study_instance_uid.as_deref())
+            let same_known_study = normalized_optional_identifier(&self.study_instance_uid)
+                .zip(normalized_optional_identifier(&other.study_instance_uid))
                 .is_some_and(|(left, right)| left == right);
             if same_known_study {
                 prefer_true(self.is_implant_displaced(), other.is_implant_displaced())
@@ -384,12 +382,22 @@ fn prefer_true(left: bool, right: bool) -> Ordering {
 }
 
 fn compare_optional_identifier(left: &Option<String>, right: &Option<String>) -> Ordering {
-    match (left, right) {
+    match (
+        normalized_optional_identifier(left),
+        normalized_optional_identifier(right),
+    ) {
         (Some(left), Some(right)) => left.cmp(right),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
+}
+
+fn normalized_optional_identifier(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn normalize_transfer_syntax_uid(uid: &str) -> Option<String> {
@@ -799,6 +807,39 @@ mod tests {
 
         assert!(!implant_displaced.is_preferred_to(&regular));
         assert!(regular.is_preferred_to(&implant_displaced));
+    }
+
+    #[test]
+    fn blank_and_missing_study_uids_fall_through_to_image_preference() {
+        let blank_study_uid = make_test_record(
+            MammogramType::Synth,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            Some("  ".to_string()),
+            None,
+        );
+        let missing_study_uid = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+
+        assert!(!blank_study_uid.is_preferred_to(&missing_study_uid));
+        assert!(missing_study_uid.is_preferred_to(&blank_study_uid));
     }
 
     #[test]
