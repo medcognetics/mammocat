@@ -314,6 +314,23 @@ def test_force_replaces_existing_output_after_staging_succeeds(tmp_path: Path) -
     assert not [path for path in tmp_path.iterdir() if path.name.startswith(".mammocat-staging-")]
 
 
+def test_force_rejects_directory_at_planned_output_path(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    create_old_format_dbt_series(input_dir, frame_count=2)
+    dry_run = convert_dbt_study(input_dir, output_dir, dry_run=True)
+    output_path = Path(dry_run["converted_series"][0]["output_path"])
+    output_path.mkdir(parents=True)
+    sentinel = output_path / "keep.txt"
+    sentinel.write_text("keep")
+
+    with pytest.raises(Exception, match="not a file"):
+        convert_dbt_study(input_dir, output_dir, force=True)
+
+    assert sentinel.read_text() == "keep"
+
+
 def test_convert_rejects_missing_functional_group_metadata(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"

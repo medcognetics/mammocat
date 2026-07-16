@@ -175,18 +175,30 @@ struct CommittedOutput {
 
 impl StagingDirectory {
     fn create(output_root: &Path) -> Result<Self> {
-        let parent = output_root
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-        let root = parent.join(format!(".mammocat-staging-{}", Uuid::new_v4().simple()));
+        let output_root_existed = output_root.exists();
+        let staging_parent = if output_root_existed {
+            if !output_root.is_dir() {
+                return Err(MammocatError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("{} is not a directory", output_root.display()),
+                )));
+            }
+            output_root
+        } else {
+            let parent = output_root
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            fs::create_dir_all(parent)?;
+            parent
+        };
+        let root = staging_parent.join(format!(".mammocat-staging-{}", Uuid::new_v4().simple()));
         fs::create_dir(&root)?;
         fs::create_dir(root.join("outputs"))?;
         Ok(Self {
             root,
             output_root: output_root.to_path_buf(),
-            output_root_existed: output_root.exists(),
+            output_root_existed,
         })
     }
 
@@ -1219,6 +1231,12 @@ fn preflight_output_path(
             format!("{} is planned more than once", path.display()),
         )));
     }
+    if path.exists() && !path.is_file() {
+        return Err(MammocatError::IoError(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a file", path.display()),
+        )));
+    }
     ensure_can_write(path, force)
 }
 
@@ -2173,6 +2191,17 @@ mod tests {
     const ROWS: u16 = 2;
     const COLUMNS: u16 = 2;
     const BYTES_PER_FRAME: usize = ROWS as usize * COLUMNS as usize * 2;
+
+    #[test]
+    fn staging_uses_existing_output_filesystem() {
+        let temp = tempdir().unwrap();
+        let output_root = temp.path().join("output");
+        fs::create_dir(&output_root).unwrap();
+
+        let staging = StagingDirectory::create(&output_root).unwrap();
+
+        assert_eq!(staging.root.parent(), Some(output_root.as_path()));
+    }
 
     #[test]
     fn write_combined_dbt_series_converts_requested_series_in_mammocat_order() {
