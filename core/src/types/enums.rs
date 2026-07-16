@@ -328,15 +328,17 @@ impl fmt::Display for Laterality {
 #[cfg_attr(feature = "json", serde(rename_all = "lowercase"))]
 pub enum ViewPosition {
     Unknown,
-    Xccl, // Cranio-caudal exaggerated laterally
-    Xccm, // Cranio-caudal exaggerated medially
-    Cc,   // Cranio-caudal
-    Mlo,  // Medio-lateral oblique
-    Ml,   // Medio-lateral
-    Lmo,  // Latero-medial oblique
-    Lm,   // Latero-medial
-    At,   // Axillary tail
-    Cv,   // Cleavage view
+    Xccl,
+    Xccm,
+    Cc,
+    Mlo,
+    Ml,
+    Lmo,
+    Lm,
+    Fb,
+    Sio,
+    Iso,
+    Specimen,
 }
 
 impl ViewPosition {
@@ -370,21 +372,75 @@ impl ViewPosition {
     pub fn short_str(&self) -> &'static str {
         match self {
             ViewPosition::Unknown => "",
+            ViewPosition::Ml => "ml",
+            ViewPosition::Mlo => "mlo",
+            ViewPosition::Lm => "lm",
+            ViewPosition::Lmo => "lmo",
+            ViewPosition::Cc => "cc",
+            ViewPosition::Fb => "fb",
+            ViewPosition::Sio => "sio",
+            ViewPosition::Iso => "iso",
             ViewPosition::Xccl => "xccl",
             ViewPosition::Xccm => "xccm",
-            ViewPosition::Cc => "cc",
-            ViewPosition::Mlo => "mlo",
-            ViewPosition::Ml => "ml",
-            ViewPosition::Lmo => "lmo",
-            ViewPosition::Lm => "lm",
-            ViewPosition::At => "at",
-            ViewPosition::Cv => "cv",
+            ViewPosition::Specimen => "specimen",
         }
     }
 
     /// Returns simple name for display (alias for short_str)
     pub fn simple_name(&self) -> &'static str {
         self.short_str()
+    }
+}
+
+/// Standard CID 4015 mammography view modifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "json", derive(serde::Serialize))]
+#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+pub enum MammographyViewModifier {
+    Cleavage,
+    AxillaryTail,
+    RolledLateral,
+    RolledMedial,
+    RolledInferior,
+    RolledSuperior,
+    ImplantDisplaced,
+    Magnification,
+    SpotCompression,
+    Tangential,
+    NippleInProfile,
+    AnteriorCompression,
+    InfraMammaryFold,
+    AxillaryTissue,
+}
+
+impl MammographyViewModifier {
+    pub fn simple_name(self) -> &'static str {
+        match self {
+            Self::Cleavage => "cleavage",
+            Self::AxillaryTail => "axillary_tail",
+            Self::RolledLateral => "rolled_lateral",
+            Self::RolledMedial => "rolled_medial",
+            Self::RolledInferior => "rolled_inferior",
+            Self::RolledSuperior => "rolled_superior",
+            Self::ImplantDisplaced => "implant_displaced",
+            Self::Magnification => "magnification",
+            Self::SpotCompression => "spot_compression",
+            Self::Tangential => "tangential",
+            Self::NippleInProfile => "nipple_in_profile",
+            Self::AnteriorCompression => "anterior_compression",
+            Self::InfraMammaryFold => "infra_mammary_fold",
+            Self::AxillaryTissue => "axillary_tissue",
+        }
+    }
+
+    pub fn affects_selection(self) -> bool {
+        self != Self::ImplantDisplaced
+    }
+}
+
+impl fmt::Display for MammographyViewModifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.simple_name())
     }
 }
 

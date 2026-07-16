@@ -11,7 +11,9 @@ use dicom_core::{DataElement, DicomValue, Tag};
 use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
 
 use crate::api::{MammogramExtractor, MammogramMetadata};
+use crate::completion::{plan_completion, CompletionOptions};
 use crate::dicom_files::collect_dicom_files;
+use crate::extraction::extract_view_descriptor;
 use crate::extraction::tags::{
     get_string_value, BITS_ALLOCATED, BITS_STORED, COLUMNS, DICOM_MAGIC_BYTES, HIGH_BIT,
     IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION, LOSSY_IMAGE_COMPRESSION_METHOD,
@@ -360,6 +362,7 @@ pub struct MammographyValidationReport {
     pub dbt_object_kind: Option<String>,
     pub laterality: Option<String>,
     pub view_position: Option<String>,
+    pub view_modifiers: Vec<String>,
     pub image_type: Option<String>,
     pub is_for_processing: Option<bool>,
     pub has_implant: Option<bool>,
@@ -1041,6 +1044,7 @@ where
     validate_identity(&mut report, &dcm, options.profile, allow_non_mg_modality);
     validate_image_fields(&mut report, &dcm, options.profile);
     validate_pixel_fields(&mut report, &dcm, options.profile);
+    validate_canonical_completion(&mut report, &dcm);
     let metadata = validate_extraction(&mut report, &dcm, options.profile, allow_non_mg_modality);
     let record = metadata.as_ref().and_then(|metadata| {
         MammogramRecord::from_dicom_with_metadata(source_path, &dcm, metadata.clone()).ok()
@@ -1049,6 +1053,43 @@ where
 
     report.finalize();
     FileValidationOutcome { report, record }
+}
+
+fn validate_canonical_completion(
+    report: &mut FileValidationReport,
+    dcm: &FileDicomObject<InMemDicomObject>,
+) {
+    let plan = plan_completion(dcm, &CompletionOptions::default());
+    if !plan.supported {
+        return;
+    }
+    for addition in plan
+        .additions
+        .iter()
+        .filter(|addition| addition.confidence == crate::extraction::Confidence::Exact)
+    {
+        report.record_plain(
+            MessageKind::Info,
+            "canonical_metadata_missing",
+            &addition.keyword,
+            format!(
+                "{} is missing; mammofill can add the canonical value {}",
+                addition.keyword, addition.value
+            ),
+        );
+    }
+    for issue in plan
+        .issues
+        .iter()
+        .filter(|issue| issue.code == "populated_value_conflict")
+    {
+        report.record_plain(
+            MessageKind::Warning,
+            "canonical_value_conflict",
+            "Canonical mammography metadata",
+            issue.message.clone(),
+        );
+    }
 }
 
 fn is_zip_file(path: &Path) -> bool {
@@ -1415,12 +1456,17 @@ fn collect_mammography_metadata(
     report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
     report.mammography.laterality = Some(metadata.laterality.to_string());
     report.mammography.view_position = Some(metadata.view_position.to_string());
+    report.mammography.view_modifiers = metadata
+        .view_modifiers
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     report.mammography.image_type = Some(metadata.image_type.to_string());
     report.mammography.is_for_processing = Some(metadata.is_for_processing);
     report.mammography.has_implant = Some(metadata.has_implant);
-    report.mammography.is_spot_compression = Some(metadata.is_spot_compression);
-    report.mammography.is_magnified = Some(metadata.is_magnified);
-    report.mammography.is_implant_displaced = Some(metadata.is_implant_displaced);
+    report.mammography.is_spot_compression = Some(metadata.is_spot_compression());
+    report.mammography.is_magnified = Some(metadata.is_magnified());
+    report.mammography.is_implant_displaced = Some(metadata.is_implant_displaced());
     report.mammography.is_secondary_capture = Some(metadata.is_secondary_capture);
     report.mammography.manufacturer = metadata.manufacturer.clone();
     report.mammography.model = metadata.model.clone();
@@ -1432,6 +1478,19 @@ fn collect_mammography_metadata(
     validate_image_type(report, dcm, profile);
     validate_laterality_value(report, metadata.laterality, profile);
     validate_view_value(report, metadata.view_position, profile);
+    let descriptor = extract_view_descriptor(dcm);
+    for conflict in descriptor.conflicts {
+        report.record_plain(
+            if profile == ValidationProfile::Selection {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
+            "view_evidence_conflict",
+            "Mammography view evidence",
+            conflict,
+        );
+    }
     validate_mammogram_type_value(report, metadata.mammogram_type, profile);
     optional_metadata_warning(
         report,
@@ -1501,11 +1560,19 @@ fn validate_selection_eligibility(
             None => filtered_by.push("missing_modality".to_string()),
         }
     }
-    if metadata.is_spot_compression {
-        filtered_by.push("spot_compression".to_string());
-    }
-    if metadata.is_magnified {
-        filtered_by.push("magnification".to_string());
+    for modifier in metadata
+        .view_modifiers
+        .iter()
+        .filter(|modifier| modifier.affects_selection())
+    {
+        report.record_plain(
+            MessageKind::Warning,
+            "selection_ranking_warning",
+            "Selection ranking",
+            format!(
+                "mammoselect will rank an otherwise equivalent unmodified view ahead of this {modifier} view"
+            ),
+        );
     }
 
     for reason in &filtered_by {
@@ -2058,6 +2125,7 @@ mod tests {
         SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE, TOMO_CLASS, VIEW_CODE_SEQUENCE,
         VIEW_MODIFIER_CODE_SEQUENCE, VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
     };
+    use dicom_core::value::DataSetSequence;
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_object::InMemDicomObject;
 
@@ -2182,6 +2250,7 @@ mod tests {
         validate_identity(&mut report, dcm, profile, false);
         validate_image_fields(&mut report, dcm, profile);
         validate_pixel_fields(&mut report, dcm, profile);
+        validate_canonical_completion(&mut report, dcm);
         let metadata = validate_extraction(&mut report, dcm, profile, false);
         validate_selection_eligibility(&mut report, metadata.as_ref(), &FilterConfig::default());
         report.finalize();
@@ -2212,6 +2281,37 @@ mod tests {
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.status, ValidationStatus::Pass);
         assert!(report.pixel.pixel_data_present);
+    }
+
+    #[test]
+    fn view_modifiers_affect_ranking_without_filtering() {
+        let mut dcm = valid_metadata_object();
+        let modifier = InMemDicomObject::from_element_iter([DataElement::new(
+            crate::extraction::tags::CODE_MEANING,
+            VR::LO,
+            PrimitiveValue::from("Tangential"),
+        )]);
+        dcm.put(DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![modifier]),
+        ));
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert!(report.selection.eligible);
+        assert!(report.selection.filtered_by.is_empty());
+        assert!(warning_codes(&report).contains("selection_ranking_warning"));
+    }
+
+    #[test]
+    fn fixed_iod_conflicts_are_checked_through_completion_registry() {
+        let mut dcm = valid_metadata_object();
+        put_str(&mut dcm, dicom_dictionary_std::tags::ORGAN_EXPOSED, "CHEST");
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert!(warning_codes(&report).contains("canonical_value_conflict"));
     }
 
     #[test]

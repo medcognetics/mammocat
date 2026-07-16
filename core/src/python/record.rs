@@ -134,19 +134,19 @@ impl PyMammogramRecord {
     /// Whether this is an implant displaced view
     #[getter]
     fn is_implant_displaced(&self) -> bool {
-        self.inner.is_implant_displaced
+        self.inner.is_implant_displaced()
     }
 
     /// Whether this is a spot compression view
     #[getter]
     fn is_spot_compression(&self) -> bool {
-        self.inner.is_spot_compression
+        self.inner.is_spot_compression()
     }
 
     /// Whether this is a magnification view
     #[getter]
     fn is_magnified(&self) -> bool {
-        self.inner.is_magnified
+        self.inner.is_magnified()
     }
 
     /// Compute image area (rows * columns)
