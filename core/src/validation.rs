@@ -1134,6 +1134,24 @@ fn validate_lossy_compression(
     let Some(source) =
         lossy_compression_source(lossy_indicator.as_deref(), Some(transfer_syntax_uid))
     else {
+        if let Some(method) = lossy_method.as_deref() {
+            let mut details = Vec::new();
+            if let Some(indicator) = lossy_indicator.as_deref() {
+                details.push(format!("LossyImageCompression={indicator}"));
+            }
+            details.push(format!("LossyImageCompressionMethod={method}"));
+            let value = details.join("; ");
+            report.record_name(
+                MessageKind::Warning,
+                "lossy_compression_metadata_inconsistent",
+                "Lossy compression metadata",
+                format!(
+                    "LossyImageCompressionMethod is populated without LossyImageCompression=01: {value}"
+                ),
+                "LossyImageCompressionMethod",
+                Some(value),
+            );
+        }
         return;
     };
 
@@ -2367,6 +2385,35 @@ mod tests {
         assert!(report.warnings[0]
             .message
             .contains("LossyImageCompressionMethod=ISO_10918_1"));
+    }
+
+    #[test]
+    fn validation_warns_when_lossy_method_lacks_confirming_indicator() {
+        for indicator in [None, Some("00"), Some("INVALID")] {
+            let mut dcm = valid_metadata_object();
+            if let Some(indicator) = indicator {
+                put_str(&mut dcm, LOSSY_IMAGE_COMPRESSION, indicator);
+            }
+            put_str(&mut dcm, LOSSY_IMAGE_COMPRESSION_METHOD, "ISO_10918_1");
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+            validate_lossy_compression(
+                &mut report,
+                &dcm,
+                "1.2.840.10008.1.2.1",
+                "Explicit VR Little Endian",
+            );
+
+            let warning = report
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "lossy_compression_metadata_inconsistent")
+                .unwrap_or_else(|| panic!("missing inconsistency warning for {indicator:?}"));
+            assert!(warning
+                .message
+                .contains("LossyImageCompressionMethod=ISO_10918_1"));
+        }
     }
 
     #[test]
