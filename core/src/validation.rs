@@ -2370,22 +2370,24 @@ mod tests {
     }
 
     #[test]
-    fn validation_warns_for_lossy_jpeg_2000_transfer_syntax() {
+    fn validation_does_not_infer_lossy_jpeg_2000_from_ambiguous_transfer_syntaxes() {
         let dcm = valid_metadata_object();
-        let mut report =
-            FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
 
-        validate_lossy_compression(
-            &mut report,
-            &dcm,
-            "1.2.840.10008.1.2.4.91",
-            "JPEG 2000 Image Compression",
-        );
-
-        assert!(warning_codes(&report).contains("lossy_compression"));
-        assert!(report.warnings[0]
-            .message
-            .contains("1.2.840.10008.1.2.4.91"));
+        for (uid, name) in [
+            ("1.2.840.10008.1.2.4.91", "JPEG 2000 Image Compression"),
+            (
+                "1.2.840.10008.1.2.4.93",
+                "JPEG 2000 Part 2 Multi-component Image Compression",
+            ),
+        ] {
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+            validate_lossy_compression(&mut report, &dcm, uid, name);
+            assert!(
+                !warning_codes(&report).contains("lossy_compression"),
+                "{uid}"
+            );
+        }
     }
 
     #[test]

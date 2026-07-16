@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 /// Transfer syntax UIDs that imply lossy image compression.
 ///
-/// This excludes DICOM syntaxes explicitly named lossless or lossless-only.
+/// This excludes lossless-only syntaxes and JPEG 2000 syntaxes that permit
+/// either reversible or irreversible encoding.
 pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     // JPEG lossy and retired lossy forms
     "1.2.840.10008.1.2.4.50",
@@ -29,9 +30,7 @@ pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     "1.2.840.10008.1.2.4.64",
     // JPEG-LS near-lossless
     "1.2.840.10008.1.2.4.81",
-    // JPEG 2000 / JPIP forms not marked lossless-only
-    "1.2.840.10008.1.2.4.91",
-    "1.2.840.10008.1.2.4.93",
+    // JPIP forms
     "1.2.840.10008.1.2.4.94",
     "1.2.840.10008.1.2.4.95",
     // MPEG / HEVC video transfer syntaxes
@@ -613,6 +612,8 @@ mod tests {
             "1.2.840.10008.1.2.1",
             "1.2.840.10008.1.2.4.80",
             "1.2.840.10008.1.2.4.90",
+            "1.2.840.10008.1.2.4.91",
+            "1.2.840.10008.1.2.4.93",
         ] {
             assert_eq!(lossy_compression_source(None, Some(uid)), None, "{uid}");
             assert_eq!(
@@ -624,7 +625,7 @@ mod tests {
 
         assert_eq!(
             lossy_compression_source(Some("invalid"), Some("1.2.840.10008.1.2.4.91")),
-            Some(LossyCompressionSource::TransferSyntax)
+            None
         );
     }
 
