@@ -341,7 +341,18 @@ impl MammogramRecord {
         .then_with(|| {
             compare_optional_identifier(&self.study_instance_uid, &other.study_instance_uid)
         })
-        .then_with(|| prefer_true(self.is_implant_displaced(), other.is_implant_displaced()))
+        .then_with(|| {
+            let same_known_study = self
+                .study_instance_uid
+                .as_deref()
+                .zip(other.study_instance_uid.as_deref())
+                .is_some_and(|(left, right)| left == right);
+            if same_known_study {
+                prefer_true(self.is_implant_displaced(), other.is_implant_displaced())
+            } else {
+                Ordering::Equal
+            }
+        })
         .then_with(|| {
             if deprioritize_lossy_compressed {
                 self.is_lossy_compressed.cmp(&other.is_lossy_compressed)
@@ -755,6 +766,39 @@ mod tests {
 
         assert!(implant_displaced.is_preferred_to(&regular));
         assert!(!regular.is_preferred_to(&implant_displaced));
+    }
+
+    #[test]
+    fn missing_study_uids_do_not_enable_implant_displaced_preference() {
+        let implant_displaced = make_test_record(
+            MammogramType::Synth,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            true,
+            false,
+            false,
+            None,
+            None,
+        );
+        let regular = make_test_record(
+            MammogramType::Ffdm,
+            ViewPosition::Cc,
+            Laterality::Left,
+            Some(2560),
+            Some(3328),
+            true,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+
+        assert!(!implant_displaced.is_preferred_to(&regular));
+        assert!(regular.is_preferred_to(&implant_displaced));
     }
 
     #[test]
