@@ -27,6 +27,8 @@ pub const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
     "1.2.840.10008.1.2.4.62",
     "1.2.840.10008.1.2.4.63",
     "1.2.840.10008.1.2.4.64",
+    // JPEG-LS lossy (near-lossless)
+    "1.2.840.10008.1.2.4.81",
     // MPEG / HEVC video transfer syntaxes
     "1.2.840.10008.1.2.4.100",
     "1.2.840.10008.1.2.4.100.1",
@@ -565,6 +567,7 @@ mod tests {
     fn test_lossy_image_compression_falls_back_to_transfer_syntax_when_missing() {
         let dcm = InMemDicomObject::new_empty();
         assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.50")));
+        assert!(is_lossy_compressed(&dcm, Some("1.2.840.10008.1.2.4.81")));
     }
 
     #[test]
@@ -598,7 +601,6 @@ mod tests {
             "1.2.840.10008.1.2",
             "1.2.840.10008.1.2.1",
             "1.2.840.10008.1.2.4.80",
-            "1.2.840.10008.1.2.4.81",
             "1.2.840.10008.1.2.4.90",
             "1.2.840.10008.1.2.4.91",
             "1.2.840.10008.1.2.4.93",

@@ -2453,7 +2453,6 @@ mod tests {
         let dcm = valid_metadata_object();
 
         for (uid, name) in [
-            ("1.2.840.10008.1.2.4.81", "JPEG-LS Near-lossless"),
             ("1.2.840.10008.1.2.4.91", "JPEG 2000 Image Compression"),
             (
                 "1.2.840.10008.1.2.4.93",
@@ -2475,6 +2474,22 @@ mod tests {
                 "{uid}"
             );
         }
+    }
+
+    #[test]
+    fn validation_infers_lossy_from_jpeg_ls_near_lossless() {
+        let dcm = valid_metadata_object();
+        let mut report =
+            FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+        validate_lossy_compression(
+            &mut report,
+            &dcm,
+            "1.2.840.10008.1.2.4.81",
+            "JPEG-LS Lossy (Near-Lossless)",
+        );
+
+        assert!(warning_codes(&report).contains("lossy_compression"));
     }
 
     #[test]
