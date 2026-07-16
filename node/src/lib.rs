@@ -525,7 +525,7 @@ fn record_to_dto(
 
 fn metadata_to_dto(metadata: &mammocat_core::MammogramMetadata) -> MammogramMetadata {
     MammogramMetadata {
-        mammogram_type: metadata.mammogram_type.to_string(),
+        mammogram_type: metadata.mammogram_type.serialized_name().to_string(),
         dbt_object_kind: metadata.dbt_object_kind.to_string(),
         laterality: metadata.laterality.simple_name().to_string(),
         view_position: metadata.view_position.simple_name().to_string(),

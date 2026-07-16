@@ -28,6 +28,15 @@ test("extractMetadata returns JSON-safe metadata from a file path", async (t) =>
   assert.doesNotThrow(() => JSON.stringify(metadata))
 })
 
+test("synthesized metadata uses the canonical machine value", () => {
+  const metadata = extractMetadata({
+    bytes: createMammogramBytes({ mammogramType: "SYNTH" }),
+    filename: "synth.dcm",
+  })
+
+  assert.equal(metadata.mammogramType, "synth")
+})
+
 test("file path and byte inputs produce matching metadata", async (t) => {
   const directory = await tempDir()
   const path = await writeMammogramFile(directory, "r_cc.dcm", {

@@ -1011,7 +1011,9 @@ fn validate_file_collection(
                     view: view_name,
                     selected: true,
                     file_path: Some(record.file_path.display().to_string()),
-                    mammogram_type: Some(record.metadata.mammogram_type.to_string()),
+                    mammogram_type: Some(
+                        record.metadata.mammogram_type.serialized_name().to_string(),
+                    ),
                     dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
                 },
             );
@@ -1083,10 +1085,10 @@ fn apply_refined_record_to_file_report(
         .mammography
         .mammogram_type
         .as_deref()
-        .is_some_and(|mammogram_type| mammogram_type == MammogramType::Unknown.to_string())
+        .is_some_and(|mammogram_type| mammogram_type == MammogramType::Unknown.serialized_name())
         && !metadata.mammogram_type.is_unknown();
 
-    report.mammography.mammogram_type = Some(metadata.mammogram_type.to_string());
+    report.mammography.mammogram_type = Some(metadata.mammogram_type.serialized_name().to_string());
     report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
     report.mammography.concatenation_uid = metadata.concatenation_uid.clone();
     report.mammography.sop_instance_uid_of_concatenation_source =
@@ -1104,7 +1106,7 @@ fn apply_refined_record_to_file_report(
             "MammogramType",
             "mammogram type resolved from collection context".to_string(),
             None,
-            Some(metadata.mammogram_type.to_string()),
+            Some(metadata.mammogram_type.serialized_name().to_string()),
         );
     }
 
@@ -1673,7 +1675,7 @@ fn collect_mammography_metadata(
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
 ) {
-    report.mammography.mammogram_type = Some(metadata.mammogram_type.to_string());
+    report.mammography.mammogram_type = Some(metadata.mammogram_type.serialized_name().to_string());
     report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
     report.mammography.laterality = Some(metadata.laterality.to_string());
     report.mammography.view_position = Some(metadata.view_position.to_string());
@@ -1954,7 +1956,7 @@ fn validate_mammogram_type_value(
             "MammogramType",
             "mammogram type is known".to_string(),
             None,
-            Some(mammogram_type.to_string()),
+            Some(mammogram_type.serialized_name().to_string()),
         );
     } else if profile == ValidationProfile::Selection {
         report.record_plain(
@@ -2628,6 +2630,27 @@ mod tests {
             serde_json::to_value(metadata_only).unwrap(),
             serde_json::to_value(eager).unwrap()
         );
+    }
+
+    #[test]
+    fn validation_report_uses_canonical_synthesized_type() {
+        let mut dcm = valid_metadata_object();
+        dcm.put(DataElement::new(
+            IMAGE_TYPE,
+            VR::CS,
+            PrimitiveValue::Strs(
+                vec![
+                    "DERIVED".to_string(),
+                    "PRIMARY".to_string(),
+                    "TOMO_2D".to_string(),
+                ]
+                .into(),
+            ),
+        ));
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert_eq!(report.mammography.mammogram_type.as_deref(), Some("synth"));
     }
 
     #[test]

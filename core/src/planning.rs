@@ -375,7 +375,9 @@ fn build_views_plan(
                     view: view_name,
                     selected: true,
                     source_path: Some(record.file_path.display().to_string()),
-                    mammogram_type: Some(record.metadata.mammogram_type.to_string()),
+                    mammogram_type: Some(
+                        record.metadata.mammogram_type.serialized_name().to_string(),
+                    ),
                     dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
                     reason: Some(SELECTED_2D_VIEW_REASON.to_string()),
                 },
@@ -600,9 +602,21 @@ fn build_source_diagnostics(
             study_instance_uid: refined.study_instance_uid.clone(),
             series_instance_uid: refined.series_instance_uid.clone(),
             sop_instance_uid: refined.sop_instance_uid.clone(),
-            original_mammogram_type: Some(original.metadata.mammogram_type.to_string()),
+            original_mammogram_type: Some(
+                original
+                    .metadata
+                    .mammogram_type
+                    .serialized_name()
+                    .to_string(),
+            ),
             original_dbt_object_kind: Some(original.metadata.dbt_object_kind.to_string()),
-            refined_mammogram_type: Some(refined.metadata.mammogram_type.to_string()),
+            refined_mammogram_type: Some(
+                refined
+                    .metadata
+                    .mammogram_type
+                    .serialized_name()
+                    .to_string(),
+            ),
             refined_dbt_object_kind: Some(refined.metadata.dbt_object_kind.to_string()),
             refinement_reason: refinement.map(|diagnostic| diagnostic.reason.as_str().to_string()),
             selected_as,
@@ -1064,14 +1078,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            default_plan.views.unwrap().selected_views["lmlo"].source_path,
-            Some("ffdm.dcm".to_string())
-        );
-        assert_eq!(
-            synthetic_plan.views.unwrap().selected_views["lmlo"].source_path,
-            Some("synth.dcm".to_string())
-        );
+        let default_view = &default_plan.views.as_ref().unwrap().selected_views["lmlo"];
+        let synthetic_view = &synthetic_plan.views.as_ref().unwrap().selected_views["lmlo"];
+
+        assert_eq!(default_view.source_path, Some("ffdm.dcm".to_string()));
+        assert_eq!(default_view.mammogram_type.as_deref(), Some("ffdm"));
+        assert_eq!(synthetic_view.source_path, Some("synth.dcm".to_string()));
+        assert_eq!(synthetic_view.mammogram_type.as_deref(), Some("synth"));
     }
 
     #[test]

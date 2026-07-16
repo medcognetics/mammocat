@@ -6,7 +6,7 @@ use dicom_dictionary_std::{tags, uids};
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use tempfile::tempdir;
 
-fn write_test_dicom(path: &std::path::Path, sop_class_uid: &str) {
+fn write_test_dicom(path: &std::path::Path, sop_class_uid: &str, image_type: &str) {
     let sop_instance_uid = "1.2.826.0.1.3680043.10.543.90";
     let object = InMemDicomObject::from_element_iter([
         DataElement::new(
@@ -19,11 +19,7 @@ fn write_test_dicom(path: &std::path::Path, sop_class_uid: &str) {
             VR::UI,
             PrimitiveValue::from(sop_instance_uid),
         ),
-        DataElement::new(
-            tags::IMAGE_TYPE,
-            VR::CS,
-            PrimitiveValue::from("ORIGINAL\\PRIMARY"),
-        ),
+        DataElement::new(tags::IMAGE_TYPE, VR::CS, PrimitiveValue::from(image_type)),
         DataElement::new(tags::LATERALITY, VR::CS, PrimitiveValue::from("L")),
         DataElement::new(tags::VIEW_POSITION, VR::CS, PrimitiveValue::from("CC")),
     ]);
@@ -46,6 +42,7 @@ fn dry_run_json_is_machine_readable_and_keeps_stderr_clean() {
     write_test_dicom(
         &input,
         uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+        "ORIGINAL\\PRIMARY",
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_mammofill"))
@@ -67,10 +64,36 @@ fn dry_run_json_is_machine_readable_and_keeps_stderr_clean() {
 }
 
 #[test]
+fn dry_run_json_uses_canonical_synth_inferred_value() {
+    let directory = tempdir().unwrap();
+    let input = directory.path().join("input.dcm");
+    write_test_dicom(
+        &input,
+        uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+        "DERIVED\\PRIMARY\\TOMO_2D",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mammofill"))
+        .args(["--dry-run", "--format", "json", "--progress", "never"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let inferred_values = report["files"][0]["inferred_only"].as_array().unwrap();
+    let mammogram_type = inferred_values
+        .iter()
+        .find(|value| value["name"] == "mammogram_type")
+        .unwrap();
+    assert_eq!(mammogram_type["value"], "synth");
+}
+
+#[test]
 fn unsupported_sop_is_a_completed_issue() {
     let directory = tempdir().unwrap();
     let input = directory.path().join("ct.dcm");
-    write_test_dicom(&input, uids::CT_IMAGE_STORAGE);
+    write_test_dicom(&input, uids::CT_IMAGE_STORAGE, "ORIGINAL\\PRIMARY");
 
     let output = Command::new(env!("CARGO_BIN_EXE_mammofill"))
         .args(["--dry-run", "--format", "json", "--progress", "never"])
