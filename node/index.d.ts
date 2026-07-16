@@ -30,6 +30,7 @@ export interface MammogramMetadata {
   dbtObjectKind: string
   laterality: string
   viewPosition: string
+  viewModifiers: Array<string>
   imageType: string
   pixelSpacing: PixelSpacing | null
   isForProcessing: boolean

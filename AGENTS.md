@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Mammocat is a Rust library and CLI tool for extracting mammography metadata from DICOM files. It's a port of the Python `dicom-utils` library, focusing on performance and type safety while maintaining behavioral compatibility.
+Mammocat is a Rust library and CLI suite for extracting, validating, selecting, planning, and conservatively completing mammography DICOM metadata. It is a port of the Python `dicom-utils` library, focusing on performance and type safety while maintaining behavioral compatibility where the DICOM standard does not require a correction.
 
 ## Common Commands
 
@@ -46,6 +46,9 @@ make test-cov
 
 # Run Node/TypeScript binding tests
 make node-test
+
+# Test install and clean reinstall from an exact Git commit
+make node-test-git-install
 
 # Run specific Rust test
 cargo test test_name
@@ -125,6 +128,21 @@ make node-pack
 ./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
 
+#### mammofill - Canonical Metadata Completion
+```bash
+# Preview without writing
+./target/release/mammofill --dry-run /path/to/file-or-directory
+
+# Copy one file or recursively mirror DICOM files
+./target/release/mammofill input.dcm output.dcm
+./target/release/mammofill /path/to/input /path/to/output
+
+# Replace atomically with backups
+./target/release/mammofill --in-place --backup-suffix .bak /path/to/input
+```
+
+Keep completion rules in `core/src/registry.rs`. Every writer rule must name at least one extraction, classification, selection, or validation consumer. Keep legacy aliases shared by extraction and completion; current examples include `SRT`/`SNM3`/`99SDM`, deprecated XCC codes, and the read-only `BILATERAL` laterality alias. `mammofill` must not replace populated values, follow symlinks, retain signature structures without explicit consent, or write heuristic results unless `--allow-heuristic` is set. Do not treat `PositionerType` as SOP-fixed: supported mammography IODs permit both `MAMMOGRAPHIC` and `NONE`.
+
 #### mammoplan - Mammography Input Planning
 ```bash
 # Plan both 2D mammography views and DBT inputs
@@ -202,7 +220,7 @@ and 26 copy-through DICOM files.
 The codebase follows a clear separation of concerns:
 
 **`types/`** - Core type system and domain models
-- `enums.rs`: MammogramType, DbtObjectKind, Laterality, ViewPosition, PhotometricInterpretation, PreferenceOrder
+- `enums.rs`: MammogramType, DbtObjectKind, Laterality, complete CID 4014 `ViewPosition`, complete CID 4015 `MammographyViewModifier`, PhotometricInterpretation, PreferenceOrder
 - `filter.rs`: FilterConfig struct for record filtering during view selection
 - `image_type.rs`: ImageType struct for decomposed DICOM ImageType field
 - `view.rs`: MammogramView combining laterality + view position
@@ -215,8 +233,17 @@ The codebase follows a clear separation of concerns:
   - `PIXEL_DATA_TAG`, `DICOM_MAGIC_BYTES`: Shared constants
 - `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection) plus DBT object-kind detection
 - `laterality.rs`: Laterality extraction with fallback hierarchy
-- `view_position.rs`: View position parsing with helper functions (`match_strict_patterns`, `match_loose_patterns`)
-- `view_modifiers.rs`: Spot compression, magnification, implant displaced detection
+- `view_position.rs`: Shared canonical view descriptor parsing and conflict diagnostics
+- `view_modifiers.rs`: Convenience readers derived from the shared descriptor
+
+**`registry.rs`** - Canonical metadata registry
+- Records applicability, DICOM paths, tags, VR/VM, current values, legacy aliases, inference sources, confidence, writer representation, and consumers.
+- Owns the current CID 4014/CID 4015 tables used by extraction and completion.
+
+**`completion.rs`** - Conservative completion API
+- `plan_completion()`: Produces a non-mutating plan with additions, inferred-only values, and issues.
+- `apply_completion_plan()`: Applies a source-bound plan in memory, rejects changed completion evidence, and appends the Original Attributes audit item.
+- `complete_file()`: Uses a same-directory temporary file, verifies invariants and validation, then renames atomically.
 
 **`selection/`** - Preferred view selection logic
 - `record.rs`: MammogramRecord combining file path and metadata, with comparison logic
@@ -250,8 +277,13 @@ The codebase follows a clear separation of concerns:
 - `src/lib.rs`: Synchronous public API for `extractMetadata`, `selectPreferredViews`, and `selectPreferredViewsFromDirectory`
 - `index.js` and `index.d.ts`: Generated package loader and TypeScript declarations; keep these committed after `npm --prefix node run build`
 - `npm/`: Platform-specific optional native package metadata for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC
-- `test/`: Synthetic non-PHI DICOM fixture generation plus `node --test` API coverage
+- `test/`: Synthetic non-PHI DICOM fixtures, API tests, and the commit-pinned Git installation integration test
 - Native `node/*.node` and `node/npm/**/*.node` artifacts are build outputs and stay ignored
+
+**Root Node package shim**
+- Root `package.json` and `package-lock.json` make the repository installable as `@medcognetics/mammocat` from an exact npm Git dependency.
+- The root `prepare` script builds the NAPI addon from `node/` with access to the Cargo workspace and `core/` path dependency.
+- The installed Git package contains `node/index.js`, `node/index.d.ts`, and the local host `.node` file. It does not declare the unpublished optional platform packages used by the publish-oriented `node/` package.
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap
@@ -338,14 +370,15 @@ Test categories:
 - Data structure operations (Laterality::reduce, ImageType decomposition)
 - Classification algorithm logic
 - Preferred view selection (selection/record.rs, selection/views.rs)
+- Canonical parser, completion planning, safe file writes, audit, and CLI behavior
 - Python bindings API (tests/test_enums.py, tests/test_api.py)
-- Node/TypeScript bindings API, generated declarations, file/buffer parity, selection diagnostics, and package dry-run
+- Node/TypeScript bindings API, generated declarations, file/buffer parity, selection diagnostics, package dry-run, and commit-pinned Git installation
 
 When adding features that affect metadata extraction, add corresponding unit tests in the relevant module file.
 
 ## Binary Locations
 
-Five CLI binaries are defined in core/Cargo.toml:
+Six CLI binaries are defined in core/Cargo.toml:
 
 **mammocat** - Metadata extraction from individual DICOM files
 ```toml
@@ -359,6 +392,13 @@ path = "src/main.rs"
 [[bin]]
 name = "mammoselect"
 path = "src/bin/mammoselect.rs"
+```
+
+**mammofill** - Conservative canonical metadata completion
+```toml
+[[bin]]
+name = "mammofill"
+path = "src/bin/mammofill.rs"
 ```
 
 **mammoplan** - 2D mammography view and DBT input planning from directories
@@ -383,8 +423,8 @@ path = "src/bin/dbt-combine.rs"
 ```
 
 After building, binaries are at:
-- `./target/release/mammocat`, `./target/release/mammoselect`, `./target/release/mammoplan`, `./target/release/mammovalidate`, and `./target/release/dbt-combine` (release)
-- `./target/debug/mammocat`, `./target/debug/mammoselect`, `./target/debug/mammoplan`, `./target/debug/mammovalidate`, and `./target/debug/dbt-combine` (debug)
+- `./target/release/mammocat`, `./target/release/mammofill`, `./target/release/mammoselect`, `./target/release/mammoplan`, `./target/release/mammovalidate`, and `./target/release/dbt-combine` (release)
+- `./target/debug/mammocat`, `./target/debug/mammofill`, `./target/debug/mammoselect`, `./target/debug/mammoplan`, `./target/debug/mammovalidate`, and `./target/debug/dbt-combine` (debug)
 
 ## Contribution Guidelines
 

@@ -62,9 +62,9 @@ impl<'a> fmt::Display for TextReport<'a> {
         )?;
         write_field(f, "For Processing", self.metadata.is_for_processing)?;
         write_field(f, "Has Implant", self.metadata.has_implant)?;
-        write_field(f, "Implant Displaced", self.metadata.is_implant_displaced)?;
-        write_field(f, "Spot Compression", self.metadata.is_spot_compression)?;
-        write_field(f, "Magnification", self.metadata.is_magnified)?;
+        write_field(f, "Implant Displaced", self.metadata.is_implant_displaced())?;
+        write_field(f, "Spot Compression", self.metadata.is_spot_compression())?;
+        write_field(f, "Magnification", self.metadata.is_magnified())?;
         write_field(f, "Secondary Capture", self.metadata.is_secondary_capture)?;
         write_field(
             f,
@@ -122,12 +122,10 @@ mod tests {
             dbt_object_kind: DbtObjectKind::None,
             laterality: Laterality::Left,
             view_position: ViewPosition::Cc,
+            view_modifiers: Default::default(),
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
-            is_spot_compression: false,
-            is_magnified: false,
-            is_implant_displaced: false,
             manufacturer: Some("Test Manufacturer".to_string()),
             model: Some("Test Model".to_string()),
             number_of_frames: 1,
