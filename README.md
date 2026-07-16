@@ -423,7 +423,9 @@ mammocat/
 ### Data Structures
 
 - **`ImageType`**: Decomposed DICOM ImageType field (pixels, exam, flavor, extras)
-- **`PixelSpacing`**: Pixel spacing in mm with regex parsing
+- **`PixelSpacing`**: Pixel spacing in mm with exact two-value parsing and DICOM numeric constraints
+  - Values must be finite and positive, with zero allowed only for a matching single-pixel dimension
+  - Extraction falls back to valid `ImagerPixelSpacing` when `PixelSpacing` is absent or malformed
 - **`MammogramView`**: Combination of laterality + view position
 - **`MammogramMetadata`**: Complete extracted metadata
 

@@ -173,6 +173,20 @@ class TestMammogramExtractor:
         assert metadata_dict["concatenation_uid"] == "1.2.826.0.1.100"
         assert metadata_dict["sop_instance_uid_of_concatenation_source"] == "1.2.826.0.1.101"
 
+    def test_invalid_pixel_spacing_uses_imager_fallback(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        """Test an invalid primary spacing does not suppress a valid fallback."""
+        dicom_path = fixtures_dir / "spacing_fallback.dcm"
+        ds = mammogram_dicom_factory(mammogram_type="FFDM")
+        ds.PixelSpacing = ["-0.07", "0"]
+        ds.ImagerPixelSpacing = ["0.09", "0.091"]
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+
+        assert metadata.pixel_spacing == {"row": 0.09, "column": 0.091}
+
     def test_single_frame_tomo_slice_metadata(self, fixtures_dir):
         """Test single-frame DBT slices are TOMO with DBT slice kind."""
         dicom_path = fixtures_dir / "dbt_slice.dcm"
