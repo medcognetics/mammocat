@@ -63,6 +63,7 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDbtObjectKind>()?;
     m.add_class::<PyLaterality>()?;
     m.add_class::<PyViewPosition>()?;
+    m.add_class::<PyMammographyViewModifier>()?;
     m.add_class::<PyPreferenceOrder>()?;
     m.add_class::<PyPhotometricInterpretation>()?;
 

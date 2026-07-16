@@ -6,6 +6,7 @@ from mammocat import (
     Laterality,
     MammogramType,
     MammogramView,
+    MammographyViewModifier,
     PhotometricInterpretation,
     PreferenceOrder,
     ViewPosition,
@@ -119,7 +120,13 @@ class TestViewPosition:
         assert ViewPosition.CC.value == "cc"
         assert ViewPosition.MLO.value == "mlo"
         assert ViewPosition.XCCL.value == "xccl"
+        assert ViewPosition.FB.value == "fb"
+        assert ViewPosition.SIO.value == "sio"
+        assert ViewPosition.ISO.value == "iso"
+        assert ViewPosition.SPECIMEN.value == "specimen"
         assert ViewPosition.UNKNOWN.value == ""
+        assert not hasattr(ViewPosition, "AT")
+        assert not hasattr(ViewPosition, "CV")
 
     def test_is_standard_view(self):
         """Test is_standard_view method."""
@@ -146,6 +153,46 @@ class TestViewPosition:
         """Test ordering comparisons."""
         assert ViewPosition.UNKNOWN < ViewPosition.XCCL
         assert ViewPosition.CC < ViewPosition.MLO
+
+
+class TestMammographyViewModifier:
+    def test_complete_cid_4015_values(self):
+        expected = {
+            "cleavage",
+            "axillary_tail",
+            "rolled_lateral",
+            "rolled_medial",
+            "rolled_inferior",
+            "rolled_superior",
+            "implant_displaced",
+            "magnification",
+            "spot_compression",
+            "tangential",
+            "nipple_in_profile",
+            "anterior_compression",
+            "infra_mammary_fold",
+            "axillary_tissue",
+        }
+        actual = {
+            value.value
+            for value in (
+                MammographyViewModifier.CLEAVAGE,
+                MammographyViewModifier.AXILLARY_TAIL,
+                MammographyViewModifier.ROLLED_LATERAL,
+                MammographyViewModifier.ROLLED_MEDIAL,
+                MammographyViewModifier.ROLLED_INFERIOR,
+                MammographyViewModifier.ROLLED_SUPERIOR,
+                MammographyViewModifier.IMPLANT_DISPLACED,
+                MammographyViewModifier.MAGNIFICATION,
+                MammographyViewModifier.SPOT_COMPRESSION,
+                MammographyViewModifier.TANGENTIAL,
+                MammographyViewModifier.NIPPLE_IN_PROFILE,
+                MammographyViewModifier.ANTERIOR_COMPRESSION,
+                MammographyViewModifier.INFRA_MAMMARY_FOLD,
+                MammographyViewModifier.AXILLARY_TISSUE,
+            )
+        }
+        assert actual == expected
 
 
 class TestPreferenceOrder:

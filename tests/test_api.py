@@ -11,6 +11,7 @@ from mammocat import (
     MammogramExtractor,
     MammogramRecord,
     MammogramType,
+    MammographyViewModifier,
     PreferenceOrder,
     SelectionError,
     get_preferred_views,
@@ -62,6 +63,7 @@ class TestMammogramExtractor:
         assert isinstance(metadata.is_spot_compression, bool)
         assert isinstance(metadata.is_magnified, bool)
         assert isinstance(metadata.is_implant_displaced, bool)
+        assert isinstance(metadata.view_modifiers, list)
         assert isinstance(metadata.number_of_frames, int)
         assert metadata.pixel_spacing == {"row": 0.07, "column": 0.07}
         assert metadata.concatenation_uid is None
@@ -106,6 +108,7 @@ class TestMammogramExtractor:
         assert "mammogram_type" in d
         assert "laterality" in d
         assert "view_position" in d
+        assert d["view_modifiers"] == []
         assert "number_of_frames" in d
         assert d["pixel_spacing"] == {"row": 0.07, "column": 0.07}
         assert "dbt_object_kind" in d
@@ -130,6 +133,28 @@ class TestMammogramExtractor:
         assert metadata.to_dict()["mammogram_type"] == "synth"
         assert metadata.mammogram_type.value == "synth"
         assert str(metadata.mammogram_type) == "s-view"
+
+    def test_canonical_nested_modifiers_are_exposed(self, fixtures_dir, mammogram_dicom_factory):
+        path = fixtures_dir / "canonical_modifiers.dcm"
+        ds = mammogram_dicom_factory(
+            mammogram_type="FFDM",
+            view_position="CC",
+            is_spot_compression=True,
+            is_magnified=True,
+            is_implant_displaced=True,
+        )
+        ds.save_as(path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(path)
+
+        assert metadata.view_modifiers == [
+            MammographyViewModifier.IMPLANT_DISPLACED,
+            MammographyViewModifier.MAGNIFICATION,
+            MammographyViewModifier.SPOT_COMPRESSION,
+        ]
+        assert metadata.is_implant_displaced
+        assert metadata.is_magnified
+        assert metadata.is_spot_compression
 
     def test_concat_metadata_to_dict(self, fixtures_dir, mammogram_dicom_factory):
         """Test concat identifiers are exposed in metadata and to_dict."""

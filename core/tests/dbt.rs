@@ -1,5 +1,5 @@
 use dicom_core::dicom_value;
-use dicom_core::value::PrimitiveValue;
+use dicom_core::value::{DataSetSequence, PrimitiveValue};
 use dicom_core::{DataElement, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
@@ -53,6 +53,16 @@ fn rust_api_scans_and_converts_old_format_dbt_series() -> Result<(), Box<dyn std
         converted.element(tags::NUMBER_OF_FRAMES)?.to_int::<i32>()?,
         3
     );
+    assert!(converted
+        .element(tags::SHARED_FUNCTIONAL_GROUPS_SEQUENCE)
+        .is_ok());
+    assert_eq!(
+        converted
+            .element(tags::PER_FRAME_FUNCTIONAL_GROUPS_SEQUENCE)?
+            .items()
+            .map_or(0, <[_]>::len),
+        3
+    );
     assert!(output.join("nested/b/ffdm.dcm").exists());
 
     Ok(())
@@ -93,7 +103,56 @@ fn write_dbt_slice(
         VR::DS,
         dicom_value!(Strs, ["0", "0", instance_number.to_string()]),
     ));
+    obj.put(DataElement::new(
+        tags::IMAGE_ORIENTATION_PATIENT,
+        VR::DS,
+        dicom_value!(Strs, ["1", "0", "0", "0", "1", "0"]),
+    ));
+    obj.put(DataElement::new(
+        tags::PIXEL_SPACING,
+        VR::DS,
+        dicom_value!(Strs, ["0.1", "0.1"]),
+    ));
+    obj.put(DataElement::new(tags::SLICE_THICKNESS, VR::DS, "1"));
+    obj.put(DataElement::new(
+        tags::FRAME_OF_REFERENCE_UID,
+        VR::UI,
+        format!("{study_uid}.4"),
+    ));
+    obj.put(DataElement::new(tags::WINDOW_CENTER, VR::DS, "2048"));
+    obj.put(DataElement::new(tags::WINDOW_WIDTH, VR::DS, "4096"));
+    obj.put(DataElement::new(tags::RESCALE_INTERCEPT, VR::DS, "0"));
+    obj.put(DataElement::new(tags::RESCALE_SLOPE, VR::DS, "1"));
+    obj.put(DataElement::new(tags::RESCALE_TYPE, VR::LO, "US"));
+    obj.put(DataElement::new(tags::BREAST_IMPLANT_PRESENT, VR::CS, "NO"));
+    obj.put(DataElement::new(tags::BURNED_IN_ANNOTATION, VR::CS, "NO"));
+    obj.put(code_sequence(
+        tags::ANATOMIC_REGION_SEQUENCE,
+        "76752008",
+        "SCT",
+        "Breast",
+    ));
+    obj.put(code_sequence(
+        tags::VIEW_CODE_SEQUENCE,
+        "399368009",
+        "SCT",
+        "Mediolateral oblique",
+    ));
     write_object(path, obj, uids::CT_IMAGE_STORAGE, &sop_instance_uid)
+}
+
+fn code_sequence(
+    tag: dicom_core::Tag,
+    code_value: &str,
+    scheme: &str,
+    meaning: &str,
+) -> DataElement<InMemDicomObject> {
+    let item = InMemDicomObject::from_element_iter([
+        DataElement::new(tags::CODE_VALUE, VR::SH, code_value),
+        DataElement::new(tags::CODING_SCHEME_DESIGNATOR, VR::SH, scheme),
+        DataElement::new(tags::CODE_MEANING, VR::LO, meaning),
+    ]);
+    DataElement::new(tag, VR::SQ, DataSetSequence::from(vec![item]))
 }
 
 fn write_ffdm(

@@ -4,7 +4,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use super::enums::{
-    PyDbtObjectKind, PyImageType, PyLaterality, PyMammogramType, PyMammogramView, PyViewPosition,
+    PyDbtObjectKind, PyImageType, PyLaterality, PyMammogramType, PyMammogramView,
+    PyMammographyViewModifier, PyViewPosition,
 };
 use super::utils::option_string_to_py;
 
@@ -41,6 +42,17 @@ impl PyMammogramMetadata {
         self.inner.view_position.into()
     }
 
+    /// Standard CID 4015 view modifiers.
+    #[getter]
+    fn view_modifiers(&self) -> Vec<PyMammographyViewModifier> {
+        self.inner
+            .view_modifiers
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect()
+    }
+
     /// Parsed ImageType field
     #[getter]
     fn image_type(&self) -> PyImageType {
@@ -62,19 +74,19 @@ impl PyMammogramMetadata {
     /// Whether this is a spot compression view
     #[getter]
     fn is_spot_compression(&self) -> bool {
-        self.inner.is_spot_compression
+        self.inner.is_spot_compression()
     }
 
     /// Whether this is a magnification view
     #[getter]
     fn is_magnified(&self) -> bool {
-        self.inner.is_magnified
+        self.inner.is_magnified()
     }
 
     /// Whether this is an implant displaced view
     #[getter]
     fn is_implant_displaced(&self) -> bool {
-        self.inner.is_implant_displaced
+        self.inner.is_implant_displaced()
     }
 
     /// Manufacturer name (if available)
@@ -178,6 +190,14 @@ impl PyMammogramMetadata {
         dict.set_item("dbt_object_kind", self.dbt_object_kind().simple_name())?;
         dict.set_item("laterality", self.laterality().simple_name())?;
         dict.set_item("view_position", self.view_position().simple_name())?;
+        dict.set_item(
+            "view_modifiers",
+            self.inner
+                .view_modifiers
+                .iter()
+                .map(|modifier| modifier.simple_name())
+                .collect::<Vec<_>>(),
+        )?;
         dict.set_item("image_type", format!("{}", self.inner.image_type))?;
         dict.set_item("is_for_processing", self.is_for_processing())?;
         dict.set_item("has_implant", self.has_implant())?;
