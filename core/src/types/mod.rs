@@ -17,8 +17,8 @@ mod pixel_spacing;
 mod view;
 
 pub use enums::{
-    DbtObjectKind, Laterality, MammogramType, PhotometricInterpretation, PreferenceOrder,
-    ViewPosition,
+    DbtObjectKind, Laterality, MammogramType, MammographyViewModifier, PhotometricInterpretation,
+    PreferenceOrder, ViewPosition,
 };
 pub use filter::FilterConfig;
 pub use image_type::ImageType;
