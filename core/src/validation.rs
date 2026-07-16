@@ -665,14 +665,35 @@ enum PixelDataState {
     Missing,
 }
 
-fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> {
-    let file = File::open(path).map_err(|source| source.to_string())?;
-    let file_length = file.metadata().map_err(|source| source.to_string())?.len();
+#[derive(Debug, thiserror::Error)]
+enum PixelDataProbeError {
+    #[error("{0}")]
+    InvalidPixelData(String),
+    #[error("{0}")]
+    Unsupported(String),
+}
+
+impl PixelDataProbeError {
+    fn invalid_pixel_data(source: impl ToString) -> Self {
+        Self::InvalidPixelData(source.to_string())
+    }
+
+    fn unsupported(source: impl ToString) -> Self {
+        Self::Unsupported(source.to_string())
+    }
+}
+
+fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, PixelDataProbeError> {
+    let file = File::open(path).map_err(PixelDataProbeError::unsupported)?;
+    let file_length = file
+        .metadata()
+        .map_err(PixelDataProbeError::unsupported)?
+        .len();
     let mut reader = BufReader::new(file);
     let mut prefix = [0_u8; 132];
     let prefix_len = reader
         .read(&mut prefix)
-        .map_err(|source| source.to_string())?;
+        .map_err(PixelDataProbeError::unsupported)?;
     let dataset_start = if prefix_len >= prefix.len() && &prefix[128..] == b"DICM" {
         128
     } else {
@@ -680,30 +701,36 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
     };
     reader
         .seek(SeekFrom::Start(dataset_start))
-        .map_err(|source| source.to_string())?;
+        .map_err(PixelDataProbeError::unsupported)?;
 
-    let meta = FileMetaTable::from_reader(&mut reader).map_err(|source| source.to_string())?;
+    let meta = FileMetaTable::from_reader(&mut reader).map_err(PixelDataProbeError::unsupported)?;
     let transfer_syntax = TransferSyntaxRegistry
         .get(meta.transfer_syntax())
-        .ok_or_else(|| format!("unsupported transfer syntax: {}", meta.transfer_syntax()))?;
+        .ok_or_else(|| {
+            PixelDataProbeError::unsupported(format!(
+                "unsupported transfer syntax: {}",
+                meta.transfer_syntax()
+            ))
+        })?;
     let mut dataset = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
-        .map_err(|source| source.to_string())?;
+        .map_err(PixelDataProbeError::unsupported)?;
     let mut sequence_depth = 0_usize;
 
     while let Some(token) = dataset.advance() {
-        let token = token.map_err(|source| source.to_string())?;
+        let token = token.map_err(PixelDataProbeError::unsupported)?;
         match token {
             LazyDataToken::ElementHeader(header)
                 if sequence_depth == 0 && header.tag == PIXEL_DATA_TAG =>
             {
-                let length = header
-                    .len
-                    .get()
-                    .ok_or_else(|| "native PixelData has undefined length".to_string())?;
+                let length = header.len.get().ok_or_else(|| {
+                    PixelDataProbeError::invalid_pixel_data("native PixelData has undefined length")
+                })?;
                 let value = dataset
                     .advance()
-                    .ok_or_else(|| "native PixelData value is missing".to_string())?
-                    .map_err(|source| source.to_string())?;
+                    .ok_or_else(|| {
+                        PixelDataProbeError::invalid_pixel_data("native PixelData value is missing")
+                    })?
+                    .map_err(PixelDataProbeError::invalid_pixel_data)?;
                 match value {
                     LazyDataToken::LazyValue { header, decoder }
                         if header.tag == PIXEL_DATA_TAG =>
@@ -711,14 +738,22 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
                         let value_end = decoder
                             .position()
                             .checked_add(u64::from(length))
-                            .ok_or_else(|| "native PixelData length overflows file".to_string())?;
+                            .ok_or_else(|| {
+                                PixelDataProbeError::invalid_pixel_data(
+                                    "native PixelData length overflows file",
+                                )
+                            })?;
                         if value_end > file_length {
-                            return Err(format!(
+                            return Err(PixelDataProbeError::invalid_pixel_data(format!(
                                 "native PixelData declares {length} bytes beyond the end of the file"
-                            ));
+                            )));
                         }
                     }
-                    _ => return Err("native PixelData value is missing".to_string()),
+                    _ => {
+                        return Err(PixelDataProbeError::invalid_pixel_data(
+                            "native PixelData value is missing",
+                        ));
+                    }
                 }
                 return if length == 0 {
                     Ok(PixelDataState::Empty)
@@ -736,7 +771,7 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
                 sequence_depth = sequence_depth.saturating_sub(1);
             }
             lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
-                lazy.skip().map_err(|source| source.to_string())?;
+                lazy.skip().map_err(PixelDataProbeError::unsupported)?;
             }
             _ => {}
         }
@@ -747,13 +782,13 @@ fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, String> 
 
 fn probe_pixel_sequence<S>(
     dataset: &mut LazyDataSetReader<S>,
-) -> std::result::Result<PixelDataState, String>
+) -> std::result::Result<PixelDataState, PixelDataProbeError>
 where
     S: dicom::parser::stateful::decode::StatefulDecode,
 {
     let mut item_count = 0_usize;
     while let Some(token) = dataset.advance() {
-        let token = token.map_err(|source| source.to_string())?;
+        let token = token.map_err(PixelDataProbeError::invalid_pixel_data)?;
         match token {
             LazyDataToken::ItemStart { .. } => item_count += 1,
             LazyDataToken::SequenceEnd => {
@@ -767,13 +802,16 @@ where
                 };
             }
             lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
-                lazy.skip().map_err(|source| source.to_string())?;
+                lazy.skip()
+                    .map_err(PixelDataProbeError::invalid_pixel_data)?;
             }
             _ => {}
         }
     }
 
-    Err("encapsulated PixelData ended before its sequence delimiter".to_string())
+    Err(PixelDataProbeError::invalid_pixel_data(
+        "encapsulated PixelData ended before its sequence delimiter",
+    ))
 }
 
 pub fn validate_path(
@@ -1131,9 +1169,15 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
             options,
             Some(pixel_data_state),
         ),
-        Err(_) => {
+        Err(PixelDataProbeError::Unsupported(_)) => {
             validate_open_result_with_record(path.to_path_buf(), open_file(path), options, None)
         }
+        Err(PixelDataProbeError::InvalidPixelData(source)) => validate_open_result_with_record(
+            path.to_path_buf(),
+            Err(format!("PixelData probe failed: {source}")),
+            options,
+            None,
+        ),
     }
 }
 
@@ -2479,7 +2523,13 @@ mod tests {
 
         let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
 
-        assert!(error_codes(&report).contains("dicom_read_failed"));
+        let error = report
+            .errors
+            .iter()
+            .find(|error| error.code == "dicom_read_failed")
+            .expect("missing DICOM read failure");
+        assert!(error.message.contains("PixelData probe failed"));
+        assert!(error.message.contains("beyond the end of the file"));
         assert!(!report.pixel.pixel_data_present);
     }
 
