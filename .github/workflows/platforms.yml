@@ -1,0 +1,93 @@
+name: Native Platforms
+
+on:
+  schedule:
+    - cron: "17 6 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-platforms-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  node-native:
+    name: node-native-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package-directory: linux-x64-gnu
+            timeout: 30
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            package-directory: darwin-x64
+            timeout: 40
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            package-directory: darwin-arm64
+            timeout: 40
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            package-directory: win32-x64-msvc
+            timeout: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+
+      - name: Set up Node 22.23.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.0
+
+      - name: Restore Cargo downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore npm downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ runner.arch }}-22.23.0-${{ hashFiles('node/package-lock.json') }}
+
+      - name: Install Node dependencies
+        run: npm --prefix node ci --omit=optional
+
+      - name: Build native binding
+        run: npm --prefix node run build
+
+      - name: Type-check declarations
+        run: npm --prefix node run typecheck
+
+      - name: Test native binding
+        run: npm --prefix node test
+
+      - name: Prepare native package metadata
+        run: npm --prefix node exec -- napi artifacts --output-dir . --npm-dir npm
+
+      - name: Dry-run main package
+        run: npm --prefix node pack --dry-run
+
+      - name: Dry-run matching native package
+        working-directory: node/npm/${{ matrix.package-directory }}
+        run: npm pack --dry-run --ignore-scripts
+
+      - name: Verify generated Node files
+        run: git diff --exit-code -- node/index.js node/index.d.ts

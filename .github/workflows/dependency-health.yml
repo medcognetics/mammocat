@@ -1,0 +1,133 @@
+name: Dependency Health
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-health-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+  UV_PYTHON: "3.14"
+  UV_PYTHON_DOWNLOADS: never
+
+jobs:
+  security-audit:
+    name: security-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.29
+          enable-cache: false
+
+      - name: Set up Node 22.23.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.0
+
+      - name: Restore scanner downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/uv
+            ~/.npm
+          key: security-${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2-pip-audit-2.10.1-npm-12.0.1-zizmor-1.27.0-${{ hashFiles('Cargo.lock', 'uv.lock', 'package-lock.json', 'node/package-lock.json') }}
+
+      - name: Install Cargo Audit 0.22.2
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Run and aggregate security scans
+        run: make security-audit
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-security-reports
+          path: reports/security/
+          if-no-files-found: error
+          retention-days: 14
+
+  deprecation-report:
+    name: deprecation-report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.29
+          enable-cache: false
+
+      - name: Set up Node 22.23.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.0
+
+      - name: Restore report downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.npm
+          key: deprecation-${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2-npm-12.0.1-${{ hashFiles('Cargo.lock', 'uv.lock', 'package-lock.json', 'node/package-lock.json') }}
+
+      - name: Install Cargo Audit 0.22.2
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Build deprecation report
+        run: make deprecation-report
+
+      - name: Append deprecation summary
+        if: always()
+        run: test -f reports/deprecation/report.md && sed -n '1,240p' reports/deprecation/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deprecation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-deprecation-report
+          path: |
+            reports/deprecation/report.json
+            reports/deprecation/report.md
+          if-no-files-found: error
+          retention-days: 14

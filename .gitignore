@@ -146,6 +146,7 @@ node/npm/**/*.node
 
 coverage.xml
 .coverage
+reports/
 
 *.orig.*
 **/version.py

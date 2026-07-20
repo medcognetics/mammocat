@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: linux-${{ matrix.lane }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON('["ubuntu-24.04"]') || fromJSON('["self-hosted","linux","x64","beryl"]') }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: python-min
+            python-version: "3.10"
+            timeout: 20
+          - lane: full
+            python-version: "3.14"
+            timeout: 35
+    env:
+      CARGO_TERM_COLOR: always
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: ${{ matrix.python-version == '3.14' && '1' || '' }}
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.29
+          enable-cache: false
+
+      - name: Restore Cargo downloads
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore uv downloads
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ runner.arch }}-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
+
+      - name: Restore npm downloads
+        if: matrix.lane == 'full' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ runner.arch }}-22.23.0-${{ hashFiles('package-lock.json', 'node/package-lock.json') }}
+
+      - name: Install locked Python dependencies
+        env:
+          CI_PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv sync --frozen --extra dev --python "$CI_PYTHON_VERSION"
+
+      - name: Build minimum-Python bindings
+        if: matrix.lane == 'python-min'
+        run: uv run maturin develop --features python
+
+      - name: Test minimum Python
+        if: matrix.lane == 'python-min'
+        run: uv run pytest tests/ -v
+
+      - name: Set up Node 22.23.0
+        if: matrix.lane == 'full'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.0
+
+      - name: Run full quality checks
+        if: matrix.lane == 'full'
+        run: make quality
+
+      - name: Run full Rust and Python tests
+        if: matrix.lane == 'full'
+        run: make test
+
+      - name: Build and test Node 22
+        if: matrix.lane == 'full'
+        run: make node-install node-build node-typecheck node-test
+
+      - name: Verify generated Node files
+        if: matrix.lane == 'full'
+        run: git diff --exit-code -- node/index.js node/index.d.ts
+
+      - name: Set up Node 26.5.0
+        if: matrix.lane == 'full'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.5.0
+
+      - name: Test Node 26 runtime
+        if: matrix.lane == 'full'
+        run: make node-test

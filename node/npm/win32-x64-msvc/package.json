@@ -11,7 +11,7 @@
   "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "os": [
     "win32"

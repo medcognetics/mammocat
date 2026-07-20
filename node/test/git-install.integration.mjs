@@ -21,6 +21,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const packageName = "@medcognetics/mammocat"
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm"
 const maximumCommandOutputBytes = 10 * 1024 * 1024
+const minimumNodeVersion = ">=22"
 const minimumRustVersion = "1.88"
 
 test("repository root defines the source-build npm package", async () => {
@@ -41,6 +42,8 @@ test("repository root defines the source-build npm package", async () => {
     napiCliVersion,
   )
   assert.deepEqual(rootPackage.engines, nodePackage.engines)
+  assert.equal(rootPackage.engines.node, minimumNodeVersion)
+  assert.equal(rootPackageLock.packages[""].engines.node, minimumNodeVersion)
   assert.equal(rootPackage.optionalDependencies, undefined)
   assert.ok(rootPackage.files.includes("node/*.node"))
 
