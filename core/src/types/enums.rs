@@ -139,6 +139,17 @@ impl MammogramType {
         }
     }
 
+    /// Returns the canonical value used by machine-readable outputs.
+    pub fn serialized_name(&self) -> &'static str {
+        match self {
+            MammogramType::Unknown => "unknown",
+            MammogramType::Tomo => "tomo",
+            MammogramType::Ffdm => "ffdm",
+            MammogramType::Synth => "synth",
+            MammogramType::Sfm => "sfm",
+        }
+    }
+
     /// Returns numeric value for intrinsic ordering (lower = more preferred)
     fn value(&self) -> i32 {
         match self {
@@ -562,6 +573,36 @@ mod tests {
         assert!(MammogramType::Ffdm.is_preferred_to(&MammogramType::Synth));
         assert!(!MammogramType::Synth.is_preferred_to(&MammogramType::Ffdm));
         assert!(!MammogramType::Unknown.is_preferred_to(&MammogramType::Ffdm));
+    }
+
+    #[test]
+    fn mammogram_type_machine_names_are_canonical_for_every_variant() {
+        assert_eq!(MammogramType::Unknown.serialized_name(), "unknown");
+        assert_eq!(MammogramType::Tomo.serialized_name(), "tomo");
+        assert_eq!(MammogramType::Ffdm.serialized_name(), "ffdm");
+        assert_eq!(MammogramType::Synth.serialized_name(), "synth");
+        assert_eq!(MammogramType::Sfm.serialized_name(), "sfm");
+        assert_eq!(MammogramType::Synth.simple_name(), "s-view");
+        assert_eq!(MammogramType::Synth.to_string(), "s-view");
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn mammogram_type_json_uses_canonical_machine_names() {
+        let expected = [
+            (MammogramType::Unknown, "unknown"),
+            (MammogramType::Tomo, "tomo"),
+            (MammogramType::Ffdm, "ffdm"),
+            (MammogramType::Synth, "synth"),
+            (MammogramType::Sfm, "sfm"),
+        ];
+
+        for (mammogram_type, serialized_name) in expected {
+            assert_eq!(
+                serde_json::to_string(&mammogram_type).unwrap(),
+                format!("\"{serialized_name}\"")
+            );
+        }
     }
 
     #[test]

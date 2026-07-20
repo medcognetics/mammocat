@@ -42,6 +42,7 @@ def create_mammogram_dicom(
     is_spot_compression: bool = False,
     is_magnified: bool = False,
     is_implant_displaced: bool = False,
+    nested_view_modifiers: bool = False,
     pixel_spacing: tuple[float, float] | None = (0.07, 0.07),
     transfer_syntax_uid: str = ExplicitVRLittleEndian,
     lossy_image_compression: str = "00",
@@ -61,6 +62,7 @@ def create_mammogram_dicom(
         is_spot_compression: Whether this is spot compression view
         is_magnified: Whether this is magnified view
         is_implant_displaced: Whether this is implant displaced view
+        nested_view_modifiers: Place modifiers under ViewCodeSequence instead of at the root
         pixel_spacing: Optional row/column pixel spacing in millimeters
         transfer_syntax_uid: DICOM transfer syntax UID to write in file metadata
         lossy_image_compression: LossyImageCompression tag value
@@ -142,20 +144,24 @@ def create_mammogram_dicom(
     if is_implant_displaced:
         view_modifier_codes.append(("399209000", "SCT", "Implant Displaced"))
 
+    view_code = None
     if view_position in VIEW_CODES:
         code_value, code_meaning = VIEW_CODES[view_position]
         view_code = Dataset()
         view_code.CodeValue = code_value
         view_code.CodingSchemeDesignator = "SCT"
         view_code.CodeMeaning = code_meaning
-        view_code.ViewModifierCodeSequence = []
+        ds.ViewCodeSequence = [view_code]
+
+    if view_modifier_codes:
+        modifier_parent = view_code if nested_view_modifiers and view_code is not None else ds
+        modifier_parent.ViewModifierCodeSequence = []
         for code_value, coding_scheme, code_meaning in view_modifier_codes:
             modifier = Dataset()
             modifier.CodeValue = code_value
             modifier.CodingSchemeDesignator = coding_scheme
             modifier.CodeMeaning = code_meaning
-            view_code.ViewModifierCodeSequence.append(modifier)
-        ds.ViewCodeSequence = [view_code]
+            modifier_parent.ViewModifierCodeSequence.append(modifier)
 
     # Equipment Information
     ds.Manufacturer = "TEST_MANUFACTURER"

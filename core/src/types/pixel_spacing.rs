@@ -1,6 +1,4 @@
-use regex::Regex;
 use std::fmt;
-use std::sync::OnceLock;
 
 /// Pixel spacing in millimeters (row, column)
 ///
@@ -20,7 +18,7 @@ impl PixelSpacing {
         Self { row, col }
     }
 
-    /// Parses pixel spacing from string
+    /// Parses pixel spacing from a string without image-dimension exceptions.
     ///
     /// Accepts formats like:
     /// - "0.1\\0.1"
@@ -32,29 +30,67 @@ impl PixelSpacing {
     ///
     /// Returns an error if the string cannot be parsed
     pub fn parse(s: &str) -> Result<Self, String> {
-        static REGEX: OnceLock<Regex> = OnceLock::new();
-        let re = REGEX.get_or_init(|| {
-            Regex::new(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?").expect("Failed to compile regex")
-        });
-
-        let mut numbers = re.find_iter(s).map(|m| m.as_str());
-        let row_str = numbers
-            .next()
-            .ok_or_else(|| format!("Failed to parse PixelSpacing from '{}'", s))?;
-        let col_str = numbers
-            .next()
-            .ok_or_else(|| format!("Failed to parse PixelSpacing from '{}'", s))?;
-
-        let row: f64 = row_str
-            .parse()
-            .map_err(|e| format!("Failed to parse row value: {}", e))?;
-
-        let col: f64 = col_str
-            .parse()
-            .map_err(|e| format!("Failed to parse col value: {}", e))?;
-
-        Ok(PixelSpacing { row, col })
+        Self::parse_with_dimensions(s, None, None)
     }
+
+    /// Parses pixel spacing with the DICOM zero-value exceptions for singleton dimensions.
+    ///
+    /// A zero row spacing is valid only when `rows` is one, and a zero column spacing is
+    /// valid only when `columns` is one. All other values must be finite and positive.
+    pub fn parse_with_dimensions(
+        s: &str,
+        rows: Option<u16>,
+        columns: Option<u16>,
+    ) -> Result<Self, String> {
+        let values = spacing_values(s)?;
+        let row = parse_spacing_value(values[0], "row", rows)?;
+        let col = parse_spacing_value(values[1], "column", columns)?;
+
+        Ok(Self { row, col })
+    }
+}
+
+fn spacing_values(s: &str) -> Result<[&str; 2], String> {
+    let trimmed = s.trim();
+    let contents = match (trimmed.strip_prefix('['), trimmed.strip_suffix(']')) {
+        (Some(without_prefix), Some(_)) => without_prefix
+            .strip_suffix(']')
+            .ok_or_else(|| "PixelSpacing has unmatched brackets".to_string())?
+            .trim(),
+        (None, None) => trimmed,
+        _ => return Err("PixelSpacing has unmatched brackets".to_string()),
+    };
+    let values: Vec<_> = if contents.contains('\\') {
+        contents.split('\\').map(str::trim).collect()
+    } else if contents.contains(',') {
+        contents.split(',').map(str::trim).collect()
+    } else {
+        contents.split_whitespace().collect()
+    };
+
+    values
+        .try_into()
+        .map_err(|_| "PixelSpacing must contain exactly two values".to_string())
+}
+
+fn parse_spacing_value(
+    value: &str,
+    component: &str,
+    dimension: Option<u16>,
+) -> Result<f64, String> {
+    let parsed: f64 = value
+        .parse()
+        .map_err(|_| format!("PixelSpacing {component} value is not numeric"))?;
+    if !parsed.is_finite() {
+        return Err(format!("PixelSpacing {component} value must be finite"));
+    }
+    if parsed < 0.0 || (parsed == 0.0 && dimension != Some(1)) {
+        return Err(format!(
+            "PixelSpacing {component} value must be positive unless its dimension is one"
+        ));
+    }
+
+    Ok(parsed)
 }
 
 impl fmt::Display for PixelSpacing {
@@ -114,5 +150,34 @@ mod tests {
         assert!(PixelSpacing::parse("invalid").is_err());
         assert!(PixelSpacing::parse("").is_err());
         assert!(PixelSpacing::parse("0.1").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_multiplicity_and_malformed_values() {
+        assert!(PixelSpacing::parse("0.1\\0.2\\0.3").is_err());
+        assert!(PixelSpacing::parse("prefix 0.1\\0.2").is_err());
+        assert!(PixelSpacing::parse("0.1\\not-a-number").is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_negative_and_zero_values() {
+        assert!(PixelSpacing::parse("NaN\\0.1").is_err());
+        assert!(PixelSpacing::parse("inf\\0.1").is_err());
+        assert!(PixelSpacing::parse("-0.1\\0.1").is_err());
+        assert!(PixelSpacing::parse("0.1\\0").is_err());
+    }
+
+    #[test]
+    fn allows_zero_only_for_the_corresponding_single_dimension() {
+        assert_eq!(
+            PixelSpacing::parse_with_dimensions("0\\0.2", Some(1), Some(8)).unwrap(),
+            PixelSpacing::new(0.0, 0.2)
+        );
+        assert_eq!(
+            PixelSpacing::parse_with_dimensions("0.2\\0", Some(8), Some(1)).unwrap(),
+            PixelSpacing::new(0.2, 0.0)
+        );
+        assert!(PixelSpacing::parse_with_dimensions("0\\0.2", Some(2), Some(8)).is_err());
+        assert!(PixelSpacing::parse_with_dimensions("0.2\\0", Some(8), Some(2)).is_err());
     }
 }

@@ -9,7 +9,7 @@ from pathlib import Path
 import pydicom
 import pytest
 from pydicom.filewriter import dcmwrite
-from pydicom.uid import UID, ExplicitVRBigEndian
+from pydicom.uid import UID, ExplicitVRBigEndian, ImplicitVRLittleEndian
 
 from mammocat import (
     BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
@@ -199,6 +199,24 @@ def test_convert_combines_dbt_and_copies_ffdm(tmp_path: Path) -> None:
     assert metadata.view_position == ViewPosition.MLO
 
 
+def test_convert_streams_implicit_vr_little_endian_pixels(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    source_paths = create_old_format_dbt_series(input_dir, frame_count=2)
+    for path in source_paths:
+        dataset = pydicom.dcmread(path)
+        dataset.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+        dcmwrite(path, dataset, enforce_file_format=True, implicit_vr=True, little_endian=True)
+
+    report = convert_dbt_study(input_dir, output_dir)
+
+    output = pydicom.dcmread(report["converted_series"][0]["output_path"])
+    frame_bytes = output.Rows * output.Columns * 2
+    assert output.PixelData[:frame_bytes] == b"\0\0" * (output.Rows * output.Columns)
+    assert output.PixelData[frame_bytes:] == b"\1\0" * (output.Rows * output.Columns)
+
+
 def test_convert_dry_run_reports_planned_outputs_without_writes(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -329,6 +347,21 @@ def test_force_rejects_directory_at_planned_output_path(tmp_path: Path) -> None:
         convert_dbt_study(input_dir, output_dir, force=True)
 
     assert sentinel.read_text() == "keep"
+
+
+def test_convert_rejects_truncated_pixel_data_stream(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    paths = create_old_format_dbt_series(input_dir)
+    truncated = paths[1]
+    with truncated.open("r+b") as handle:
+        handle.truncate(truncated.stat().st_size - 2)
+
+    with pytest.raises(Exception, match="ended after"):
+        convert_dbt_study(input_dir, output_dir)
+
+    assert not list(output_dir.glob("*.dcm"))
 
 
 def test_convert_rejects_missing_functional_group_metadata(tmp_path: Path) -> None:

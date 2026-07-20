@@ -1,6 +1,7 @@
 .PHONY: help dev build build-release install test test-python test-rust test-cov
 .PHONY: node-install node-build node-test node-test-git-install node-typecheck node-pack
 .PHONY: format format-check lint lint-fix typecheck quality quality-fix clean all
+.PHONY: verify-production security-audit deprecation-report
 
 help:  ## Show this help message
 	@echo "Available targets:"
@@ -27,7 +28,8 @@ test-python:  ## Run Python tests
 	uv run pytest tests/ -v
 
 test-rust:  ## Run Rust tests only
-	cargo test --features python
+	# Exercise every supported runtime surface, including Python and JSON contracts.
+	cargo test --all-features
 
 test-cov:  ## Run Python tests with coverage
 	uv run pytest tests/ --cov=mammocat --cov-report=html --cov-report=term
@@ -51,6 +53,16 @@ node-typecheck:  ## Type-check generated Node/TypeScript declarations
 node-pack:  ## Verify Node package contents without publishing
 	npm --prefix node run pack:dry-run
 	npm pack --dry-run --ignore-scripts
+
+# CI verification and reports
+verify-production:  ## Build and smoke-test production Rust, Python, and Node surfaces
+	python -m scripts.ci.verify_production
+
+security-audit:  ## Aggregate security scans and fail on findings or incomplete results
+	python -m scripts.ci.security_audit
+
+deprecation-report:  ## Report deprecations and fail only when the report is incomplete
+	PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run --no-project --python 3.14 python -m scripts.ci.deprecation_report
 
 # Code formatting
 format:  ## Format both Rust and Python code

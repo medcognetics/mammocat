@@ -118,6 +118,22 @@ class TestMammogramExtractor:
         assert d["transfer_syntax_name"] == "Explicit VR Little Endian"
         assert d["compression_type"] == "uncompressed"
 
+    def test_synthesized_metadata_uses_canonical_machine_value(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        """Test serialized metadata distinguishes the machine and display values."""
+        dicom_path = fixtures_dir / "synthetic_2d.dcm"
+        ds = mammogram_dicom_factory(mammogram_type="SYNTH")
+        ds.ImageType = ["DERIVED", "PRIMARY", "TOMO_2D"]
+        ds.PresentationIntentType = "FOR PRESENTATION"
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+
+        assert metadata.to_dict()["mammogram_type"] == "synth"
+        assert metadata.mammogram_type.value == "synth"
+        assert str(metadata.mammogram_type) == "s-view"
+
     def test_canonical_nested_modifiers_are_exposed(self, fixtures_dir, mammogram_dicom_factory):
         path = fixtures_dir / "canonical_modifiers.dcm"
         ds = mammogram_dicom_factory(
@@ -126,6 +142,7 @@ class TestMammogramExtractor:
             is_spot_compression=True,
             is_magnified=True,
             is_implant_displaced=True,
+            nested_view_modifiers=True,
         )
         ds.save_as(path, enforce_file_format=True)
 
@@ -156,6 +173,20 @@ class TestMammogramExtractor:
         assert metadata_dict["concatenation_uid"] == "1.2.826.0.1.100"
         assert metadata_dict["sop_instance_uid_of_concatenation_source"] == "1.2.826.0.1.101"
 
+    def test_invalid_pixel_spacing_uses_imager_fallback(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        """Test an invalid primary spacing does not suppress a valid fallback."""
+        dicom_path = fixtures_dir / "spacing_fallback.dcm"
+        ds = mammogram_dicom_factory(mammogram_type="FFDM")
+        ds.PixelSpacing = ["-0.07", "0"]
+        ds.ImagerPixelSpacing = ["0.09", "0.091"]
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+
+        assert metadata.pixel_spacing == {"row": 0.09, "column": 0.091}
+
     def test_single_frame_tomo_slice_metadata(self, fixtures_dir):
         """Test single-frame DBT slices are TOMO with DBT slice kind."""
         dicom_path = fixtures_dir / "dbt_slice.dcm"
@@ -176,6 +207,41 @@ class TestMammogramExtractor:
         assert not metadata.is_2d()
         assert metadata_dict["mammogram_type"] == "tomo"
         assert metadata_dict["dbt_object_kind"] == "slice"
+
+    def test_nested_view_modifiers_match_top_level_encoding(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        modifier_options = {
+            "is_spot_compression": True,
+            "is_magnified": True,
+            "is_implant_displaced": True,
+        }
+        top_level_path = fixtures_dir / "top_level_modifiers.dcm"
+        nested_path = fixtures_dir / "nested_modifiers.dcm"
+        mammogram_dicom_factory(**modifier_options).save_as(
+            top_level_path, enforce_file_format=True
+        )
+        mammogram_dicom_factory(**modifier_options, nested_view_modifiers=True).save_as(
+            nested_path, enforce_file_format=True
+        )
+
+        top_level = MammogramExtractor.extract_from_file(top_level_path)
+        nested = MammogramExtractor.extract_from_file(nested_path)
+
+        assert (
+            top_level.is_spot_compression,
+            top_level.is_magnified,
+            top_level.is_implant_displaced,
+        ) == (True, True, True)
+        assert (
+            nested.is_spot_compression,
+            nested.is_magnified,
+            nested.is_implant_displaced,
+        ) == (
+            top_level.is_spot_compression,
+            top_level.is_magnified,
+            top_level.is_implant_displaced,
+        )
 
 
 class TestMammogramRecord:

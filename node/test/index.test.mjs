@@ -11,6 +11,8 @@ import {
 } from "../index.js"
 import { createMammogramBytes, writeMammogramFile } from "./dicom-fixtures.mjs"
 
+const minimumNodeVersion = ">=22"
+
 test("extractMetadata returns JSON-safe metadata from a file path", async (t) => {
   const directory = await tempDir()
   const path = await writeMammogramFile(directory, "l_mlo.dcm", {
@@ -28,6 +30,15 @@ test("extractMetadata returns JSON-safe metadata from a file path", async (t) =>
   assert.doesNotThrow(() => JSON.stringify(metadata))
 })
 
+test("synthesized metadata uses the canonical machine value", () => {
+  const metadata = extractMetadata({
+    bytes: createMammogramBytes({ mammogramType: "SYNTH" }),
+    filename: "synth.dcm",
+  })
+
+  assert.equal(metadata.mammogramType, "synth")
+})
+
 test("file path and byte inputs produce matching metadata", async (t) => {
   const directory = await tempDir()
   const path = await writeMammogramFile(directory, "r_cc.dcm", {
@@ -43,6 +54,19 @@ test("file path and byte inputs produce matching metadata", async (t) => {
   assert.equal(fromBytes.laterality, fromFile.laterality)
   assert.equal(fromBytes.viewPosition, fromFile.viewPosition)
   assert.deepEqual(fromBytes.pixelSpacing, fromFile.pixelSpacing)
+})
+
+test("nested view modifiers populate all metadata flags", () => {
+  const metadata = extractMetadata({
+    bytes: createMammogramBytes({
+      nestedViewModifiers: ["implant displaced", "spot compression", "magnification"],
+    }),
+    filename: "nested_modifiers.dcm",
+  })
+
+  assert.equal(metadata.isImplantDisplaced, true)
+  assert.equal(metadata.isSpotCompression, true)
+  assert.equal(metadata.isMagnified, true)
 })
 
 test("selectPreferredViews returns the four preferred standard slots", () => {
@@ -253,6 +277,9 @@ test("package metadata wires supported native packages", async () => {
   const packageJson = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8"),
   )
+  const packageLock = JSON.parse(
+    await readFile(new URL("../package-lock.json", import.meta.url), "utf8"),
+  )
   const supportedPackages = {
     "@medcognetics/mammocat-darwin-arm64": {
       cpu: ["arm64"],
@@ -292,6 +319,8 @@ test("package metadata wires supported native packages", async () => {
     "README.md",
     "package.json",
   ])
+  assert.equal(packageJson.engines.node, minimumNodeVersion)
+  assert.equal(packageLock.packages[""].engines.node, minimumNodeVersion)
   assert.deepEqual(
     Object.keys(packageJson.optionalDependencies).sort(),
     Object.keys(supportedPackages).sort(),
@@ -323,6 +352,10 @@ test("package metadata wires supported native packages", async () => {
     assert.equal(nativePackageJson.description, packageJson.description)
     assert.equal(nativePackageJson.license, packageJson.license)
     assert.deepEqual(nativePackageJson.engines, packageJson.engines)
+    assert.equal(
+      packageLock.packages[`node_modules/${packageName}`].engines.node,
+      minimumNodeVersion,
+    )
   }
 })
 

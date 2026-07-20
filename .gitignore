@@ -87,7 +87,6 @@ ipython_config.py
 
 # uv
 .uv/
-uv.lock
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
@@ -146,6 +145,7 @@ node/npm/**/*.node
 
 coverage.xml
 .coverage
+reports/
 
 *.orig.*
 **/version.py

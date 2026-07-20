@@ -14,15 +14,19 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **Processing Intent**: Identifies "FOR PROCESSING" images
 - **Preferred View Selection**: Automatically selects the best mammogram for each standard view
 - **Validation Reports**: Checks whether files or directories are ready for metadata extraction or preferred-view selection
-- **Python Bindings**: Full Python API via PyO3
+- **Python Bindings**: PyO3 APIs for extraction, selection, planning, validation, and DBT conversion
 - **Node/TypeScript Bindings**: Synchronous NAPI-RS package for metadata extraction and preferred-view selection
-- **Clean API**: Easy-to-use library and command-line interface
-- **Type Safe**: Leverages Rust's type system for correctness
-- **Well Tested**: Comprehensive Rust and Python test coverage
+- **Rust API and CLIs**: Library interfaces and six command-line programs for metadata and collection workflows
+- **Static Types**: Rust, Python stubs, and TypeScript declarations for public interfaces
+- **Tests**: Rust, Python, and Node coverage for core logic and language bindings
 
 ## Installation
 
 ### From Source
+
+Mammocat supports Rust 1.88 or newer and pins normal development builds to Rust
+1.97.1 through `rust-toolchain.toml`. Python bindings require Python 3.10 or newer.
+Node bindings require Node.js 22 or newer.
 
 ```bash
 git clone <repository-url>
@@ -60,7 +64,7 @@ Then install without the unpublished optional binary packages:
 npm install --omit=optional
 ```
 
-npm clones the repository, installs the root build dependency, and runs `prepare`. The build uses `node/`, `core/`, and the Cargo workspace, then packages the host `.node` file with `node/index.js` and `node/index.d.ts`. The consumer needs Git, Node.js 18 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for the host target.
+npm clones the repository, installs the root build dependency, and runs `prepare`. The build uses `node/`, `core/`, and the Cargo workspace, then packages the host `.node` file with `node/index.js` and `node/index.d.ts`. The consumer needs Git, Node.js 22 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for the host target.
 
 Commit the generated `package-lock.json`. It records the full commit SHA, so a clean install uses the same source revision:
 
@@ -359,10 +363,16 @@ Version 0.2.0 removes `ViewPosition::At` and `ViewPosition::Cv` from Rust, Pytho
 
 ```
 mammocat/
-├── core/                           # Library and binary
+├── Cargo.toml                      # Rust workspace manifest
+├── Makefile                        # Build, test, and quality commands
+├── core/                           # Rust library, CLIs, and Python bindings
+│   ├── Cargo.toml
+│   ├── benches/
+│   │   └── mammoplan.rs            # Criterion planning benchmarks
 │   ├── src/
 │   │   ├── types/                  # Core type system
 │   │   │   ├── enums.rs            # Domain enums, including CID 4014/4015 types
+│   │   │   ├── filter.rs           # Selection filters
 │   │   │   ├── image_type.rs       # ImageType struct
 │   │   │   ├── pixel_spacing.rs
 │   │   │   └── view.rs             # MammogramView
@@ -376,17 +386,28 @@ mammocat/
 │   │   │   ├── record.rs           # MammogramRecord with comparison
 │   │   │   └── views.rs            # get_preferred_views functions
 │   │   ├── python/                 # PyO3 bindings
+│   │   │   ├── dbt.rs              # DBT scan and conversion bindings
 │   │   │   ├── enums.rs            # Python enum wrappers
+│   │   │   ├── errors.rs            # Python exception mapping
+│   │   │   ├── extractor.rs        # File and byte extraction bindings
+│   │   │   ├── filter.rs           # Python selection filters
+│   │   │   ├── macros.rs            # Binding conversion helpers
 │   │   │   ├── metadata.rs         # PyMammogramMetadata
+│   │   │   ├── planning.rs         # Collection planning binding
 │   │   │   ├── record.rs           # PyMammogramRecord
-│   │   │   └── macros.rs           # Boilerplate reduction macros
+│   │   │   ├── selection.rs        # Preferred-view selection bindings
+│   │   │   ├── utils.rs             # Shared Python conversion utilities
+│   │   │   └── validation.rs       # Validation bindings
 │   │   ├── api.rs                  # Public API
+│   │   ├── dbt.rs                  # DBT scan and conversion
+│   │   ├── dicom_files.rs          # Shared DICOM discovery
+│   │   ├── planning.rs             # Collection-level input planning
+│   │   ├── validation.rs           # File, directory, and ZIP validation
 │   │   ├── registry.rs             # Canonical paths, values, aliases, writers, and consumers
 │   │   ├── completion.rs           # Completion planning, audit, and safe file writes
 │   │   ├── cli/                    # Command-line interface
 │   │   │   ├── mod.rs
 │   │   │   └── report.rs           # Text formatting
-│   │   ├── validation.rs           # File/directory validation reports
 │   │   ├── error.rs                # Error types
 │   │   ├── main.rs                 # mammocat CLI entry point
 │   │   └── bin/
@@ -395,6 +416,17 @@ mammocat/
 │   │       ├── mammoselect.rs      # mammoselect CLI entry point
 │   │       ├── mammoplan.rs        # input planning CLI entry point
 │   │       └── mammovalidate.rs    # validation CLI entry point
+│   └── tests/
+│       ├── dbt.rs                  # Rust DBT integration test
+│       └── mammofill.rs            # Rust completion CLI integration test
+├── node/                           # NAPI-RS Node/TypeScript package
+│   ├── src/lib.rs                  # Synchronous addon API
+│   ├── test/                       # Synthetic fixture and API tests
+│   ├── npm/                        # Platform package manifests
+│   ├── index.js                    # Generated native addon loader
+│   ├── index.d.ts                  # Generated TypeScript declarations
+│   └── package.json
+└── tests/                          # Python API and CLI integration tests
 ```
 
 ## Type System
@@ -404,6 +436,8 @@ mammocat/
 - **`MammogramType`**: Unknown, Tomo, Ffdm, Synth, Sfm
   - Implements preference ordering for deduplication
   - `is_preferred_to()` method for comparison
+  - Machine-readable values are `unknown`, `tomo`, `ffdm`, `synth`, and `sfm`
+  - Human-readable display uses `s-view` for `Synth`; serialized output uses `synth`
 
 - **`DbtObjectKind`**: None, Volume, Slice, Unknown
   - Describes DBT storage representation independently from `MammogramType`
@@ -421,7 +455,9 @@ mammocat/
 ### Data Structures
 
 - **`ImageType`**: Decomposed DICOM ImageType field (pixels, exam, flavor, extras)
-- **`PixelSpacing`**: Pixel spacing in mm with regex parsing
+- **`PixelSpacing`**: Pixel spacing in mm with exact two-value parsing and DICOM numeric constraints
+  - Values must be finite and positive, with zero allowed only for a matching single-pixel dimension
+  - Extraction falls back to valid `ImagerPixelSpacing` when `PixelSpacing` is absent or malformed
 - **`MammogramView`**: Combination of laterality + view position
 - **`MammogramMetadata`**: Complete extracted metadata
 
@@ -431,10 +467,14 @@ mammocat/
 - **clap** (4.5): Command-line argument parsing
 - **thiserror** (1.0): Error handling
 - **regex** (1.10): Pattern matching
-- **serde/serde_json** (optional): JSON serialization
+- **serde/serde_json** (1.0): Report serialization. These dependencies are always built;
+  the `json` feature enables serialization for feature-gated metadata and selection types.
+- **zip** (2.4.2): ZIP archive validation
+- **uuid** (1.23.3): DICOM UID generation during DBT conversion
+- **pyo3** (0.22, optional): Python bindings enabled by the `python` feature
+- **napi/napi-derive** (3.10.3/3.5.9, Node package): NAPI-RS bindings
 - **chrono**: UTC audit timestamps
 - **indicatif**: stderr progress reporting for `mammofill`
-- **napi/napi-derive** (Node package): NAPI-RS bindings
 
 ## Testing
 
@@ -479,6 +519,9 @@ make node-typecheck
 make node-pack
 ```
 
+Python 3.14 builds currently require `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`
+until the project upgrades PyO3 0.22.
+
 Current test coverage includes Rust unit/integration tests and Python tests covering:
 - Enum behavior and ordering
 - String parsing and pattern matching
@@ -488,19 +531,43 @@ Current test coverage includes Rust unit/integration tests and Python tests cove
 - Python bindings API (via pytest)
 - Node/TypeScript bindings API, JSON round trips, file/buffer parity, directory selection, and commit-pinned Git installation
 
+## Continuous Integration
+
+GitHub Actions uses five workflows:
+
+- `CI` runs Python 3.10 and the full Python 3.14/Rust/Node gate on pull requests to
+  `master`, pushes to `master`, and manual dispatches. Trusted events use the Beryl
+  self-hosted runner; fork pull requests use `ubuntu-24.04` without dependency caches.
+- `Production Build` verifies release Rust binaries, a wheel installed into an isolated
+  Python 3.14 environment, and the Node package nightly at 04:17 UTC.
+- `Slow Linux` checks Rust 1.88, Python coverage, and commit-pinned npm Git installation
+  nightly at 05:17 UTC.
+- `Native Platforms` checks all four declared N-API targets each Saturday at 06:17 UTC.
+- `Dependency Health` runs security and deprecation reports each Monday at 03:17 UTC.
+  Security findings fail the security job; deprecation findings are informational, while
+  incomplete or unparsable reports fail either job.
+
+The security job intentionally has no advisory exceptions and is expected to remain red
+until the separate dependency-remediation change lands. The GitHub Actions pull-request gate
+jobs are `CI / linux-python-min` and `CI / linux-full`. Verify both trusted and fork
+pull-request paths before making those checks required in branch protection.
+
 ## Future Enhancements
 
-- [ ] Additional metadata fields (PatientAge, StudyDate, etc.)
-- [ ] Performance optimization with rayon for batch processing
+- [ ] Add metadata fields required by downstream consumers.
+- [ ] Evaluate parallel collection processing with repository benchmarks before adding a concurrency dependency.
 
 ## Python Compatibility
 
-This implementation maintains behavioral compatibility with the Python `dicom-utils` library while providing:
+This implementation targets behavioral compatibility with the Python `dicom-utils`
+algorithms listed below. The repository does not contain a Python-versus-Rust benchmark,
+so it does not claim a cross-language speedup.
 
-- 10-100x faster performance (Rust vs Python)
-- Type safety at compile time
-- Zero-cost abstractions
-- Memory safety without garbage collection
+The Criterion benchmark at `core/benches/mammoplan.rs` measures Rust collection-planning workloads:
+
+```bash
+cargo bench -p mammocat-core --bench mammoplan
+```
 
 Reference Python files:
 - `dicom-utils/dicom_utils/types.py` - Core algorithms
@@ -512,7 +579,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE.md](LIC
 
 ## Contributing
 
-Contributions welcome! Please ensure:
+Before submitting a change:
 
 1. All tests pass (`make test`)
 2. Code is formatted (`make format`)

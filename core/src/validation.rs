@@ -2,13 +2,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use dicom::parser::dataset::lazy_read::LazyDataSetReader;
+use dicom::parser::dataset::LazyDataToken;
+use dicom::parser::stateful::decode::StatefulDecode;
 use dicom::transfer_syntax::{TransferSyntaxIndex, TransferSyntaxRegistry};
 use dicom_core::header::HasLength;
 use dicom_core::{DataElement, DicomValue, Tag};
-use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
+use dicom_object::{open_file, FileDicomObject, FileMetaTable, InMemDicomObject, OpenFileOptions};
 
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::completion::{plan_completion, CompletionOptions};
@@ -16,32 +19,23 @@ use crate::dicom_files::collect_dicom_files;
 use crate::extraction::extract_view_descriptor;
 use crate::extraction::tags::{
     get_string_value, BITS_ALLOCATED, BITS_STORED, COLUMNS, DICOM_MAGIC_BYTES, HIGH_BIT,
-    IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION, LOSSY_IMAGE_COMPRESSION_METHOD,
-    MODALITY, NUMBER_OF_FRAMES, PHOTOMETRIC_INTERPRETATION, PIXEL_DATA_TAG, PIXEL_REPRESENTATION,
-    PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL, SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID,
-    STUDY_INSTANCE_UID, VIEW_POSITION,
+    IMAGER_PIXEL_SPACING, IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION,
+    LOSSY_IMAGE_COMPRESSION_METHOD, MODALITY, NUMBER_OF_FRAMES, PHOTOMETRIC_INTERPRETATION,
+    PIXEL_DATA_TAG, PIXEL_REPRESENTATION, PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL,
+    SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID, VIEW_POSITION,
 };
 use crate::selection::{
-    get_preferred_views_filtered, refine_dbt_object_classification, MammogramRecord,
+    get_preferred_views_filtered, lossy_compression_source, refine_dbt_object_classification,
+    LossyCompressionSource, MammogramRecord,
 };
 use crate::types::{
-    FilterConfig, Laterality, MammogramType, PreferenceOrder, ViewPosition, STANDARD_MAMMO_VIEWS,
+    FilterConfig, Laterality, MammogramType, PixelSpacing, PreferenceOrder, ViewPosition,
+    STANDARD_MAMMO_VIEWS,
 };
 
 const UNKNOWN_TRANSFER_SYNTAX: &str = "unknown transfer syntax";
 const MONOCHROME1: &str = "MONOCHROME1";
 const MONOCHROME2: &str = "MONOCHROME2";
-
-const LOSSY_TRANSFER_SYNTAX_UIDS: &[&str] = &[
-    "1.2.840.10008.1.2.4.50", // JPEG Baseline 8-bit
-    "1.2.840.10008.1.2.4.51", // JPEG Extended 12-bit
-    "1.2.840.10008.1.2.4.52", // JPEG Extended retired
-    "1.2.840.10008.1.2.4.53", // JPEG Spectral Selection retired
-    "1.2.840.10008.1.2.4.54", // JPEG Spectral Selection retired
-    "1.2.840.10008.1.2.4.55", // JPEG Full Progression retired
-    "1.2.840.10008.1.2.4.56", // JPEG Full Progression retired
-    "1.2.840.10008.1.2.4.81", // JPEG-LS near-lossless
-];
 
 /// Validation strictness profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -655,6 +649,162 @@ struct FileValidationOutcome {
     record: Option<MammogramRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PixelDataState {
+    Present(String),
+    Empty,
+    Missing,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PixelDataProbeError {
+    #[error("{0}")]
+    InvalidPixelData(String),
+    #[error("{0}")]
+    Unsupported(String),
+}
+
+impl PixelDataProbeError {
+    fn invalid_pixel_data(source: impl ToString) -> Self {
+        Self::InvalidPixelData(source.to_string())
+    }
+
+    fn unsupported(source: impl ToString) -> Self {
+        Self::Unsupported(source.to_string())
+    }
+}
+
+fn probe_pixel_data(path: &Path) -> std::result::Result<PixelDataState, PixelDataProbeError> {
+    let file = File::open(path).map_err(PixelDataProbeError::unsupported)?;
+    let file_length = file
+        .metadata()
+        .map_err(PixelDataProbeError::unsupported)?
+        .len();
+    let mut reader = BufReader::new(file);
+    let mut prefix = [0_u8; 132];
+    let prefix_len = reader
+        .read(&mut prefix)
+        .map_err(PixelDataProbeError::unsupported)?;
+    let dataset_start = if prefix_len >= prefix.len() && &prefix[128..] == b"DICM" {
+        128
+    } else {
+        0
+    };
+    reader
+        .seek(SeekFrom::Start(dataset_start))
+        .map_err(PixelDataProbeError::unsupported)?;
+
+    let meta = FileMetaTable::from_reader(&mut reader).map_err(PixelDataProbeError::unsupported)?;
+    let transfer_syntax = TransferSyntaxRegistry
+        .get(meta.transfer_syntax())
+        .ok_or_else(|| {
+            PixelDataProbeError::unsupported(format!(
+                "unsupported transfer syntax: {}",
+                meta.transfer_syntax()
+            ))
+        })?;
+    let mut dataset = LazyDataSetReader::new_with_ts(reader, transfer_syntax)
+        .map_err(PixelDataProbeError::unsupported)?;
+    let mut sequence_depth = 0_usize;
+
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(PixelDataProbeError::unsupported)?;
+        match token {
+            LazyDataToken::ElementHeader(header)
+                if sequence_depth == 0 && header.tag == PIXEL_DATA_TAG =>
+            {
+                let length = header.len.get().ok_or_else(|| {
+                    PixelDataProbeError::invalid_pixel_data("native PixelData has undefined length")
+                })?;
+                let value = dataset
+                    .advance()
+                    .ok_or_else(|| {
+                        PixelDataProbeError::invalid_pixel_data("native PixelData value is missing")
+                    })?
+                    .map_err(PixelDataProbeError::invalid_pixel_data)?;
+                match value {
+                    LazyDataToken::LazyValue { header, decoder }
+                        if header.tag == PIXEL_DATA_TAG =>
+                    {
+                        let value_end = decoder
+                            .position()
+                            .checked_add(u64::from(length))
+                            .ok_or_else(|| {
+                                PixelDataProbeError::invalid_pixel_data(
+                                    "native PixelData length overflows file",
+                                )
+                            })?;
+                        if value_end > file_length {
+                            return Err(PixelDataProbeError::invalid_pixel_data(format!(
+                                "native PixelData declares {length} bytes beyond the end of the file"
+                            )));
+                        }
+                    }
+                    _ => {
+                        return Err(PixelDataProbeError::invalid_pixel_data(
+                            "native PixelData value is missing",
+                        ));
+                    }
+                }
+                return if length == 0 {
+                    Ok(PixelDataState::Empty)
+                } else {
+                    Ok(PixelDataState::Present(format!("{length} bytes")))
+                };
+            }
+            LazyDataToken::PixelSequenceStart if sequence_depth == 0 => {
+                return probe_pixel_sequence(&mut dataset);
+            }
+            LazyDataToken::SequenceStart { .. } | LazyDataToken::PixelSequenceStart => {
+                sequence_depth += 1;
+            }
+            LazyDataToken::SequenceEnd => {
+                sequence_depth = sequence_depth.saturating_sub(1);
+            }
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip().map_err(PixelDataProbeError::unsupported)?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(PixelDataState::Missing)
+}
+
+fn probe_pixel_sequence<S>(
+    dataset: &mut LazyDataSetReader<S>,
+) -> std::result::Result<PixelDataState, PixelDataProbeError>
+where
+    S: dicom::parser::stateful::decode::StatefulDecode,
+{
+    let mut item_count = 0_usize;
+    while let Some(token) = dataset.advance() {
+        let token = token.map_err(PixelDataProbeError::invalid_pixel_data)?;
+        match token {
+            LazyDataToken::ItemStart { .. } => item_count += 1,
+            LazyDataToken::SequenceEnd => {
+                let fragment_count = item_count.saturating_sub(1);
+                return if fragment_count == 0 {
+                    Ok(PixelDataState::Empty)
+                } else {
+                    Ok(PixelDataState::Present(format!(
+                        "{fragment_count} fragments"
+                    )))
+                };
+            }
+            lazy @ (LazyDataToken::LazyValue { .. } | LazyDataToken::LazyItemValue { .. }) => {
+                lazy.skip()
+                    .map_err(PixelDataProbeError::invalid_pixel_data)?;
+            }
+            _ => {}
+        }
+    }
+
+    Err(PixelDataProbeError::invalid_pixel_data(
+        "encapsulated PixelData ended before its sequence delimiter",
+    ))
+}
+
 pub fn validate_path(
     path: &Path,
     options: &ValidationOptions,
@@ -862,7 +1012,9 @@ fn validate_file_collection(
                     view: view_name,
                     selected: true,
                     file_path: Some(record.file_path.display().to_string()),
-                    mammogram_type: Some(record.metadata.mammogram_type.to_string()),
+                    mammogram_type: Some(
+                        record.metadata.mammogram_type.serialized_name().to_string(),
+                    ),
                     dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
                 },
             );
@@ -934,10 +1086,10 @@ fn apply_refined_record_to_file_report(
         .mammography
         .mammogram_type
         .as_deref()
-        .is_some_and(|mammogram_type| mammogram_type == MammogramType::Unknown.to_string())
+        .is_some_and(|mammogram_type| mammogram_type == MammogramType::Unknown.serialized_name())
         && !metadata.mammogram_type.is_unknown();
 
-    report.mammography.mammogram_type = Some(metadata.mammogram_type.to_string());
+    report.mammography.mammogram_type = Some(metadata.mammogram_type.serialized_name().to_string());
     report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
     report.mammography.concatenation_uid = metadata.concatenation_uid.clone();
     report.mammography.sop_instance_uid_of_concatenation_source =
@@ -955,7 +1107,7 @@ fn apply_refined_record_to_file_report(
             "MammogramType",
             "mammogram type resolved from collection context".to_string(),
             None,
-            Some(metadata.mammogram_type.to_string()),
+            Some(metadata.mammogram_type.serialized_name().to_string()),
         );
     }
 
@@ -1001,7 +1153,25 @@ fn validate_file_with_record(path: &Path, options: &ValidationOptions) -> FileVa
         };
     }
 
-    validate_open_result_with_record(path.to_path_buf(), open_file(path), options)
+    match probe_pixel_data(path) {
+        Ok(pixel_data_state) => validate_open_result_with_record(
+            path.to_path_buf(),
+            OpenFileOptions::new()
+                .read_until(PIXEL_DATA_TAG)
+                .open_file(path),
+            options,
+            Some(pixel_data_state),
+        ),
+        Err(PixelDataProbeError::Unsupported(_)) => {
+            validate_open_result_with_record(path.to_path_buf(), open_file(path), options, None)
+        }
+        Err(PixelDataProbeError::InvalidPixelData(source)) => validate_open_result_with_record(
+            path.to_path_buf(),
+            Err(format!("PixelData probe failed: {source}")),
+            options,
+            None,
+        ),
+    }
 }
 
 fn validate_dicom_bytes_with_record(
@@ -1010,13 +1180,19 @@ fn validate_dicom_bytes_with_record(
     options: &ValidationOptions,
 ) -> FileValidationOutcome {
     let cursor = Cursor::new(bytes);
-    validate_open_result_with_record(source_path, FileDicomObject::from_reader(cursor), options)
+    validate_open_result_with_record(
+        source_path,
+        FileDicomObject::from_reader(cursor),
+        options,
+        None,
+    )
 }
 
 fn validate_open_result_with_record<E>(
     source_path: PathBuf,
     dcm: Result<FileDicomObject<InMemDicomObject>, E>,
     options: &ValidationOptions,
+    pixel_data_state: Option<PixelDataState>,
 ) -> FileValidationOutcome
 where
     E: std::fmt::Display,
@@ -1043,7 +1219,12 @@ where
     collect_file_meta(&mut report, &dcm);
     validate_identity(&mut report, &dcm, options.profile, allow_non_mg_modality);
     validate_image_fields(&mut report, &dcm, options.profile);
-    validate_pixel_fields(&mut report, &dcm, options.profile);
+    validate_pixel_fields(
+        &mut report,
+        &dcm,
+        options.profile,
+        pixel_data_state.as_ref(),
+    );
     validate_canonical_completion(&mut report, &dcm);
     let metadata = validate_extraction(&mut report, &dcm, options.profile, allow_non_mg_modality);
     let record = metadata.as_ref().and_then(|metadata| {
@@ -1141,15 +1322,75 @@ fn validate_lossy_compression(
     let lossy_indicator = get_string_value(dcm, LOSSY_IMAGE_COMPRESSION);
     let lossy_method = get_string_value(dcm, LOSSY_IMAGE_COMPRESSION_METHOD)
         .filter(|value| !value.trim().is_empty());
-    let lossy_transfer_syntax = is_lossy_transfer_syntax(transfer_syntax_uid, transfer_syntax_name);
-
-    if !lossy_indicator_is_enabled(lossy_indicator.as_deref())
-        && lossy_method.is_none()
-        && !lossy_transfer_syntax
+    let transfer_syntax_is_lossy = lossy_compression_source(None, Some(transfer_syntax_uid))
+        == Some(LossyCompressionSource::TransferSyntax);
+    if lossy_indicator
+        .as_deref()
+        .is_some_and(|indicator| indicator.trim() == "00")
+        && transfer_syntax_is_lossy
     {
+        record_lossy_metadata_inconsistency(
+            report,
+            lossy_indicator.as_deref(),
+            lossy_method.as_deref(),
+            Some((transfer_syntax_uid, transfer_syntax_name)),
+        );
         return;
     }
+    let Some(source) =
+        lossy_compression_source(lossy_indicator.as_deref(), Some(transfer_syntax_uid))
+    else {
+        if lossy_method.is_some() {
+            record_lossy_metadata_inconsistency(
+                report,
+                lossy_indicator.as_deref(),
+                lossy_method.as_deref(),
+                None,
+            );
+        }
+        return;
+    };
 
+    let mut details = Vec::new();
+    let tag_name = match source {
+        LossyCompressionSource::Metadata => {
+            if let Some(indicator) = lossy_indicator {
+                details.push(format!("LossyImageCompression={indicator}"));
+            }
+            if let Some(method) = lossy_method {
+                details.push(format!("LossyImageCompressionMethod={method}"));
+            }
+            "LossyImageCompression"
+        }
+        LossyCompressionSource::TransferSyntax => {
+            details.push(format!(
+                "TransferSyntaxUID={transfer_syntax_uid} ({transfer_syntax_name})"
+            ));
+            "TransferSyntaxUID"
+        }
+    };
+    let value = details.join("; ");
+    let evidence = match source {
+        LossyCompressionSource::Metadata => "metadata",
+        LossyCompressionSource::TransferSyntax => "transfer syntax",
+    };
+
+    report.record_name(
+        MessageKind::Warning,
+        "lossy_compression",
+        "Lossy compression",
+        format!("lossy compression is indicated by {evidence}: {value}"),
+        tag_name,
+        Some(value),
+    );
+}
+
+fn record_lossy_metadata_inconsistency(
+    report: &mut FileValidationReport,
+    lossy_indicator: Option<&str>,
+    lossy_method: Option<&str>,
+    transfer_syntax: Option<(&str, &str)>,
+) {
     let mut details = Vec::new();
     if let Some(indicator) = lossy_indicator {
         details.push(format!("LossyImageCompression={indicator}"));
@@ -1157,36 +1398,18 @@ fn validate_lossy_compression(
     if let Some(method) = lossy_method {
         details.push(format!("LossyImageCompressionMethod={method}"));
     }
-    if lossy_transfer_syntax {
-        details.push(format!(
-            "TransferSyntaxUID={transfer_syntax_uid} ({transfer_syntax_name})"
-        ));
+    if let Some((uid, name)) = transfer_syntax {
+        details.push(format!("TransferSyntaxUID={uid} ({name})"));
     }
     let value = details.join("; ");
-
     report.record_name(
         MessageKind::Warning,
-        "lossy_compression",
-        "Lossy compression",
-        format!("lossy compression metadata is present: {value}"),
+        "lossy_compression_metadata_inconsistent",
+        "Lossy compression metadata",
+        format!("lossy compression metadata is inconsistent: {value}"),
         "LossyImageCompression",
         Some(value),
     );
-}
-
-fn lossy_indicator_is_enabled(value: Option<&str>) -> bool {
-    value
-        .map(|value| {
-            let value = value.trim();
-            value == "01" || value == "1" || value.eq_ignore_ascii_case("yes")
-        })
-        .unwrap_or(false)
-}
-
-fn is_lossy_transfer_syntax(uid: &str, name: &str) -> bool {
-    let normalized_name = name.to_ascii_lowercase();
-    LOSSY_TRANSFER_SYNTAX_UIDS.contains(&uid)
-        || (normalized_name.contains("lossy") && !normalized_name.contains("lossless"))
 }
 
 fn validate_identity(
@@ -1381,6 +1604,7 @@ fn validate_pixel_fields(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
+    pixel_data_state: Option<&PixelDataState>,
 ) {
     let strict = profile == ValidationProfile::Selection;
     report.pixel.bits_allocated = validate_positive_u16(
@@ -1410,7 +1634,7 @@ fn validate_pixel_fields(
         strict,
     );
     validate_bit_relationships(report, strict);
-    validate_pixel_data(report, dcm, strict);
+    validate_pixel_data(report, dcm, strict, pixel_data_state);
 }
 
 fn validate_extraction(
@@ -1452,7 +1676,7 @@ fn collect_mammography_metadata(
     dcm: &FileDicomObject<InMemDicomObject>,
     profile: ValidationProfile,
 ) {
-    report.mammography.mammogram_type = Some(metadata.mammogram_type.to_string());
+    report.mammography.mammogram_type = Some(metadata.mammogram_type.serialized_name().to_string());
     report.mammography.dbt_object_kind = Some(metadata.dbt_object_kind.to_string());
     report.mammography.laterality = Some(metadata.laterality.to_string());
     report.mammography.view_position = Some(metadata.view_position.to_string());
@@ -1473,7 +1697,7 @@ fn collect_mammography_metadata(
     report.mammography.concatenation_uid = metadata.concatenation_uid.clone();
     report.mammography.sop_instance_uid_of_concatenation_source =
         metadata.sop_instance_uid_of_concatenation_source.clone();
-    report.mammography.pixel_spacing = get_string_value(dcm, PIXEL_SPACING);
+    validate_pixel_spacing_metadata(report, dcm);
 
     validate_image_type(report, dcm, profile);
     validate_laterality_value(report, metadata.laterality, profile);
@@ -1504,12 +1728,63 @@ fn collect_mammography_metadata(
         "ManufacturerModelName",
         "missing_model",
     );
-    optional_metadata_warning(
-        report,
-        report.mammography.pixel_spacing.clone().as_deref(),
-        "PixelSpacing",
-        "missing_pixel_spacing",
-    );
+}
+
+fn validate_pixel_spacing_metadata(
+    report: &mut FileValidationReport,
+    dcm: &FileDicomObject<InMemDicomObject>,
+) {
+    let rows = report.image.rows;
+    let columns = report.image.columns;
+    let candidates = [
+        (PIXEL_SPACING, "PixelSpacing", "invalid_pixel_spacing"),
+        (
+            IMAGER_PIXEL_SPACING,
+            "ImagerPixelSpacing",
+            "invalid_imager_pixel_spacing",
+        ),
+    ];
+    let mut source_present = false;
+
+    for (tag, name, invalid_code) in candidates {
+        let Some(value) = get_string_value(dcm, tag) else {
+            continue;
+        };
+        source_present = true;
+
+        match PixelSpacing::parse_with_dimensions(&value, rows, columns) {
+            Ok(_) => {
+                report.pass(
+                    name,
+                    format!("{name} contains a usable numeric pair"),
+                    Some(tag),
+                    Some(value.clone()),
+                );
+                if report.mammography.pixel_spacing.is_none() {
+                    report.mammography.pixel_spacing = Some(value);
+                }
+            }
+            Err(source) => report.record_tag(
+                MessageKind::Warning,
+                invalid_code,
+                name,
+                format!("{name} is malformed: {source}"),
+                (tag, name),
+                Some(value),
+            ),
+        }
+    }
+
+    if !source_present {
+        report.record_name(
+            MessageKind::Warning,
+            "missing_pixel_spacing",
+            "PixelSpacing",
+            "PixelSpacing and ImagerPixelSpacing are absent".to_string(),
+            "PixelSpacing",
+            None,
+        );
+    }
 }
 
 fn validate_selection_eligibility(
@@ -1733,7 +2008,7 @@ fn validate_mammogram_type_value(
             "MammogramType",
             "mammogram type is known".to_string(),
             None,
-            Some(mammogram_type.to_string()),
+            Some(mammogram_type.serialized_name().to_string()),
         );
     } else if profile == ValidationProfile::Selection {
         report.record_plain(
@@ -1987,48 +2262,64 @@ fn validate_pixel_data(
     report: &mut FileValidationReport,
     dcm: &FileDicomObject<InMemDicomObject>,
     strict: bool,
+    pixel_data_state: Option<&PixelDataState>,
 ) {
+    if let Some(pixel_data_state) = pixel_data_state {
+        validate_pixel_data_state(report, strict, pixel_data_state);
+        return;
+    }
+
     match dcm.element(PIXEL_DATA_TAG) {
         Ok(element) if !element.is_empty() => {
-            report.pixel.pixel_data_present = true;
             let description = pixel_data_description(element);
+            validate_pixel_data_state(report, strict, &PixelDataState::Present(description));
+        }
+        Ok(_) => validate_pixel_data_state(report, strict, &PixelDataState::Empty),
+        Err(_) => validate_pixel_data_state(report, strict, &PixelDataState::Missing),
+    }
+}
+
+fn validate_pixel_data_state(
+    report: &mut FileValidationReport,
+    strict: bool,
+    pixel_data_state: &PixelDataState,
+) {
+    match pixel_data_state {
+        PixelDataState::Present(description) => {
+            report.pixel.pixel_data_present = true;
             report.pixel.pixel_data_description = Some(description.clone());
             report.pass(
                 "PixelData",
                 "PixelData is present".to_string(),
                 Some(PIXEL_DATA_TAG),
-                Some(description),
+                Some(description.clone()),
             );
         }
-        Ok(_) if strict => report.record_tag(
-            MessageKind::Error,
+        PixelDataState::Empty => report.record_tag(
+            if strict {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
             "empty_pixel_data",
             "PixelData",
             "PixelData is present but empty".to_string(),
             (PIXEL_DATA_TAG, "PixelData"),
             None,
         ),
-        Ok(_) => report.record_tag(
-            MessageKind::Warning,
-            "empty_pixel_data",
-            "PixelData",
-            "PixelData is present but empty".to_string(),
-            (PIXEL_DATA_TAG, "PixelData"),
-            None,
-        ),
-        Err(_) if strict => report.record_tag(
-            MessageKind::Error,
+        PixelDataState::Missing => report.record_tag(
+            if strict {
+                MessageKind::Error
+            } else {
+                MessageKind::Warning
+            },
             "missing_pixel_data",
             "PixelData",
-            "PixelData is required for selection readiness".to_string(),
-            (PIXEL_DATA_TAG, "PixelData"),
-            None,
-        ),
-        Err(_) => report.record_tag(
-            MessageKind::Warning,
-            "missing_pixel_data",
-            "PixelData",
-            "PixelData is absent; metadata extraction can still succeed".to_string(),
+            if strict {
+                "PixelData is required for selection readiness".to_string()
+            } else {
+                "PixelData is absent; metadata extraction can still succeed".to_string()
+            },
             (PIXEL_DATA_TAG, "PixelData"),
             None,
         ),
@@ -2114,6 +2405,7 @@ fn standard_view_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::selection::LOSSY_TRANSFER_SYNTAX_UIDS;
 
     use std::collections::HashSet;
     use std::fs::File;
@@ -2126,6 +2418,10 @@ mod tests {
         VIEW_MODIFIER_CODE_SEQUENCE, VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
     };
     use dicom_core::value::DataSetSequence;
+    #[cfg(feature = "json")]
+    use dicom_core::value::PixelFragmentSequence;
+    #[cfg(feature = "json")]
+    use dicom_core::DicomValue;
     use dicom_core::{DataElement, PrimitiveValue, VR};
     use dicom_object::InMemDicomObject;
 
@@ -2249,7 +2545,7 @@ mod tests {
         collect_file_meta(&mut report, dcm);
         validate_identity(&mut report, dcm, profile, false);
         validate_image_fields(&mut report, dcm, profile);
-        validate_pixel_fields(&mut report, dcm, profile);
+        validate_pixel_fields(&mut report, dcm, profile, None);
         validate_canonical_completion(&mut report, dcm);
         let metadata = validate_extraction(&mut report, dcm, profile, false);
         validate_selection_eligibility(&mut report, metadata.as_ref(), &FilterConfig::default());
@@ -2281,6 +2577,160 @@ mod tests {
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.status, ValidationStatus::Pass);
         assert!(report.pixel.pixel_data_present);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn metadata_only_file_validation_matches_eager_report() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("synthetic.dcm");
+        valid_metadata_object().write_to_file(&path).unwrap();
+        let options = ValidationOptions::default();
+
+        let eager =
+            validate_open_result_with_record(path.clone(), open_file(&path), &options, None).report;
+        let metadata_only = validate_file_with_record(&path, &options).report;
+
+        assert_eq!(
+            serde_json::to_value(metadata_only).unwrap(),
+            serde_json::to_value(eager).unwrap()
+        );
+    }
+
+    #[test]
+    fn metadata_only_validation_rejects_truncated_native_pixel_data() {
+        const PIXEL_VALUE_LENGTH: u64 = 64 * 2;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("truncated-pixel-data.dcm");
+        valid_metadata_object().write_to_file(&path).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let file_length = file.metadata().unwrap().len();
+        file.set_len(file_length - PIXEL_VALUE_LENGTH).unwrap();
+
+        let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
+
+        let error = report
+            .errors
+            .iter()
+            .find(|error| error.code == "dicom_read_failed")
+            .expect("missing DICOM read failure");
+        assert!(error.message.contains("PixelData probe failed"));
+        assert!(error.message.contains("beyond the end of the file"));
+        assert!(!report.pixel.pixel_data_present);
+    }
+
+    #[test]
+    fn metadata_only_validation_ignores_nested_pixel_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("nested-pixel-data.dcm");
+        let mut dcm = valid_metadata_object();
+        dcm.remove_element(PIXEL_DATA_TAG);
+        let icon = InMemDicomObject::from_element_iter([DataElement::new(
+            PIXEL_DATA_TAG,
+            VR::OW,
+            PrimitiveValue::U16(vec![0_u16; 4].into()),
+        )]);
+        dcm.put(DataElement::new(
+            dicom_dictionary_std::tags::ICON_IMAGE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![icon]),
+        ));
+        dcm.write_to_file(&path).unwrap();
+
+        let report = validate_file_with_record(&path, &ValidationOptions::default()).report;
+
+        assert!(error_codes(&report).contains("missing_pixel_data"));
+        assert!(!report.pixel.pixel_data_present);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn metadata_only_validation_preserves_encapsulated_fragment_count() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("synthetic-encapsulated.dcm");
+        let mut inner = valid_metadata_object().into_inner();
+        inner.put(DataElement::new(
+            PIXEL_DATA_TAG,
+            VR::OB,
+            DicomValue::PixelSequence(PixelFragmentSequence::new_fragments(vec![
+                vec![1_u8, 2],
+                vec![3_u8, 4],
+            ])),
+        ));
+        inner
+            .with_meta(
+                dicom_object::FileMetaTableBuilder::new()
+                    .transfer_syntax("1.2.840.10008.1.2.4.50")
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.3.4.5.6.7.8.9"),
+            )
+            .unwrap()
+            .write_to_file(&path)
+            .unwrap();
+        let options = ValidationOptions::default();
+
+        let eager =
+            validate_open_result_with_record(path.clone(), open_file(&path), &options, None).report;
+        let metadata_only = validate_file_with_record(&path, &options).report;
+
+        assert_eq!(
+            metadata_only.pixel.pixel_data_description.as_deref(),
+            Some("2 fragments")
+        );
+        assert_eq!(
+            serde_json::to_value(metadata_only).unwrap(),
+            serde_json::to_value(eager).unwrap()
+        );
+    }
+
+    #[test]
+    fn validation_report_uses_canonical_synthesized_type() {
+        let mut dcm = valid_metadata_object();
+        dcm.put(DataElement::new(
+            IMAGE_TYPE,
+            VR::CS,
+            PrimitiveValue::Strs(
+                vec![
+                    "DERIVED".to_string(),
+                    "PRIMARY".to_string(),
+                    "TOMO_2D".to_string(),
+                ]
+                .into(),
+            ),
+        ));
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert_eq!(report.mammography.mammogram_type.as_deref(), Some("synth"));
+    }
+
+    #[test]
+    fn malformed_pixel_spacing_is_not_reported_as_missing() {
+        let mut dcm = valid_metadata_object();
+        put_str_with_vr(&mut dcm, PIXEL_SPACING, VR::DS, "0.1\\0.2\\0.3");
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert!(warning_codes(&report).contains("invalid_pixel_spacing"));
+        assert!(!warning_codes(&report).contains("missing_pixel_spacing"));
+        assert!(report.mammography.pixel_spacing.is_none());
+    }
+
+    #[test]
+    fn validation_uses_valid_imager_spacing_after_invalid_primary() {
+        let mut dcm = valid_metadata_object();
+        put_str_with_vr(&mut dcm, PIXEL_SPACING, VR::DS, "-0.1\\0.1");
+        put_str_with_vr(&mut dcm, IMAGER_PIXEL_SPACING, VR::DS, "0.2\\0.3");
+
+        let report = validate_object(&mut dcm, ValidationProfile::Selection);
+
+        assert!(warning_codes(&report).contains("invalid_pixel_spacing"));
+        assert!(!warning_codes(&report).contains("missing_pixel_spacing"));
+        assert_eq!(
+            report.mammography.pixel_spacing.as_deref(),
+            Some("0.2\\0.3")
+        );
     }
 
     #[test]
@@ -2378,6 +2828,148 @@ mod tests {
 
         assert!(report.is_valid(), "{:?}", report.errors);
         assert!(warning_codes(&report).contains("lossy_compression"));
+        assert!(report.warnings[0]
+            .message
+            .contains("LossyImageCompression=01"));
+        assert!(report.warnings[0]
+            .message
+            .contains("LossyImageCompressionMethod=ISO_10918_1"));
+    }
+
+    #[test]
+    fn validation_warns_when_lossy_method_lacks_confirming_indicator() {
+        for indicator in [None, Some("00"), Some("INVALID")] {
+            let mut dcm = valid_metadata_object();
+            if let Some(indicator) = indicator {
+                put_str(&mut dcm, LOSSY_IMAGE_COMPRESSION, indicator);
+            }
+            put_str(&mut dcm, LOSSY_IMAGE_COMPRESSION_METHOD, "ISO_10918_1");
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+            validate_lossy_compression(
+                &mut report,
+                &dcm,
+                "1.2.840.10008.1.2.1",
+                "Explicit VR Little Endian",
+            );
+
+            let warning = report
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "lossy_compression_metadata_inconsistent")
+                .unwrap_or_else(|| panic!("missing inconsistency warning for {indicator:?}"));
+            assert!(warning
+                .message
+                .contains("LossyImageCompressionMethod=ISO_10918_1"));
+        }
+    }
+
+    #[test]
+    fn validation_does_not_infer_lossy_from_ambiguous_transfer_syntaxes() {
+        let dcm = valid_metadata_object();
+
+        for (uid, name) in [
+            ("1.2.840.10008.1.2.4.91", "JPEG 2000 Image Compression"),
+            (
+                "1.2.840.10008.1.2.4.93",
+                "JPEG 2000 Part 2 Multi-component Image Compression",
+            ),
+            ("1.2.840.10008.1.2.4.94", "JPIP Referenced"),
+            ("1.2.840.10008.1.2.4.95", "JPIP Referenced Deflate"),
+            ("1.2.840.10008.1.2.4.111", "JPEG XL JPEG Recompression"),
+            ("1.2.840.10008.1.2.4.112", "JPEG XL"),
+            ("1.2.840.10008.1.2.4.203", "HTJ2K Image Compression"),
+            ("1.2.840.10008.1.2.4.204", "JPIP HTJ2K Referenced"),
+            ("1.2.840.10008.1.2.4.205", "JPIP HTJ2K Referenced Deflate"),
+        ] {
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+            validate_lossy_compression(&mut report, &dcm, uid, name);
+            assert!(
+                !warning_codes(&report).contains("lossy_compression"),
+                "{uid}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_infers_lossy_from_jpeg_ls_near_lossless() {
+        let dcm = valid_metadata_object();
+        let mut report =
+            FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+        validate_lossy_compression(
+            &mut report,
+            &dcm,
+            "1.2.840.10008.1.2.4.81",
+            "JPEG-LS Lossy (Near-Lossless)",
+        );
+
+        assert!(warning_codes(&report).contains("lossy_compression"));
+    }
+
+    #[test]
+    fn validation_warns_for_every_lossy_transfer_syntax_in_shared_policy() {
+        let dcm = valid_metadata_object();
+
+        for uid in LOSSY_TRANSFER_SYNTAX_UIDS {
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+            validate_lossy_compression(&mut report, &dcm, uid, "Known transfer syntax");
+
+            let warning = report
+                .warnings
+                .iter()
+                .find(|warning| warning.code == "lossy_compression")
+                .unwrap_or_else(|| panic!("missing lossy warning for {uid}"));
+            assert!(warning.message.contains(uid), "{uid}");
+        }
+    }
+
+    #[test]
+    fn explicit_lossless_indicator_conflicting_with_lossy_syntax_warns() {
+        let mut dcm = valid_metadata_object();
+        put_str(&mut dcm, LOSSY_IMAGE_COMPRESSION, "00");
+        let mut report =
+            FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+
+        validate_lossy_compression(
+            &mut report,
+            &dcm,
+            "1.2.840.10008.1.2.4.50",
+            "JPEG Baseline (Process 1)",
+        );
+
+        let warning = report
+            .warnings
+            .iter()
+            .find(|warning| warning.code == "lossy_compression_metadata_inconsistent")
+            .expect("missing lossy metadata inconsistency warning");
+        assert!(warning.message.contains("LossyImageCompression=00"));
+        assert!(warning
+            .message
+            .contains("TransferSyntaxUID=1.2.840.10008.1.2.4.50"));
+    }
+
+    #[test]
+    fn validation_leaves_lossless_transfer_syntaxes_warning_free() {
+        let dcm = valid_metadata_object();
+
+        for (uid, name) in [
+            ("1.2.840.10008.1.2", "Implicit VR Little Endian"),
+            ("1.2.840.10008.1.2.1", "Explicit VR Little Endian"),
+            ("1.2.840.10008.1.2.4.80", "JPEG-LS Lossless"),
+            ("1.2.840.10008.1.2.4.90", "JPEG 2000 Lossless"),
+        ] {
+            let mut report =
+                FileValidationReport::new(Path::new("test.dcm"), ValidationProfile::Selection);
+            validate_lossy_compression(&mut report, &dcm, uid, name);
+            assert!(
+                !warning_codes(&report).contains("lossy_compression"),
+                "{uid}"
+            );
+        }
     }
 
     #[test]

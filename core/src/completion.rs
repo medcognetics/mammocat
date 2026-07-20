@@ -543,7 +543,7 @@ fn plan_inferred_values(dcm: &FileDicomObject<InMemDicomObject>, plan: &mut Comp
         plan.inferred_only.extend([
             InferredValue {
                 name: "mammogram_type".to_string(),
-                value: metadata.mammogram_type.to_string(),
+                value: metadata.mammogram_type.serialized_name().to_string(),
             },
             InferredValue {
                 name: "dbt_object_kind".to_string(),

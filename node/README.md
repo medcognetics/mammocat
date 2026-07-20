@@ -43,4 +43,4 @@ npm install --omit=optional
 npm ci --omit=optional
 ```
 
-The Git package runs a `prepare` build for the host and installs the generated `.node` file beside the existing JavaScript loader and TypeScript declarations. Building requires Git, Node.js 18 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for Linux x64 GNU, macOS x64, macOS arm64, or Windows x64 MSVC. The consumer lockfile retains the full source commit SHA.
+The Git package runs a `prepare` build for the host and installs the generated `.node` file beside the existing JavaScript loader and TypeScript declarations. Building requires Git, Node.js 22 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for Linux x64 GNU, macOS x64, macOS arm64, or Windows x64 MSVC. The consumer lockfile retains the full source commit SHA.
