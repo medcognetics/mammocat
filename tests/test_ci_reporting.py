@@ -28,6 +28,12 @@ EXPECTED_FINDING_EXIT_CODE = 1
 UNEXPECTED_SCANNER_EXIT_CODE = 2
 INVALID_SHA256 = "0" * 64
 BERYL_WORKFLOWS = ("ci.yml", "production-build.yml", "slow-linux.yml")
+HOSTED_CACHE_WORKFLOWS = ("platforms.yml", "dependency-health.yml")
+CARGO_DOWNLOAD_CACHE_PATHS = {
+    "~/.cargo/git/db",
+    "~/.cargo/registry/cache",
+    "~/.cargo/registry/index",
+}
 
 
 def test_security_parsers_count_each_scanner_report() -> None:
@@ -214,3 +220,49 @@ def test_frozen_uv_workflows_have_a_committed_lockfile() -> None:
 
     assert uv_lock.is_file()
     assert uv_lock.name not in ignored_paths
+
+
+def test_beryl_workflows_do_not_transfer_dependency_caches() -> None:
+    workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
+
+    for workflow_name in BERYL_WORKFLOWS:
+        workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
+
+        assert "uses: actions/cache@" not in workflow
+
+
+def test_explicit_binding_builds_skip_project_install_during_uv_sync() -> None:
+    workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
+
+    for workflow_name in BERYL_WORKFLOWS:
+        workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
+        sync_commands = [line.strip() for line in workflow.splitlines() if "uv sync" in line]
+
+        assert 'UV_NO_SYNC: "1"' in workflow
+        assert sync_commands
+        assert all("--no-install-project" in command for command in sync_commands)
+
+
+def test_hosted_cargo_caches_only_store_download_archives() -> None:
+    workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
+
+    for workflow_name in HOSTED_CACHE_WORKFLOWS:
+        workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
+        configured_paths = {line.strip() for line in workflow.splitlines()}
+
+        assert "~/.cargo/registry" not in configured_paths
+        assert "~/.cargo/git" not in configured_paths
+        assert configured_paths >= CARGO_DOWNLOAD_CACHE_PATHS
+
+
+def test_dependency_health_caches_are_scoped_by_ecosystem() -> None:
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "dependency-health.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Restore scanner downloads" not in workflow
+    assert "Restore report downloads" not in workflow
+    assert workflow.count("- name: Restore Cargo downloads") == 2
+    assert workflow.count("- name: Restore uv downloads") == 1
+    assert workflow.count("- name: Restore npm downloads") == 2
+    assert "hashFiles('Cargo.lock', 'uv.lock'" not in workflow

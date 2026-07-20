@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
+      UV_NO_SYNC: "1"
       UV_PYTHON: "3.14"
       UV_PYTHON_DOWNLOADS: never
     steps:
@@ -46,20 +47,6 @@ jobs:
           version: 0.11.29
           enable-cache: false
 
-      - name: Restore Cargo downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-msrv-1.88.0-${{ hashFiles('Cargo.lock') }}
-
-      - name: Restore uv downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ runner.arch }}-coverage-3.14-${{ hashFiles('uv.lock') }}
-
       - name: Check the Rust 1.88 MSRV
         env:
           PYO3_PYTHON: python
@@ -73,7 +60,7 @@ jobs:
       - name: Install locked Python dependencies
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        run: uv sync --frozen --extra dev --python 3.14
+        run: uv sync --frozen --no-install-project --extra dev --python 3.14
 
       - name: Build Python 3.14 bindings
         env:
@@ -89,12 +76,6 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.23.0
-
-      - name: Restore npm downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ runner.arch }}-git-install-22.23.0-${{ hashFiles('package-lock.json', 'node/package-lock.json') }}
 
       - name: Test commit-pinned Node installation
         run: make node-test-git-install

@@ -102,10 +102,14 @@ make deprecation-report
 - Trusted pull requests, `master` pushes, and Linux schedules use the ephemeral Beryl runner.
   Fork pull requests use `ubuntu-24.04`, never receive Beryl access, and cannot read or write
   dependency caches.
-- Beryl must run Actions Runner 2.327.1 or newer and belong to a Mammocat-restricted runner
-  group with `self-hosted`, `linux`, `x64`, and `beryl` labels.
+- Beryl must run Actions Runner 2.327.1 or newer with `self-hosted`, `linux`, `x64`, and
+  `beryl` labels. A general organization runner group is acceptable only when every repository
+  allowed to target it is trusted and the runner exposes no privileged credentials or services.
 - Beryl workflows bootstrap checksum-verified Rustup 1.29.0 when the runner image does not
   already provide `rustup`.
+- Beryl workflows reuse local dependency-download state instead of transferring GitHub Actions
+  caches. Their frozen uv setup installs dependencies without building the project; later explicit
+  binding and production-build steps own project compilation.
 - The GitHub Actions pull-request gate jobs are `CI / linux-python-min` and
   `CI / linux-full`. Verify the trusted and fork pull-request paths before making those checks
   required in branch protection.

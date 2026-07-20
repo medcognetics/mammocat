@@ -48,15 +48,26 @@ jobs:
         with:
           node-version: 22.23.0
 
-      - name: Restore scanner downloads
+      - name: Restore Cargo downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cache/uv
-            ~/.npm
-          key: security-${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2-pip-audit-2.10.1-npm-12.0.1-zizmor-1.27.0-${{ hashFiles('Cargo.lock', 'uv.lock', 'package-lock.json', 'node/package-lock.json') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: security-cargo-${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore uv downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/uv
+          key: security-uv-${{ runner.os }}-${{ runner.arch }}-pip-audit-2.10.1-zizmor-1.27.0-${{ hashFiles('uv.lock') }}
+
+      - name: Restore npm downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: security-npm-${{ runner.os }}-${{ runner.arch }}-npm-12.0.1-${{ hashFiles('package-lock.json', 'node/package-lock.json') }}
 
       - name: Install Cargo Audit 0.22.2
         run: cargo install cargo-audit --version 0.22.2 --locked
@@ -102,14 +113,20 @@ jobs:
         with:
           node-version: 22.23.0
 
-      - name: Restore report downloads
+      - name: Restore Cargo downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.npm
-          key: deprecation-${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2-npm-12.0.1-${{ hashFiles('Cargo.lock', 'uv.lock', 'package-lock.json', 'node/package-lock.json') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: deprecation-cargo-${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore npm downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm
+          key: deprecation-npm-${{ runner.os }}-${{ runner.arch }}-npm-12.0.1-${{ hashFiles('package-lock.json', 'node/package-lock.json') }}
 
       - name: Install Cargo Audit 0.22.2
         run: cargo install cargo-audit --version 0.22.2 --locked

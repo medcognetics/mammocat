@@ -32,6 +32,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: ${{ matrix.python-version == '3.14' && '1' || '' }}
+      UV_NO_SYNC: "1"
       UV_PYTHON: ${{ matrix.python-version }}
       UV_PYTHON_DOWNLOADS: never
     steps:
@@ -57,33 +58,10 @@ jobs:
           version: 0.11.29
           enable-cache: false
 
-      - name: Restore Cargo downloads
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-1.97.1-${{ hashFiles('Cargo.lock') }}
-
-      - name: Restore uv downloads
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/uv
-          key: uv-${{ runner.os }}-${{ runner.arch }}-${{ matrix.python-version }}-${{ hashFiles('uv.lock') }}
-
-      - name: Restore npm downloads
-        if: matrix.lane == 'full' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ runner.arch }}-22.23.0-${{ hashFiles('package-lock.json', 'node/package-lock.json') }}
-
       - name: Install locked Python dependencies
         env:
           CI_PYTHON_VERSION: ${{ matrix.python-version }}
-        run: uv sync --frozen --extra dev --python "$CI_PYTHON_VERSION"
+        run: uv sync --frozen --no-install-project --extra dev --python "$CI_PYTHON_VERSION"
 
       - name: Build minimum-Python bindings
         if: matrix.lane == 'python-min'
