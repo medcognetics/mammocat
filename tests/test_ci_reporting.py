@@ -202,3 +202,15 @@ def test_beryl_workflows_bootstrap_rustup_after_python_setup() -> None:
         toolchain_install = workflow.index("rustup toolchain install")
 
         assert python_setup < rustup_bootstrap < toolchain_install
+
+
+def test_frozen_uv_workflows_have_a_committed_lockfile() -> None:
+    uv_lock = REPOSITORY_ROOT / "uv.lock"
+    ignored_paths = {
+        line.strip()
+        for line in (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert uv_lock.is_file()
+    assert uv_lock.name not in ignored_paths
