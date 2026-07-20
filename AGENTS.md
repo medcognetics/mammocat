@@ -104,6 +104,8 @@ make deprecation-report
   dependency caches.
 - Beryl must run Actions Runner 2.327.1 or newer and belong to a Mammocat-restricted runner
   group with `self-hosted`, `linux`, `x64`, and `beryl` labels.
+- Beryl workflows bootstrap checksum-verified Rustup 1.29.0 when the runner image does not
+  already provide `rustup`.
 - The GitHub Actions pull-request gate jobs are `CI / linux-python-min` and
   `CI / linux-full`. Verify the trusted and fork pull-request paths before making those checks
   required in branch protection.

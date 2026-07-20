@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from scripts.ci import deprecation_report, reporting
+from scripts.ci.bootstrap_rustup import ensure_rustup, verify_rustup_checksum
 from scripts.ci.deprecation_report import (
     direct_npm_dependencies,
     direct_python_requirements,
@@ -25,6 +26,8 @@ from scripts.ci.security_audit import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_FINDING_EXIT_CODE = 1
 UNEXPECTED_SCANNER_EXIT_CODE = 2
+INVALID_SHA256 = "0" * 64
+BERYL_WORKFLOWS = ("ci.yml", "production-build.yml", "slow-linux.yml")
 
 
 def test_security_parsers_count_each_scanner_report() -> None:
@@ -163,3 +166,39 @@ def test_deprecation_report_target_selects_python_314() -> None:
     makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "uv run --no-project --python 3.14 python -m scripts.ci.deprecation_report" in makefile
+
+
+def test_existing_rustup_is_exported_without_downloading(monkeypatch, tmp_path) -> None:
+    cargo_home = tmp_path / "cargo"
+    rustup = cargo_home / "bin" / "rustup"
+    rustup.parent.mkdir(parents=True)
+    rustup.write_text("#!/bin/sh\n", encoding="utf-8")
+    rustup.chmod(0o755)
+    github_path = tmp_path / "github-path"
+
+    monkeypatch.setenv("CARGO_HOME", str(cargo_home))
+    monkeypatch.setenv("GITHUB_PATH", str(github_path))
+    monkeypatch.setenv("PATH", "")
+
+    assert ensure_rustup() == rustup
+    assert github_path.read_text(encoding="utf-8") == f"{rustup.parent}\n"
+
+
+def test_rustup_checksum_mismatch_is_rejected(tmp_path) -> None:
+    rustup_init = tmp_path / "rustup-init"
+    rustup_init.write_bytes(b"unexpected installer")
+
+    with pytest.raises(RuntimeError, match="Rustup installer checksum mismatch"):
+        verify_rustup_checksum(rustup_init, INVALID_SHA256)
+
+
+def test_beryl_workflows_bootstrap_rustup_after_python_setup() -> None:
+    workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
+
+    for workflow_name in BERYL_WORKFLOWS:
+        workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
+        python_setup = workflow.index("actions/setup-python@")
+        rustup_bootstrap = workflow.index("python scripts/ci/bootstrap_rustup.py")
+        toolchain_install = workflow.index("rustup toolchain install")
+
+        assert python_setup < rustup_bootstrap < toolchain_install
