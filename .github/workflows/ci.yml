@@ -77,13 +77,17 @@ jobs:
         with:
           node-version: 22.23.0
 
+      - name: Build full-Python bindings
+        if: matrix.lane == 'full'
+        run: uv run maturin develop --features python
+
       - name: Run full quality checks
         if: matrix.lane == 'full'
         run: make quality
 
       - name: Run full Rust and Python tests
         if: matrix.lane == 'full'
-        run: make test
+        run: make test-rust test-python
 
       - name: Build and test Node 22
         if: matrix.lane == 'full'

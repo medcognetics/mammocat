@@ -243,6 +243,17 @@ def test_explicit_binding_builds_skip_project_install_during_uv_sync() -> None:
         assert all("--no-install-project" in command for command in sync_commands)
 
 
+def test_full_lane_builds_bindings_before_quality_without_rebuilding_for_tests() -> None:
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    binding_build = workflow.index("- name: Build full-Python bindings")
+    quality = workflow.index("- name: Run full quality checks")
+    tests = workflow.index("- name: Run full Rust and Python tests")
+
+    assert binding_build < quality < tests
+    assert "run: make test-rust test-python" in workflow
+
+
 def test_hosted_cargo_caches_only_store_download_archives() -> None:
     workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
 
