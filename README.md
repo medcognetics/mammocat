@@ -24,6 +24,10 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 
 ### From Source
 
+Mammocat supports Rust 1.88 or newer and pins normal development builds to Rust
+1.97.1 through `rust-toolchain.toml`. Python bindings require Python 3.10 or newer.
+Node bindings require Node.js 22 or newer.
+
 ```bash
 git clone <repository-url>
 cd mammocat
@@ -60,7 +64,7 @@ Then install without the unpublished optional binary packages:
 npm install --omit=optional
 ```
 
-npm clones the repository, installs the root build dependency, and runs `prepare`. The build uses `node/`, `core/`, and the Cargo workspace, then packages the host `.node` file with `node/index.js` and `node/index.d.ts`. The consumer needs Git, Node.js 18 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for the host target.
+npm clones the repository, installs the root build dependency, and runs `prepare`. The build uses `node/`, `core/`, and the Cargo workspace, then packages the host `.node` file with `node/index.js` and `node/index.d.ts`. The consumer needs Git, Node.js 22 or newer, Rust 1.88 or newer, Cargo, and the native toolchain for the host target.
 
 Commit the generated `package-lock.json`. It records the full commit SHA, so a clean install uses the same source revision:
 
@@ -515,6 +519,9 @@ make node-typecheck
 make node-pack
 ```
 
+Python 3.14 builds currently require `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`
+until the project upgrades PyO3 0.22.
+
 Current test coverage includes Rust unit/integration tests and Python tests covering:
 - Enum behavior and ordering
 - String parsing and pattern matching
@@ -523,6 +530,27 @@ Current test coverage includes Rust unit/integration tests and Python tests cove
 - Preferred view selection
 - Python bindings API (via pytest)
 - Node/TypeScript bindings API, JSON round trips, file/buffer parity, directory selection, and commit-pinned Git installation
+
+## Continuous Integration
+
+GitHub Actions uses five workflows:
+
+- `CI` runs Python 3.10 and the full Python 3.14/Rust/Node gate on pull requests to
+  `master`, pushes to `master`, and manual dispatches. Trusted events use the Beryl
+  self-hosted runner; fork pull requests use `ubuntu-24.04` without dependency caches.
+- `Production Build` verifies release Rust binaries, a wheel installed into an isolated
+  Python 3.14 environment, and the Node package nightly at 04:17 UTC.
+- `Slow Linux` checks Rust 1.88, Python coverage, and commit-pinned npm Git installation
+  nightly at 05:17 UTC.
+- `Native Platforms` checks all four declared N-API targets each Saturday at 06:17 UTC.
+- `Dependency Health` runs security and deprecation reports each Monday at 03:17 UTC.
+  Security findings fail the security job; deprecation findings are informational, while
+  incomplete or unparsable reports fail either job.
+
+The security job intentionally has no advisory exceptions and is expected to remain red
+until the separate dependency-remediation change lands. The GitHub Actions pull-request gate
+jobs are `CI / linux-python-min` and `CI / linux-full`. Verify both trusted and fork
+pull-request paths before making those checks required in branch protection.
 
 ## Future Enhancements
 

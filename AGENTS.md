@@ -83,7 +83,38 @@ make quality-fix
 # Type-check and package-check Node bindings
 make node-typecheck
 make node-pack
+
+# Build and smoke-test release Rust, Python, and Node outputs
+make verify-production
+
+# Generate scheduled dependency-health reports
+make security-audit
+make deprecation-report
 ```
+
+### Continuous Integration
+
+- Normal Rust development and CI use Rust 1.97.1 from `rust-toolchain.toml`; Rust 1.88 is
+  the workspace MSRV and is checked weekly.
+- Python support starts at 3.10. CI tests 3.10 and 3.14. Set
+  `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` for Python 3.14 while the project uses PyO3 0.22.
+- Node support starts at 22. CI tests Node 22.23.0 and 26.5.0, plus all four native targets.
+- Trusted pull requests, `master` pushes, and Linux schedules use the ephemeral Beryl runner.
+  Fork pull requests use `ubuntu-24.04`, never receive Beryl access, and cannot read or write
+  dependency caches.
+- Beryl must run Actions Runner 2.327.1 or newer with `self-hosted`, `linux`, `x64`, and
+  `beryl` labels. A general organization runner group is acceptable only when every repository
+  allowed to target it is trusted and the runner exposes no privileged credentials or services.
+- Beryl workflows bootstrap checksum-verified Rustup 1.29.0 when the runner image does not
+  already provide `rustup`.
+- Beryl workflows reuse local dependency-download state instead of transferring GitHub Actions
+  caches. Their frozen uv setup installs dependencies without building the project; later explicit
+  binding and production-build steps own project compilation.
+- The GitHub Actions pull-request gate jobs are `CI / linux-python-min` and
+  `CI / linux-full`. Verify the trusted and fork pull-request paths before making those checks
+  required in branch protection.
+- Weekly security findings fail by design and must not be ignored. Deprecation findings are
+  informational; missing, failed, or unparsable report inputs fail the reporting job.
 
 ### Running the CLI
 
@@ -431,8 +462,8 @@ After building, binaries are at:
 Use `rustfmt` and `clippy --all-features -- -D warnings` for Rust; keep Rust module,
 function, and test names in `snake_case`, and type names in `PascalCase`. Python targets
 3.10+, uses Ruff with 100-character lines and double quotes, and is type-checked with
-`basedpyright`. Keep public Python exports and `_mammocat.pyi` stubs aligned with their
-PyO3 bindings.
+`basedpyright`. Node targets 22+. Keep public Python exports and `_mammocat.pyi` stubs aligned
+with their PyO3 bindings.
 
 Add Rust unit tests next to core logic and Python tests under `tests/test_*.py`; use
 integration tests for cross-module or I/O behavior. Run focused tests first, then
