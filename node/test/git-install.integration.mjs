@@ -23,6 +23,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm"
 const maximumCommandOutputBytes = 10 * 1024 * 1024
 const minimumNodeVersion = ">=22"
 const minimumRustVersion = "1.88"
+const nodeCompatiblePromptsVersion = "7.10.1"
 
 test("repository root defines the source-build npm package", async () => {
   const rootPackage = await readJson(join(repositoryRoot, "package.json"))
@@ -37,9 +38,20 @@ test("repository root defines the source-build npm package", async () => {
   assert.equal(rootPackage.scripts.prepare, "npm run build")
   const napiCliVersion = rootPackage.devDependencies["@napi-rs/cli"]
   assert.match(napiCliVersion, /^\d+\.\d+\.\d+$/)
+  assert.equal(napiCliVersion, nodePackage.devDependencies["@napi-rs/cli"])
   assert.equal(
     rootPackageLock.packages["node_modules/@napi-rs/cli"].version,
     napiCliVersion,
+  )
+  assert.equal(
+    rootPackage.overrides["@inquirer/prompts"],
+    nodeCompatiblePromptsVersion,
+  )
+  assert.equal(
+    rootPackageLock.packages[
+      "node_modules/@napi-rs/cli/node_modules/@inquirer/prompts"
+    ].version,
+    nodeCompatiblePromptsVersion,
   )
   assert.deepEqual(rootPackage.engines, nodePackage.engines)
   assert.equal(rootPackage.engines.node, minimumNodeVersion)

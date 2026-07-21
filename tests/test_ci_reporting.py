@@ -1,6 +1,7 @@
 """Regression tests for CI report parsing and policy classification."""
 
 import json
+import subprocess
 from datetime import date
 from pathlib import Path
 
@@ -34,6 +35,24 @@ CARGO_DOWNLOAD_CACHE_PATHS = {
     "~/.cargo/registry/cache",
     "~/.cargo/registry/index",
 }
+ROOT_NODE_INSTALL_COMMAND = "npm ci --omit=optional --ignore-scripts"
+PUBLISH_NODE_INSTALL_COMMAND = "npm --prefix node ci --omit=optional"
+ROOT_NODE_PACK_COMMAND = "npm pack --dry-run"
+ROOT_NODE_CLEAN_COMMAND = "rm -rf node_modules/"
+PUBLISH_NODE_CLEAN_COMMAND = "rm -rf node/node_modules/"
+
+
+def make_commands(target: str) -> list[str]:
+    """Return the shell commands that one Make target would execute."""
+
+    result = subprocess.run(
+        ["make", "--no-print-directory", "--dry-run", target],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.splitlines()
 
 
 def test_security_parsers_count_each_scanner_report() -> None:
@@ -166,6 +185,24 @@ def test_native_package_dry_run_uses_a_shell_independent_matrix_path() -> None:
 
     assert "working-directory: node/npm/${{ matrix.package-directory }}" in workflow
     assert "$NATIVE_PACKAGE_DIRECTORY" not in workflow
+
+
+def test_node_install_prepares_both_locked_dependency_trees_without_scripts() -> None:
+    assert make_commands("node-install") == [
+        ROOT_NODE_INSTALL_COMMAND,
+        PUBLISH_NODE_INSTALL_COMMAND,
+    ]
+
+
+def test_node_pack_intentionally_runs_the_root_prepare_lifecycle() -> None:
+    assert make_commands("node-pack")[-1] == ROOT_NODE_PACK_COMMAND
+
+
+def test_clean_removes_both_node_dependency_trees() -> None:
+    commands = make_commands("clean")
+
+    assert ROOT_NODE_CLEAN_COMMAND in commands
+    assert PUBLISH_NODE_CLEAN_COMMAND in commands
 
 
 def test_deprecation_report_target_selects_python_314() -> None:
