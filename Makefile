@@ -36,6 +36,7 @@ test-cov:  ## Run Python tests with coverage
 
 # Node/TypeScript bindings
 node-install:  ## Install Node development dependencies
+	npm ci --omit=optional --ignore-scripts
 	npm --prefix node ci --omit=optional
 
 node-build:  ## Build Node/TypeScript native bindings
@@ -52,7 +53,7 @@ node-typecheck:  ## Type-check generated Node/TypeScript declarations
 
 node-pack:  ## Verify Node package contents without publishing
 	npm --prefix node run pack:dry-run
-	npm pack --dry-run --ignore-scripts
+	npm pack --dry-run
 
 # CI verification and reports
 verify-production:  ## Build and smoke-test production Rust, Python, and Node surfaces

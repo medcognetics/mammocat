@@ -18,12 +18,13 @@
     "prepare": "npm run build"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.4.1"
+    "@napi-rs/cli": "3.7.2"
   },
   "engines": {
     "node": ">=22"
   },
   "overrides": {
+    "@inquirer/prompts": "7.10.1",
     "@napi-rs/lzma": "1.4.5",
     "@octokit/rest": "21.1.1"
   }

@@ -315,6 +315,7 @@ The codebase follows a clear separation of concerns:
 - Root `package.json` and `package-lock.json` make the repository installable as `@medcognetics/mammocat` from an exact npm Git dependency.
 - The root `prepare` script builds the NAPI addon from `node/` with access to the Cargo workspace and `core/` path dependency.
 - The installed Git package contains `node/index.js`, `node/index.d.ts`, and the local host `.node` file. It does not declare the unpublished optional platform packages used by the publish-oriented `node/` package.
+- Keep the root and `node/` `@napi-rs/cli` versions aligned because both regenerate the committed loader. The root override pins `@inquirer/prompts` 7.10.1 because the prompt version declared by NAPI CLI 3.7.2 requires Node 22.13 and would break engine-strict Git installs on the declared Node 22 floor. `make node-install` installs both locked dependency trees without running the root lifecycle; root package dry runs intentionally run `prepare` afterward.
 
 **`cli/`** - Command-line interface
 - `mod.rs`: Argument parsing with clap
