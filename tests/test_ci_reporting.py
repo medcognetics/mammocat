@@ -38,6 +38,8 @@ CARGO_DOWNLOAD_CACHE_PATHS = {
 ROOT_NODE_INSTALL_COMMAND = "npm ci --omit=optional --ignore-scripts"
 PUBLISH_NODE_INSTALL_COMMAND = "npm --prefix node ci --omit=optional"
 ROOT_NODE_PACK_COMMAND = "npm pack --dry-run"
+ROOT_NODE_CLEAN_COMMAND = "rm -rf node_modules/"
+PUBLISH_NODE_CLEAN_COMMAND = "rm -rf node/node_modules/"
 
 
 def make_commands(target: str) -> list[str]:
@@ -194,6 +196,13 @@ def test_node_install_prepares_both_locked_dependency_trees_without_scripts() ->
 
 def test_node_pack_intentionally_runs_the_root_prepare_lifecycle() -> None:
     assert make_commands("node-pack")[-1] == ROOT_NODE_PACK_COMMAND
+
+
+def test_clean_removes_both_node_dependency_trees() -> None:
+    commands = make_commands("clean")
+
+    assert ROOT_NODE_CLEAN_COMMAND in commands
+    assert PUBLISH_NODE_CLEAN_COMMAND in commands
 
 
 def test_deprecation_report_target_selects_python_314() -> None:

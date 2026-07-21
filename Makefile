@@ -104,6 +104,7 @@ clean:  ## Clean build artifacts
 	rm -rf .basedpyright/
 	rm -rf htmlcov/
 	rm -rf .coverage
+	rm -rf node_modules/
 	rm -rf node/node_modules/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
