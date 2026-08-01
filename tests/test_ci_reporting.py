@@ -37,6 +37,9 @@ CARGO_DOWNLOAD_CACHE_PATHS = {
 }
 ROOT_NODE_INSTALL_COMMAND = "npm ci --omit=optional --ignore-scripts"
 PUBLISH_NODE_INSTALL_COMMAND = "npm --prefix node ci --omit=optional"
+ROOT_NAPI_CHECK_COMMAND = "npm exec --no -- napi --version"
+PUBLISH_NODE_PACK_COMMAND = "npm --prefix node pack --dry-run"
+NATIVE_NODE_PACK_COMMAND = "npm pack --dry-run --ignore-scripts"
 ROOT_NODE_PACK_COMMAND = "npm pack --dry-run"
 ROOT_NODE_CLEAN_COMMAND = "rm -rf node_modules/"
 PUBLISH_NODE_CLEAN_COMMAND = "rm -rf node/node_modules/"
@@ -185,6 +188,23 @@ def test_native_package_dry_run_uses_a_shell_independent_matrix_path() -> None:
 
     assert "working-directory: node/npm/${{ matrix.package-directory }}" in workflow
     assert "$NATIVE_PACKAGE_DIRECTORY" not in workflow
+
+
+def test_native_platforms_installs_root_cli_before_packaging() -> None:
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "platforms.yml").read_text(
+        encoding="utf-8"
+    )
+    commands = (
+        ROOT_NODE_INSTALL_COMMAND,
+        PUBLISH_NODE_INSTALL_COMMAND,
+        ROOT_NAPI_CHECK_COMMAND,
+        PUBLISH_NODE_PACK_COMMAND,
+        NATIVE_NODE_PACK_COMMAND,
+    )
+    command_positions = [workflow.find(command) for command in commands]
+
+    assert all(position >= 0 for position in command_positions)
+    assert command_positions == sorted(command_positions)
 
 
 def test_node_install_prepares_both_locked_dependency_trees_without_scripts() -> None:

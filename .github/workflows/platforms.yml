@@ -69,7 +69,12 @@ jobs:
           key: npm-${{ runner.os }}-${{ runner.arch }}-22.23.0-${{ hashFiles('node/package-lock.json') }}
 
       - name: Install Node dependencies
-        run: npm --prefix node ci --omit=optional
+        run: |
+          npm ci --omit=optional --ignore-scripts
+          npm --prefix node ci --omit=optional
+
+      - name: Verify root NAPI CLI
+        run: npm exec --no -- napi --version
 
       - name: Build native binding
         run: npm --prefix node run build
