@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
 use std::path::PathBuf;
 
+use dicom_object::OpenFileOptions;
 use mammocat_core::{
+    assess_conventional_orientation as assess_core_conventional_orientation,
     collect_dicom_files_recursively, get_preferred_views_filtered_with_study_mode_and_warnings,
     DbtObjectKind, FilterConfig, Laterality, MammogramRecord as CoreMammogramRecord, MammogramType,
     MammogramView, PreferenceOrder, StudySelectionMode, ViewPosition,
@@ -37,12 +40,25 @@ pub struct PixelSpacing {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 #[napi(object, use_nullable = true)]
+pub struct ConventionalOrientationAssessment {
+    #[napi(ts_type = "\"matches\" | \"requires_flip\" | \"indeterminate\" | \"not_applicable\"")]
+    pub status: String,
+    pub expected_components: Option<Vec<String>>,
+    pub observed_components: Option<Vec<String>>,
+    pub horizontal_flip_required: Option<bool>,
+    pub vertical_flip_required: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[napi(object, use_nullable = true)]
 pub struct MammogramMetadata {
     pub mammogram_type: String,
     pub dbt_object_kind: String,
     pub laterality: String,
     pub view_position: String,
     pub view_modifiers: Vec<String>,
+    pub conventional_orientation: ConventionalOrientationAssessment,
     pub image_type: String,
     pub pixel_spacing: Option<PixelSpacing>,
     pub is_for_processing: bool,
@@ -146,6 +162,36 @@ pub fn extract_metadata(env: Env, input: DicomInput) -> Result<Unknown<'static>>
     let input = resolve_input(input)?;
     let record = record_from_resolved_input(input).map_err(to_napi_error)?;
     env.to_js_value(&metadata_to_dto(&record.metadata))
+}
+
+#[napi(
+    ts_args_type = "input: DicomInput",
+    ts_return_type = "ConventionalOrientationAssessment"
+)]
+pub fn assess_conventional_orientation(env: Env, input: DicomInput) -> Result<Unknown<'static>> {
+    let input = resolve_input(input)?;
+    let assessment = match input {
+        ResolvedInput::Path(path) => {
+            let dcm = OpenFileOptions::new()
+                .read_until(mammocat_core::extraction::PIXEL_DATA_TAG)
+                .open_file(&path)
+                .map_err(|error| {
+                    Error::new(
+                        Status::GenericFailure,
+                        format!("Failed to open DICOM file {path}: {error}"),
+                    )
+                })?;
+            assess_core_conventional_orientation(&dcm)
+        }
+        ResolvedInput::Bytes { bytes, .. } => {
+            let dcm = OpenFileOptions::new()
+                .read_until(mammocat_core::extraction::PIXEL_DATA_TAG)
+                .from_reader(Cursor::new(bytes))
+                .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?;
+            assess_core_conventional_orientation(&dcm)
+        }
+    };
+    env.to_js_value(&orientation_to_dto(&assessment))
 }
 
 #[napi(
@@ -534,6 +580,7 @@ fn metadata_to_dto(metadata: &mammocat_core::MammogramMetadata) -> MammogramMeta
             .iter()
             .map(ToString::to_string)
             .collect(),
+        conventional_orientation: orientation_to_dto(&metadata.conventional_orientation),
         image_type: metadata.image_type.to_string(),
         pixel_spacing: metadata.pixel_spacing.map(|spacing| PixelSpacing {
             row: spacing.row,
@@ -556,6 +603,18 @@ fn metadata_to_dto(metadata: &mammocat_core::MammogramMetadata) -> MammogramMeta
         transfer_syntax_uid: metadata.transfer_syntax_uid.clone(),
         transfer_syntax_name: metadata.transfer_syntax_name.clone(),
         compression_type: metadata.compression_type.clone(),
+    }
+}
+
+fn orientation_to_dto(
+    assessment: &mammocat_core::ConventionalOrientationAssessment,
+) -> ConventionalOrientationAssessment {
+    ConventionalOrientationAssessment {
+        status: assessment.status.as_str().to_string(),
+        expected_components: assessment.expected_components.clone(),
+        observed_components: assessment.observed_components.clone(),
+        horizontal_flip_required: assessment.horizontal_flip_required,
+        vertical_flip_required: assessment.vertical_flip_required,
     }
 }
 

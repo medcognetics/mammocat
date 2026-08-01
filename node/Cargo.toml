@@ -8,6 +8,7 @@ rust-version = "1.88"
 crate-type = ["cdylib"]
 
 [dependencies]
+dicom-object = "=0.9.0"
 mammocat-core = { path = "../core" }
 napi = { version = "=3.10.3", default-features = false, features = ["napi6", "serde-json"] }
 napi-derive = "=3.5.9"

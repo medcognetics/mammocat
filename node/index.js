@@ -587,6 +587,7 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
+module.exports.assessConventionalOrientation = nativeBinding.assessConventionalOrientation
 module.exports.extractMetadata = nativeBinding.extractMetadata
 module.exports.selectPreferredViews = nativeBinding.selectPreferredViews
 module.exports.selectPreferredViewsFromDirectory = nativeBinding.selectPreferredViewsFromDirectory

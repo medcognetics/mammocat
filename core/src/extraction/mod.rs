@@ -5,18 +5,24 @@
 //!
 //! - [`laterality`]: Laterality extraction with fallback hierarchy
 //! - [`mammo_type`]: Mammogram type and DBT object classification
+//! - [`orientation`]: Conventional mammography PatientOrientation assessment
 //! - [`view_position`]: View position parsing from multiple DICOM fields
 //! - [`view_modifiers`]: Spot compression, magnification, and implant displaced detection
 //! - [`tags`]: DICOM tag constants and helper functions
 
 pub mod laterality;
 pub mod mammo_type;
+pub mod orientation;
 pub mod tags;
 pub mod view_modifiers;
 pub mod view_position;
 
 pub use laterality::extract_laterality;
 pub use mammo_type::{extract_dbt_object_kind, extract_image_type, extract_mammogram_type};
+pub use orientation::{
+    assess_conventional_orientation, ConventionalOrientationAssessment,
+    ConventionalOrientationStatus,
+};
 pub use tags::*;
 pub use view_modifiers::{
     extract_view_modifier_meanings, extract_view_modifiers, is_implant_displaced, is_magnified,

@@ -16,6 +16,7 @@ mod filter;
 #[macro_use]
 mod macros;
 mod metadata;
+mod orientation;
 mod planning;
 mod record;
 mod selection;
@@ -28,6 +29,7 @@ pub use errors::*;
 pub use extractor::*;
 pub use filter::*;
 pub use metadata::*;
+pub use orientation::*;
 pub use planning::*;
 pub use record::*;
 pub use selection::*;
@@ -71,6 +73,7 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImageType>()?;
     m.add_class::<PyMammogramView>()?;
     m.add_class::<PyMammogramMetadata>()?;
+    m.add_class::<PyConventionalOrientationAssessment>()?;
     m.add_class::<PyMammogramRecord>()?;
     m.add_class::<PyFilterConfig>()?;
 
@@ -81,6 +84,7 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_scan_dbt_study, m)?)?;
     m.add_function(wrap_pyfunction!(py_convert_dbt_study, m)?)?;
     m.add_function(wrap_pyfunction!(py_plan_mammography_collection, m)?)?;
+    m.add_function(wrap_pyfunction!(py_assess_conventional_orientation, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views_with_order, m)?)?;
     m.add_function(wrap_pyfunction!(py_get_preferred_views_filtered, m)?)?;

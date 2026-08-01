@@ -1,7 +1,7 @@
 use crate::api::MammogramMetadata;
 use std::fmt;
 
-const FIELD_LABEL_WIDTH: usize = "Concat Source SOP UID".len();
+const FIELD_LABEL_WIDTH: usize = "Horizontal Flip Required".len();
 
 /// Text report formatter for mammogram metadata
 pub struct TextReport<'a> {
@@ -27,6 +27,49 @@ impl<'a> fmt::Display for TextReport<'a> {
             f,
             "View Position",
             self.metadata.view_position.simple_name(),
+        )?;
+        write_field(
+            f,
+            "Orientation Status",
+            self.metadata.conventional_orientation.status,
+        )?;
+        write_field(
+            f,
+            "Expected Orientation",
+            orientation_components(
+                self.metadata
+                    .conventional_orientation
+                    .expected_components
+                    .as_deref(),
+            ),
+        )?;
+        write_field(
+            f,
+            "Observed Orientation",
+            orientation_components(
+                self.metadata
+                    .conventional_orientation
+                    .observed_components
+                    .as_deref(),
+            ),
+        )?;
+        write_field(
+            f,
+            "Horizontal Flip Required",
+            optional_bool(
+                self.metadata
+                    .conventional_orientation
+                    .horizontal_flip_required,
+            ),
+        )?;
+        write_field(
+            f,
+            "Vertical Flip Required",
+            optional_bool(
+                self.metadata
+                    .conventional_orientation
+                    .vertical_flip_required,
+            ),
         )?;
         write_field(f, "Image Type", &self.metadata.image_type)?;
         write_field(
@@ -111,6 +154,20 @@ fn write_field<T: fmt::Display>(f: &mut fmt::Formatter<'_>, label: &str, value: 
     writeln!(f, "{label:<FIELD_LABEL_WIDTH$}: {value}")
 }
 
+fn orientation_components(components: Option<&[String]>) -> String {
+    components
+        .map(|components| components.join("\\"))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn optional_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +180,7 @@ mod tests {
             laterality: Laterality::Left,
             view_position: ViewPosition::Cc,
             view_modifiers: Default::default(),
+            conventional_orientation: Default::default(),
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
@@ -151,6 +209,11 @@ mod tests {
         assert!(output.contains("DBT Object Kind"));
         assert!(output.contains("Laterality"));
         assert!(output.contains("View Position"));
+        assert!(output.contains("Orientation Status"));
+        assert!(output.contains("Expected Orientation"));
+        assert!(output.contains("Observed Orientation"));
+        assert!(output.contains("Horizontal Flip Required"));
+        assert!(output.contains("Vertical Flip Required"));
         assert!(output.contains("Manufacturer"));
         assert!(output.contains("Model"));
         assert!(output.contains("Frames"));
@@ -192,9 +255,15 @@ mod tests {
         assert!(output.contains("Spot Compression"));
         assert!(output.contains("Magnification"));
         assert!(output.contains("Secondary Capture"));
-        assert!(output.contains("Spot Compression     : false"));
-        assert!(output.contains("Magnification        : false"));
-        assert!(output.contains("Secondary Capture    : false"));
+        assert!(output
+            .lines()
+            .any(|line| line.starts_with("Spot Compression") && line.ends_with(": false")));
+        assert!(output
+            .lines()
+            .any(|line| line.starts_with("Magnification") && line.ends_with(": false")));
+        assert!(output
+            .lines()
+            .any(|line| line.starts_with("Secondary Capture") && line.ends_with(": false")));
     }
 
     #[test]
@@ -205,7 +274,11 @@ mod tests {
 
         let output = TextReport::new(&metadata).to_string();
 
-        assert!(output.contains("Type                 : tomo"));
-        assert!(output.contains("DBT Object Kind      : slice"));
+        assert!(output
+            .lines()
+            .any(|line| line.starts_with("Type") && line.ends_with(": tomo")));
+        assert!(output
+            .lines()
+            .any(|line| line.starts_with("DBT Object Kind") && line.ends_with(": slice")));
     }
 }

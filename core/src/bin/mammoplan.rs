@@ -149,6 +149,13 @@ fn print_plan_text(plan: &MammographyPlan, verbose: bool) {
         "DBT volume candidates: {}",
         plan.summary.dbt_multiframe_volume_candidates
     );
+    println!(
+        "Conventional orientation: matches={}, requires_flip={}, indeterminate={}, not_applicable={}",
+        plan.summary.conventional_orientation_matches,
+        plan.summary.conventional_orientation_requires_flip,
+        plan.summary.conventional_orientation_indeterminate,
+        plan.summary.conventional_orientation_not_applicable,
+    );
 
     if let Some(views) = &plan.views {
         println!();
@@ -156,7 +163,35 @@ fn print_plan_text(plan: &MammographyPlan, verbose: bool) {
         println!("-----");
         for selection in views.selected_views.values() {
             let source = selection.source_path.as_deref().unwrap_or("not found");
-            println!("{}: {}", selection.view, source);
+            if let Some(orientation) = &selection.conventional_orientation {
+                println!(
+                    "{}: {} (orientation={})",
+                    selection.view, source, orientation.status
+                );
+            } else {
+                println!("{}: {}", selection.view, source);
+            }
+        }
+    }
+
+    if verbose {
+        let source_orientations: Vec<_> = plan
+            .source_objects
+            .iter()
+            .filter_map(|source| {
+                source
+                    .conventional_orientation
+                    .as_ref()
+                    .map(|orientation| (source.source_path.as_str(), orientation))
+            })
+            .collect();
+        if !source_orientations.is_empty() {
+            println!();
+            println!("Source Orientations");
+            println!("-------------------");
+            for (source_path, orientation) in source_orientations {
+                println!("{source_path}: {}", orientation.status);
+            }
         }
     }
 

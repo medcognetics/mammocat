@@ -52,14 +52,28 @@ impl Default for MammographyViewDescriptor {
     }
 }
 
+pub(crate) struct ViewDescriptorDiagnostics {
+    pub descriptor: MammographyViewDescriptor,
+    pub has_base_view_conflict: bool,
+}
+
 pub fn extract_view_descriptor(dcm: &InMemDicomObject) -> MammographyViewDescriptor {
+    extract_view_descriptor_with_diagnostics(dcm).descriptor
+}
+
+pub(crate) fn extract_view_descriptor_with_diagnostics(
+    dcm: &InMemDicomObject,
+) -> ViewDescriptorDiagnostics {
     let mut descriptor = MammographyViewDescriptor::default();
     let mut base_candidates = Vec::new();
+    let mut has_base_view_conflict = false;
 
     if let Ok(element) = dcm.element(VIEW_CODE_SEQUENCE) {
         if let Some(items) = element.items() {
             for item in items {
-                if let Some(candidate) = parse_view_code_item(item, &mut descriptor) {
+                if let Some(candidate) =
+                    parse_view_code_item(item, &mut descriptor, &mut has_base_view_conflict)
+                {
                     base_candidates.push(candidate);
                 }
                 extract_modifier_sequence(
@@ -187,8 +201,15 @@ pub fn extract_view_descriptor(dcm: &InMemDicomObject) -> MammographyViewDescrip
         }
     }
 
-    descriptor.view_position = resolve_base_view(&base_candidates, &mut descriptor.conflicts);
-    descriptor
+    descriptor.view_position = resolve_base_view(
+        &base_candidates,
+        &mut descriptor.conflicts,
+        &mut has_base_view_conflict,
+    );
+    ViewDescriptorDiagnostics {
+        descriptor,
+        has_base_view_conflict,
+    }
 }
 
 pub fn extract_view_position(dcm: &InMemDicomObject) -> Result<ViewPosition> {
@@ -202,6 +223,7 @@ pub fn extract_view_modifiers(dcm: &InMemDicomObject) -> BTreeSet<MammographyVie
 fn parse_view_code_item(
     item: &InMemDicomObject,
     descriptor: &mut MammographyViewDescriptor,
+    has_base_view_conflict: &mut bool,
 ) -> Option<BaseCandidate> {
     let tuple_match = match_view_tuple(item);
     let meaning = get_string_value(item, CODE_MEANING);
@@ -216,6 +238,7 @@ fn parse_view_code_item(
                 "ViewCodeSequence code resolves to {} but CodeMeaning resolves to {}",
                 tuple_view, meaning_view
             ));
+            *has_base_view_conflict = true;
         }
     }
 
@@ -357,7 +380,11 @@ fn add_base_candidate(
     });
 }
 
-fn resolve_base_view(candidates: &[BaseCandidate], conflicts: &mut Vec<String>) -> ViewPosition {
+fn resolve_base_view(
+    candidates: &[BaseCandidate],
+    conflicts: &mut Vec<String>,
+    has_base_view_conflict: &mut bool,
+) -> ViewPosition {
     let Some(selected) = candidates
         .iter()
         .max_by_key(|candidate| (candidate.authoritative_code, candidate.confidence))
@@ -370,6 +397,7 @@ fn resolve_base_view(candidates: &[BaseCandidate], conflicts: &mut Vec<String>) 
                 "view evidence disagrees: {} versus {}",
                 selected.view, candidate.view
             ));
+            *has_base_view_conflict = true;
         }
     }
     selected.view
@@ -547,9 +575,12 @@ mod tests {
                 definition.code_meaning,
             );
             let mut descriptor = MammographyViewDescriptor::default();
-            let candidate = parse_view_code_item(&item, &mut descriptor).unwrap();
+            let mut has_base_view_conflict = false;
+            let candidate =
+                parse_view_code_item(&item, &mut descriptor, &mut has_base_view_conflict).unwrap();
             assert_eq!(candidate.view, definition.view);
             assert_eq!(candidate.confidence, Confidence::Exact);
+            assert!(!has_base_view_conflict);
         }
     }
 
@@ -645,16 +676,22 @@ mod tests {
             PrimitiveValue::from("  CRANIO_CAUDAL  "),
         )]);
         let mut descriptor = MammographyViewDescriptor::default();
+        let mut has_base_view_conflict = false;
         assert_eq!(
-            parse_view_code_item(&meaning_only, &mut descriptor)
+            parse_view_code_item(&meaning_only, &mut descriptor, &mut has_base_view_conflict,)
                 .unwrap()
                 .view,
             ViewPosition::Cc
         );
+        assert!(!has_base_view_conflict);
 
         let private_tuple = coded_item("99VENDOR", "PRIVATE_CC", "cranio-caudal");
         let mut descriptor = MammographyViewDescriptor::default();
-        assert!(parse_view_code_item(&private_tuple, &mut descriptor).is_none());
+        assert!(
+            parse_view_code_item(&private_tuple, &mut descriptor, &mut has_base_view_conflict,)
+                .is_none()
+        );
+        assert!(!has_base_view_conflict);
     }
 
     #[test]

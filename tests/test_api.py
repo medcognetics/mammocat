@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from mammocat import (
+    ConventionalOrientationAssessment,
     DbtObjectKind,
     DicomError,
     FilterConfig,
@@ -14,6 +15,7 @@ from mammocat import (
     MammographyViewModifier,
     PreferenceOrder,
     SelectionError,
+    assess_conventional_orientation,
     get_preferred_views,
     get_preferred_views_filtered,
     get_preferred_views_with_order,
@@ -64,6 +66,12 @@ class TestMammogramExtractor:
         assert isinstance(metadata.is_magnified, bool)
         assert isinstance(metadata.is_implant_displaced, bool)
         assert isinstance(metadata.view_modifiers, list)
+        assert isinstance(metadata.conventional_orientation, ConventionalOrientationAssessment)
+        assert metadata.conventional_orientation.status == "matches"
+        assert metadata.conventional_orientation.expected_components == ["A", "FR"]
+        assert metadata.conventional_orientation.observed_components == ["A", "FR"]
+        assert metadata.conventional_orientation.horizontal_flip_required is False
+        assert metadata.conventional_orientation.vertical_flip_required is False
         assert isinstance(metadata.number_of_frames, int)
         assert metadata.pixel_spacing == {"row": 0.07, "column": 0.07}
         assert metadata.concatenation_uid is None
@@ -109,6 +117,13 @@ class TestMammogramExtractor:
         assert "laterality" in d
         assert "view_position" in d
         assert d["view_modifiers"] == []
+        assert d["conventional_orientation"] == {
+            "status": "matches",
+            "expected_components": ["A", "FR"],
+            "observed_components": ["A", "FR"],
+            "horizontal_flip_required": False,
+            "vertical_flip_required": False,
+        }
         assert "number_of_frames" in d
         assert d["pixel_spacing"] == {"row": 0.07, "column": 0.07}
         assert "dbt_object_kind" in d
@@ -117,6 +132,27 @@ class TestMammogramExtractor:
         assert d["transfer_syntax_uid"] == "1.2.840.10008.1.2.1"
         assert d["transfer_syntax_name"] == "Explicit VR Little Endian"
         assert d["compression_type"] == "uncompressed"
+
+    def test_standalone_orientation_assessment_is_not_gated_by_modality_or_sop(
+        self, fixtures_dir, mammogram_dicom_factory
+    ):
+        dicom_path = fixtures_dir / "ungated_orientation.dcm"
+        ds = mammogram_dicom_factory(laterality="R", view_position="CC")
+        ds.Modality = "CT"
+        ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.2"
+        ds.file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
+        ds.PatientOrientation = ["A", "R"]
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        assessment = assess_conventional_orientation(dicom_path)
+
+        assert assessment.to_dict() == {
+            "status": "requires_flip",
+            "expected_components": ["P", "L"],
+            "observed_components": ["A", "R"],
+            "horizontal_flip_required": True,
+            "vertical_flip_required": True,
+        }
 
     def test_synthesized_metadata_uses_canonical_machine_value(
         self, fixtures_dir, mammogram_dicom_factory

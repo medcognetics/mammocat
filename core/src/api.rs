@@ -6,8 +6,10 @@ use crate::extraction::tags::{
     PIXEL_SPACING, PRESENTATION_INTENT_TYPE, ROWS, SOP_CLASS_UID,
     SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
 };
+use crate::extraction::ConventionalOrientationAssessment;
 use crate::extraction::{
-    extract_dbt_object_kind, extract_image_type, extract_laterality, extract_view_descriptor,
+    assess_conventional_orientation, extract_dbt_object_kind, extract_image_type,
+    extract_laterality, extract_view_descriptor,
 };
 use crate::types::{
     DbtObjectKind, ImageType, Laterality, MammogramType, MammogramView, MammographyViewModifier,
@@ -107,6 +109,7 @@ impl MammogramExtractor {
             laterality: extract_laterality(dcm)?,
             view_position: view.view_position,
             view_modifiers: view.modifiers,
+            conventional_orientation: assess_conventional_orientation(dcm),
             image_type: extract_image_type(dcm),
             is_for_processing: Self::extract_for_processing(dcm),
             has_implant: Self::extract_implant_status(dcm),
@@ -321,6 +324,9 @@ pub struct MammogramMetadata {
     /// Standard CID 4015 view modifiers.
     pub view_modifiers: std::collections::BTreeSet<MammographyViewModifier>,
 
+    /// PatientOrientation compared with the conventional orientation for this view.
+    pub conventional_orientation: ConventionalOrientationAssessment,
+
     /// Parsed ImageType field
     pub image_type: ImageType,
 
@@ -407,12 +413,13 @@ impl serde::Serialize for MammogramMetadata {
     {
         use serde::ser::SerializeStruct;
 
-        let mut state = serializer.serialize_struct("MammogramMetadata", 22)?;
+        let mut state = serializer.serialize_struct("MammogramMetadata", 23)?;
         state.serialize_field("mammogram_type", &self.mammogram_type)?;
         state.serialize_field("dbt_object_kind", &self.dbt_object_kind)?;
         state.serialize_field("laterality", &self.laterality)?;
         state.serialize_field("view_position", &self.view_position)?;
         state.serialize_field("view_modifiers", &self.view_modifiers)?;
+        state.serialize_field("conventional_orientation", &self.conventional_orientation)?;
         state.serialize_field("image_type", &self.image_type)?;
         state.serialize_field("is_for_processing", &self.is_for_processing)?;
         state.serialize_field("has_implant", &self.has_implant)?;
@@ -465,6 +472,11 @@ mod tests {
             VR::CS,
             PrimitiveValue::from("MLO"),
         ));
+        dcm.put(DataElement::new(
+            Tag(0x0020, 0x0020),
+            VR::CS,
+            PrimitiveValue::Strs(vec!["A".to_string(), "FR".to_string()].into()),
+        ));
         dcm
     }
 
@@ -476,6 +488,7 @@ mod tests {
             laterality: Laterality::Left,
             view_position: ViewPosition::Cc,
             view_modifiers: Default::default(),
+            conventional_orientation: Default::default(),
             image_type: ImageType::new("ORIGINAL".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
@@ -507,6 +520,7 @@ mod tests {
             laterality: Laterality::Right,
             view_position: ViewPosition::Mlo,
             view_modifiers: Default::default(),
+            conventional_orientation: Default::default(),
             image_type: ImageType::new("DERIVED".to_string(), "PRIMARY".to_string(), None, None),
             is_for_processing: false,
             has_implant: false,
@@ -529,6 +543,10 @@ mod tests {
     #[test]
     fn modifier_convenience_properties_follow_the_canonical_set() {
         let mut metadata = MammogramExtractor::extract(&minimal_mammo_dicom()).unwrap();
+        assert_eq!(
+            metadata.conventional_orientation.status,
+            crate::ConventionalOrientationStatus::Matches
+        );
         metadata
             .view_modifiers
             .insert(MammographyViewModifier::SpotCompression);
@@ -613,6 +631,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            conventional_orientation: Default::default(),
             image_type: ImageType::new(
                 "DERIVED".to_string(),
                 "PRIMARY".to_string(),
@@ -638,6 +657,10 @@ mod tests {
 
         assert_eq!(value["mammogram_type"], "tomo");
         assert_eq!(value["dbt_object_kind"], "slice");
+        assert_eq!(
+            value["conventional_orientation"]["status"],
+            "not_applicable"
+        );
         assert_eq!(
             value["view_modifiers"],
             serde_json::json!(["implant_displaced", "magnification", "spot_compression"])

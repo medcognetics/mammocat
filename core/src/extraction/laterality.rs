@@ -56,7 +56,7 @@ pub fn extract_laterality(dcm: &InMemDicomObject) -> Result<Laterality> {
 /// # Returns
 ///
 /// `Some(String)` if FrameLaterality is found, `None` otherwise
-fn extract_frame_laterality(dcm: &InMemDicomObject) -> Option<String> {
+pub(crate) fn extract_frame_laterality(dcm: &InMemDicomObject) -> Option<String> {
     // Try to navigate the sequence hierarchy
     // SharedFunctionalGroupsSequence[0] → FrameAnatomySequence[0] → FrameLaterality
     dcm.element(SHARED_FUNCTIONAL_GROUPS_SEQUENCE)

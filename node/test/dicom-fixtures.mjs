@@ -34,12 +34,15 @@ export function createMammogramBytes(options = {}) {
     sopInstanceUid = `${seriesInstanceUid}.1`,
     pixelSpacing = ["0.07", "0.07"],
     nestedViewModifiers = [],
+    modality = "MG",
+    patientOrientation = conventionalPatientOrientation(laterality, viewPosition),
+    sopClassUid: requestedSopClassUid,
   } = options
 
   const sopClassUid =
-    mammogramType === "TOMO"
+    requestedSopClassUid ?? (mammogramType === "TOMO"
       ? BREAST_TOMOSYNTHESIS_SOP_CLASS_UID
-      : DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID
+      : DIGITAL_MAMMOGRAPHY_SOP_CLASS_UID)
   const imageType = imageTypeForMammogramType(mammogramType)
   const numberOfFrames = mammogramType === "TOMO" ? "50" : "1"
 
@@ -57,12 +60,22 @@ export function createMammogramBytes(options = {}) {
     element(0x0008, 0x0008, "CS", imageType),
     element(0x0008, 0x0016, "UI", sopClassUid),
     element(0x0008, 0x0018, "UI", sopInstanceUid),
-    element(0x0008, 0x0060, "CS", "MG"),
+    element(0x0008, 0x0060, "CS", modality),
     element(0x0008, 0x103e, "LO", seriesDescriptionForMammogramType(mammogramType)),
     element(0x0018, 0x5101, "CS", viewPosition),
     element(0x0020, 0x000d, "UI", studyInstanceUid),
     element(0x0020, 0x000e, "UI", seriesInstanceUid),
     element(0x0020, 0x0062, "CS", laterality),
+    patientOrientation == null
+      ? new Uint8Array()
+      : element(
+          0x0020,
+          0x0020,
+          "CS",
+          Array.isArray(patientOrientation)
+            ? patientOrientation.join("\\")
+            : patientOrientation,
+        ),
     element(0x0028, 0x0008, "IS", numberOfFrames),
     element(0x0028, 0x0010, "US", rows),
     element(0x0028, 0x0011, "US", columns),
@@ -77,6 +90,16 @@ export function createMammogramBytes(options = {}) {
   return Buffer.from(
     concat([preamble, groupLengthElement(metaBody.length), metaBody, dataset]),
   )
+}
+
+function conventionalPatientOrientation(laterality, viewPosition) {
+  const orientations = {
+    "R-CC": ["P", "L"],
+    "L-CC": ["A", "R"],
+    "R-MLO": ["P", "FL"],
+    "L-MLO": ["A", "FR"],
+  }
+  return orientations[`${laterality}-${viewPosition}`] ?? null
 }
 
 function viewCodeSequence(viewPosition, modifierMeanings) {

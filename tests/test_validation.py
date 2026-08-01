@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, cast
 from zipfile import ZipFile
 
+import pydicom
 import pytest
 
 from mammocat import FilterConfig, PreferenceOrder, validate_dicom, validate_directory
@@ -66,7 +67,43 @@ def test_validate_dicom_selection_report_passes(validation_dicom: Path | str) ->
     assert report["summary"]["source_type"] == "file"
     assert file_report["pixel"]["pixel_data_present"] is True
     assert file_report["mammography"]["view_modifiers"] == []
+    assert file_report["mammography"]["conventional_orientation"]["status"] == "matches"
     assert file_report["selection"]["eligible"] is True
+
+
+def test_orientation_findings_warn_or_inform_without_invalidating(tmp_path: Path) -> None:
+    requires_flip_path = create_validation_dicom(
+        tmp_path / "requires-flip.dcm", laterality="R", view_position="CC"
+    )
+    requires_flip_ds = pydicom.dcmread(requires_flip_path)
+    requires_flip_ds.PatientOrientation = ["A", "R"]
+    requires_flip_ds.save_as(requires_flip_path, enforce_file_format=True)
+
+    indeterminate_path = create_validation_dicom(tmp_path / "indeterminate.dcm")
+    indeterminate_ds = pydicom.dcmread(indeterminate_path)
+    del indeterminate_ds.PatientOrientation
+    indeterminate_ds.save_as(indeterminate_path, enforce_file_format=True)
+
+    not_applicable_path = create_validation_dicom(
+        tmp_path / "not-applicable.dcm", laterality="L", view_position="ML"
+    )
+
+    cases = [
+        (requires_flip_path, "requires_flip", "conventional_orientation_requires_flip", "warnings"),
+        (indeterminate_path, "indeterminate", "conventional_orientation_indeterminate", "warnings"),
+        (
+            not_applicable_path,
+            "not_applicable",
+            "conventional_orientation_not_applicable",
+            "info",
+        ),
+    ]
+    for path, status, code, message_group in cases:
+        report = validate_dicom(path)
+        file_report = report["files"][0]
+        assert report["status"] == "pass"
+        assert file_report["mammography"]["conventional_orientation"]["status"] == status
+        assert code in {message["code"] for message in file_report[message_group]}
 
 
 def test_validate_dicom_selection_failure_returns_report(tmp_path: Path) -> None:

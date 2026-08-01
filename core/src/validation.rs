@@ -16,13 +16,16 @@ use dicom_object::{open_file, FileDicomObject, FileMetaTable, InMemDicomObject, 
 use crate::api::{MammogramExtractor, MammogramMetadata};
 use crate::completion::{plan_completion, CompletionOptions};
 use crate::dicom_files::collect_dicom_files;
-use crate::extraction::extract_view_descriptor;
 use crate::extraction::tags::{
     get_string_value, BITS_ALLOCATED, BITS_STORED, COLUMNS, DICOM_MAGIC_BYTES, HIGH_BIT,
     IMAGER_PIXEL_SPACING, IMAGE_LATERALITY, IMAGE_TYPE, LOSSY_IMAGE_COMPRESSION,
-    LOSSY_IMAGE_COMPRESSION_METHOD, MODALITY, NUMBER_OF_FRAMES, PHOTOMETRIC_INTERPRETATION,
-    PIXEL_DATA_TAG, PIXEL_REPRESENTATION, PIXEL_SPACING, ROWS, SAMPLES_PER_PIXEL,
-    SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID, VIEW_POSITION,
+    LOSSY_IMAGE_COMPRESSION_METHOD, MODALITY, NUMBER_OF_FRAMES, PATIENT_ORIENTATION,
+    PHOTOMETRIC_INTERPRETATION, PIXEL_DATA_TAG, PIXEL_REPRESENTATION, PIXEL_SPACING, ROWS,
+    SAMPLES_PER_PIXEL, SERIES_INSTANCE_UID, SOP_CLASS_UID, SOP_INSTANCE_UID, STUDY_INSTANCE_UID,
+    VIEW_POSITION,
+};
+use crate::extraction::{
+    extract_view_descriptor, ConventionalOrientationAssessment, ConventionalOrientationStatus,
 };
 use crate::selection::{
     get_preferred_views_filtered, lossy_compression_source, refine_dbt_object_classification,
@@ -357,6 +360,7 @@ pub struct MammographyValidationReport {
     pub laterality: Option<String>,
     pub view_position: Option<String>,
     pub view_modifiers: Vec<String>,
+    pub conventional_orientation: Option<ConventionalOrientationAssessment>,
     pub image_type: Option<String>,
     pub is_for_processing: Option<bool>,
     pub has_implant: Option<bool>,
@@ -1685,6 +1689,7 @@ fn collect_mammography_metadata(
         .iter()
         .map(ToString::to_string)
         .collect();
+    report.mammography.conventional_orientation = Some(metadata.conventional_orientation.clone());
     report.mammography.image_type = Some(metadata.image_type.to_string());
     report.mammography.is_for_processing = Some(metadata.is_for_processing);
     report.mammography.has_implant = Some(metadata.has_implant);
@@ -1702,6 +1707,7 @@ fn collect_mammography_metadata(
     validate_image_type(report, dcm, profile);
     validate_laterality_value(report, metadata.laterality, profile);
     validate_view_value(report, metadata.view_position, profile);
+    validate_conventional_orientation(report, &metadata.conventional_orientation);
     let descriptor = extract_view_descriptor(dcm);
     for conflict in descriptor.conflicts {
         report.record_plain(
@@ -1728,6 +1734,57 @@ fn collect_mammography_metadata(
         "ManufacturerModelName",
         "missing_model",
     );
+}
+
+fn validate_conventional_orientation(
+    report: &mut FileValidationReport,
+    assessment: &ConventionalOrientationAssessment,
+) {
+    const CHECK_NAME: &str = "Conventional Patient Orientation";
+
+    let observed = assessment
+        .observed_components
+        .as_ref()
+        .map(|components| components.join("\\"));
+    match assessment.status {
+        ConventionalOrientationStatus::Matches => report.pass(
+            CHECK_NAME,
+            "PatientOrientation matches the conventional orientation for this mammography view"
+                .to_string(),
+            Some(PATIENT_ORIENTATION),
+            observed,
+        ),
+        ConventionalOrientationStatus::RequiresFlip => report.record_tag(
+            MessageKind::Warning,
+            "conventional_orientation_requires_flip",
+            CHECK_NAME,
+            format!(
+                "PatientOrientation requires horizontal_flip={} and vertical_flip={} to match the conventional orientation",
+                assessment.horizontal_flip_required.unwrap_or(false),
+                assessment.vertical_flip_required.unwrap_or(false)
+            ),
+            (PATIENT_ORIENTATION, "PatientOrientation"),
+            observed,
+        ),
+        ConventionalOrientationStatus::Indeterminate => report.record_tag(
+            MessageKind::Warning,
+            "conventional_orientation_indeterminate",
+            CHECK_NAME,
+            "PatientOrientation cannot be resolved as an exact conventional orientation or its anatomical inverse"
+                .to_string(),
+            (PATIENT_ORIENTATION, "PatientOrientation"),
+            observed,
+        ),
+        ConventionalOrientationStatus::NotApplicable => report.record_tag(
+            MessageKind::Info,
+            "conventional_orientation_not_applicable",
+            CHECK_NAME,
+            "Conventional orientation is not defined for this laterality and view combination"
+                .to_string(),
+            (PATIENT_ORIENTATION, "PatientOrientation"),
+            observed,
+        ),
+    }
 }
 
 fn validate_pixel_spacing_metadata(
@@ -2464,6 +2521,19 @@ mod tests {
         ));
         put_str(&mut dcm, IMAGE_LATERALITY, laterality);
         put_str(&mut dcm, VIEW_POSITION, view_position);
+        if let Some(patient_orientation) = match (laterality, view_position) {
+            ("R", "CC") => Some(["P", "L"]),
+            ("L", "CC") => Some(["A", "R"]),
+            ("R", "MLO") => Some(["P", "FL"]),
+            ("L", "MLO") => Some(["A", "FR"]),
+            _ => None,
+        } {
+            dcm.put(DataElement::new(
+                PATIENT_ORIENTATION,
+                VR::CS,
+                PrimitiveValue::Strs(patient_orientation.map(str::to_string).to_vec().into()),
+            ));
+        }
         put_str(&mut dcm, PRESENTATION_INTENT_TYPE, "FOR PRESENTATION");
         put_u16(&mut dcm, ROWS, 8);
         put_u16(&mut dcm, COLUMNS, 8);
@@ -2577,6 +2647,70 @@ mod tests {
         assert!(report.is_valid(), "{:?}", report.errors);
         assert_eq!(report.status, ValidationStatus::Pass);
         assert!(report.pixel.pixel_data_present);
+        assert_eq!(
+            report
+                .mammography
+                .conventional_orientation
+                .as_ref()
+                .map(|assessment| assessment.status),
+            Some(ConventionalOrientationStatus::Matches)
+        );
+    }
+
+    #[test]
+    fn orientation_findings_never_invalidate_validation() {
+        let cases = [
+            (
+                Some(["P", "HL"]),
+                "MLO",
+                ConventionalOrientationStatus::RequiresFlip,
+                "conventional_orientation_requires_flip",
+                MessageKind::Warning,
+            ),
+            (
+                None,
+                "MLO",
+                ConventionalOrientationStatus::Indeterminate,
+                "conventional_orientation_indeterminate",
+                MessageKind::Warning,
+            ),
+            (
+                None,
+                "ML",
+                ConventionalOrientationStatus::NotApplicable,
+                "conventional_orientation_not_applicable",
+                MessageKind::Info,
+            ),
+        ];
+
+        for (orientation, view, status, code, kind) in cases {
+            let mut dcm = valid_metadata_object_with("L", view);
+            dcm.remove_element(PATIENT_ORIENTATION);
+            if let Some(orientation) = orientation {
+                dcm.put(DataElement::new(
+                    PATIENT_ORIENTATION,
+                    VR::CS,
+                    PrimitiveValue::Strs(orientation.map(str::to_string).to_vec().into()),
+                ));
+            }
+
+            let report = validate_object(&mut dcm, ValidationProfile::Selection);
+            assert!(report.is_valid(), "{:?}", report.errors);
+            assert_eq!(
+                report
+                    .mammography
+                    .conventional_orientation
+                    .as_ref()
+                    .map(|assessment| assessment.status),
+                Some(status)
+            );
+            let messages = match kind {
+                MessageKind::Warning => &report.warnings,
+                MessageKind::Info => &report.info,
+                MessageKind::Error => unreachable!(),
+            };
+            assert!(messages.iter().any(|message| message.code == code));
+        }
     }
 
     #[cfg(feature = "json")]

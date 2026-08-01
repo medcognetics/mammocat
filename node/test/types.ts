@@ -1,4 +1,5 @@
 import {
+  assessConventionalOrientation,
   extractMetadata,
   selectPreferredViews,
   selectPreferredViewsFromDirectory,
@@ -16,6 +17,10 @@ const bytesInput: DicomInput = {
 const metadata = extractMetadata(pathInput)
 metadata.pixelSpacing?.column.toFixed(3)
 metadata.viewModifiers.map((modifier) => modifier.toUpperCase())
+metadata.conventionalOrientation.status.toUpperCase()
+
+const orientation = assessConventionalOrientation(bytesInput)
+orientation.expectedComponents?.map((component) => component.toUpperCase())
 
 const selection: PreferredViewSelection = selectPreferredViews([pathInput, bytesInput], {
   preferenceOrder: "synthetic-2d-first",

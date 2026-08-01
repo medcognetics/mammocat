@@ -15,7 +15,8 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 - **Preferred View Selection**: Automatically selects the best mammogram for each standard view
 - **Validation Reports**: Checks whether files or directories are ready for metadata extraction or preferred-view selection
 - **Python Bindings**: PyO3 APIs for extraction, selection, planning, validation, and DBT conversion
-- **Node/TypeScript Bindings**: Synchronous NAPI-RS package for metadata extraction and preferred-view selection
+- **Node/TypeScript Bindings**: Synchronous NAPI-RS package for metadata extraction, orientation assessment, and preferred-view selection
+- **Orientation Assessment**: Exact PatientOrientation comparison for conventional RCC, LCC, RMLO, and LMLO display
 - **Rust API and CLIs**: Library interfaces and six command-line programs for metadata and collection workflows
 - **Static Types**: Rust, Python stubs, and TypeScript declarations for public interfaces
 - **Tests**: Rust, Python, and Node coverage for core logic and language bindings
@@ -154,6 +155,9 @@ usable candidate is missing `StudyInstanceUID`.
 
 Candidate ranking first prefers standard CC/MLO base views, then views without CID 4015 modifiers other than Implant Displaced. An otherwise equivalent Implant Displaced view is preferred. Implant Displaced combined with another modifier remains a modified view. `--only-standard-views` examines only the CID 4014 base view.
 
+Text and JSON output include the conventional orientation assessment for each selected
+record. `--format paths` remains path-only.
+
 ### mammoplan - Mammography Input Planning
 
 Build a collection-level input plan for 2D mammography views and DBT inputs:
@@ -180,6 +184,10 @@ root with per-series subdirectories can be planned in one call. Text output
 summarizes warnings by default; pass `--verbose` to include per-file warning
 details.
 
+Selected views and source diagnostics include conventional orientation assessments.
+The summary reports deterministic counts for all four orientation statuses; verbose text
+also lists each source status.
+
 ### mammovalidate - DICOM Validation
 
 Validate one DICOM file, non-recursive directory, or ZIP archive before running `mammocat` or `mammoselect`:
@@ -198,7 +206,7 @@ cargo build --release --features json
 mammovalidate --format json /path/to/dicom_archive.zip
 ```
 
-The selection profile treats missing selection-critical fields as validation failures, including non-`MG` or missing modality, unknown laterality or view, missing key UIDs, invalid dimensions/frames, invalid bit-depth relationships, and missing `PixelData`. It reports likely filtering or ranking issues, such as `FOR PROCESSING`, secondary capture, non-standard views, CID 4015 modifiers, implants, unusual pixel layouts, lossy compression metadata, and optional metadata gaps, as warnings. It also checks fixed values through the same canonical registry used by `mammofill`. Directory and ZIP validation check four-view coverage after applying the same filter options used by `mammoselect`.
+The selection profile treats missing selection-critical fields as validation failures, including non-`MG` or missing modality, unknown laterality or view, missing key UIDs, invalid dimensions/frames, invalid bit-depth relationships, and missing `PixelData`. It reports likely filtering or ranking issues, such as `FOR PROCESSING`, secondary capture, non-standard views, CID 4015 modifiers, implants, unusual pixel layouts, lossy compression metadata, and optional metadata gaps, as warnings. Conventional orientation findings never invalidate a file: `matches` passes, `requires_flip` and `indeterminate` warn, and `not_applicable` is informational. It also checks fixed values through the same canonical registry used by `mammofill`. Directory and ZIP validation check four-view coverage after applying the same filter options used by `mammoselect`.
 
 Exit code `0` means validation passed, `1` means validation completed and found problems, and `2` means the tool hit a runtime or output error.
 
@@ -208,18 +216,21 @@ Example output:
 Mammogram Metadata
 ==================
 
-Type               : ffdm
-DBT Object Kind    : none
-Laterality         : left
-View Position      : cc
-Image Type         : ORIGINAL|PRIMARY
-For Processing     : false
-Has Implant        : false
+Type                    : ffdm
+DBT Object Kind         : none
+Laterality              : left
+View Position           : cc
+Orientation Status      : matches
+Expected Orientation    : A\R
+Observed Orientation    : A\R
+Image Type              : ORIGINAL|PRIMARY
+For Processing          : false
+Has Implant             : false
 
 Derived Properties
 ------------------
-Standard View      : true
-Is 2D              : true
+Standard View           : true
+Is 2D                   : true
 ```
 
 ### As a Library
@@ -277,12 +288,14 @@ The `node/` package builds `@medcognetics/mammocat`, a synchronous NAPI-RS API t
 
 ```ts
 import {
+  assessConventionalOrientation,
   extractMetadata,
   selectPreferredViews,
   selectPreferredViewsFromDirectory,
 } from "@medcognetics/mammocat"
 
 const metadata = extractMetadata({ path: "study/R_CC.dcm" })
+const orientation = assessConventionalOrientation({ path: "study/R_CC.dcm" })
 const selection = selectPreferredViewsFromDirectory("study")
 
 const bufferSelection = selectPreferredViews([
@@ -292,6 +305,8 @@ const bufferSelection = selectPreferredViews([
 
 console.log(metadata.pixelSpacing?.column)
 console.log(metadata.viewModifiers)
+console.log(metadata.conventionalOrientation.status)
+console.log(orientation.horizontalFlipRequired)
 console.log(selection.views.rcc?.source)
 console.log(bufferSelection.inputErrors)
 ```
@@ -300,14 +315,19 @@ console.log(bufferSelection.inputErrors)
 
 The publish-oriented package metadata under `node/` supports prebuilt native packages for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. A commit-pinned Git install instead builds the matching native binary from source and stores it inside the installed package.
 
-### Python Validation API
+### Python Planning, Validation, and Orientation API
 
 The validation bindings return the same dictionary schema as `mammovalidate --format json`.
 
 ```python
 from pathlib import Path
 
-from mammocat import plan_mammography_collection, validate_dicom, validate_directory
+from mammocat import (
+    assess_conventional_orientation,
+    plan_mammography_collection,
+    validate_dicom,
+    validate_directory,
+)
 
 file_report = validate_dicom("mammogram.dcm")
 directory_report = validate_directory(Path("dicoms.zip"), profile="selection")
@@ -317,10 +337,40 @@ input_plan = plan_mammography_collection(
     include_dbt=True,
     prefer_synthetic_2d=False,
 )
+orientation = assess_conventional_orientation("mammogram.dcm")
 
 if not file_report["summary"]["valid"]:
     print(file_report["files"][0]["errors"])
 ```
+
+### Conventional Mammography Orientation
+
+`assess_conventional_orientation` compares the two PatientOrientation components with
+the conventional orientation for unilateral standard views:
+
+| View | Expected PatientOrientation |
+| --- | --- |
+| RCC | `P\L` |
+| LCC | `A\R` |
+| RMLO | `P\FL` |
+| LMLO | `A\FR` |
+
+Each observed component must exactly match its expected value or its complete anatomical
+inverse using `A`/`P`, `R`/`L`, and `F`/`H`. The result is `matches`, `requires_flip`,
+`indeterminate`, or `not_applicable`, with nullable horizontal and vertical flip flags.
+Missing, empty, malformed, partial, reordered, lowercase, unsupported, or conflicting
+evidence is never treated as a safe flip. Non-standard views and unsupported laterality
+are `not_applicable`. The standalone Rust, Python, and Node functions parse any readable
+DICOM object without modality, SOP Class, or mammogram-type gating.
+
+The component order follows the DICOM definition: the first value describes the positive
+row axis from left to right, and the second describes the positive column axis from top to
+bottom. See [DICOM PS3.3 C.7.6.1.1.1](https://dicom.nema.org/medical/dicom/current/output/chtml/part03/sect_C.7.6.html).
+The conventional values are also documented by the
+[GE Senographe Pristina DICOM conformance statement](https://www.gehealthcare.com/-/jssmedia/documents/us-global/products/interoperability/dicom/workstation/gehc_dicom-conformance_senoiris-isp4_doc1577748-rev12.pdf?hash=6AA449648E3A553828DCDAF4058947C0&rev=-1).
+
+This API reports metadata only. It does not flip pixels or update spatial, annotation, or
+other derived attributes that may become stale after a downstream pixel transformation.
 
 ## Classification Algorithms
 
@@ -380,6 +430,7 @@ mammocat/
 │   │   │   ├── tags.rs             # DICOM tag constants and helpers
 │   │   │   ├── mammo_type.rs       # Type classification
 │   │   │   ├── laterality.rs       # Laterality extraction
+│   │   │   ├── orientation.rs      # Conventional PatientOrientation assessment
 │   │   │   ├── view_position.rs    # View parsing
 │   │   │   └── view_modifiers.rs   # Shared descriptor convenience readers
 │   │   ├── selection/              # Preferred view selection
@@ -393,6 +444,7 @@ mammocat/
 │   │   │   ├── filter.rs           # Python selection filters
 │   │   │   ├── macros.rs            # Binding conversion helpers
 │   │   │   ├── metadata.rs         # PyMammogramMetadata
+│   │   │   ├── orientation.rs      # Python orientation assessment
 │   │   │   ├── planning.rs         # Collection planning binding
 │   │   │   ├── record.rs           # PyMammogramRecord
 │   │   │   ├── selection.rs        # Preferred-view selection bindings
@@ -460,6 +512,7 @@ mammocat/
   - Extraction falls back to valid `ImagerPixelSpacing` when `PixelSpacing` is absent or malformed
 - **`MammogramView`**: Combination of laterality + view position
 - **`MammogramMetadata`**: Complete extracted metadata
+- **`ConventionalOrientationAssessment`**: Expected and observed components plus exact axis-flip requirements
 
 ## Dependencies
 

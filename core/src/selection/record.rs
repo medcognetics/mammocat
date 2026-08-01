@@ -495,6 +495,7 @@ mod tests {
                 .into_iter()
                 .flatten()
                 .collect(),
+                conventional_orientation: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),

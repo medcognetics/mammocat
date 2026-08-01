@@ -11,6 +11,7 @@ use crate::dbt::{
 };
 use crate::dicom_files::{collect_dicom_files_recursively, collect_recursive_file_inventory};
 use crate::error::{MammocatError, Result};
+use crate::extraction::{ConventionalOrientationAssessment, ConventionalOrientationStatus};
 use crate::selection::{
     get_preferred_views_filtered_refined_with_study_mode_and_warnings,
     refine_dbt_object_classification_with_diagnostics, DbtRefinementDiagnostic, MammogramRecord,
@@ -122,6 +123,10 @@ pub struct MammographyPlanSummary {
     pub views_selected: usize,
     pub dbt_composition_inputs: usize,
     pub dbt_multiframe_volume_candidates: usize,
+    pub conventional_orientation_matches: usize,
+    pub conventional_orientation_requires_flip: usize,
+    pub conventional_orientation_indeterminate: usize,
+    pub conventional_orientation_not_applicable: usize,
     pub warnings: usize,
 }
 
@@ -153,6 +158,7 @@ pub struct ViewSelection {
     pub source_path: Option<String>,
     pub mammogram_type: Option<String>,
     pub dbt_object_kind: Option<String>,
+    pub conventional_orientation: Option<ConventionalOrientationAssessment>,
     pub reason: Option<String>,
 }
 
@@ -205,6 +211,7 @@ pub struct SourceObjectDiagnostic {
     pub refined_mammogram_type: Option<String>,
     pub refined_dbt_object_kind: Option<String>,
     pub refinement_reason: Option<String>,
+    pub conventional_orientation: Option<ConventionalOrientationAssessment>,
     pub selected_as: Vec<String>,
     pub filtered_by: Vec<String>,
     pub status: String,
@@ -301,6 +308,18 @@ fn build_mammography_plan(
         options.selection.include_2d.then_some(&views_filter),
     );
 
+    let conventional_orientation_matches =
+        count_orientation_status(&source_objects, ConventionalOrientationStatus::Matches);
+    let conventional_orientation_requires_flip =
+        count_orientation_status(&source_objects, ConventionalOrientationStatus::RequiresFlip);
+    let conventional_orientation_indeterminate = count_orientation_status(
+        &source_objects,
+        ConventionalOrientationStatus::Indeterminate,
+    );
+    let conventional_orientation_not_applicable = count_orientation_status(
+        &source_objects,
+        ConventionalOrientationStatus::NotApplicable,
+    );
     let summary = MammographyPlanSummary {
         input_dicom_files,
         mammogram_records,
@@ -315,6 +334,10 @@ fn build_mammography_plan(
         dbt_multiframe_volume_candidates: dbt
             .as_ref()
             .map_or(0, |plan| plan.multiframe_volume_candidates.len()),
+        conventional_orientation_matches,
+        conventional_orientation_requires_flip,
+        conventional_orientation_indeterminate,
+        conventional_orientation_not_applicable,
         warnings: warnings.len(),
     };
 
@@ -327,6 +350,21 @@ fn build_mammography_plan(
         source_objects,
         warnings,
     })
+}
+
+fn count_orientation_status(
+    source_objects: &[SourceObjectDiagnostic],
+    status: ConventionalOrientationStatus,
+) -> usize {
+    source_objects
+        .iter()
+        .filter(|source| {
+            source
+                .conventional_orientation
+                .as_ref()
+                .is_some_and(|assessment| assessment.status == status)
+        })
+        .count()
 }
 
 fn validate_plan_selection(selection: MammographyPlanSelection) -> Result<()> {
@@ -379,6 +417,9 @@ fn build_views_plan(
                         record.metadata.mammogram_type.serialized_name().to_string(),
                     ),
                     dbt_object_kind: Some(record.metadata.dbt_object_kind.to_string()),
+                    conventional_orientation: Some(
+                        record.metadata.conventional_orientation.clone(),
+                    ),
                     reason: Some(SELECTED_2D_VIEW_REASON.to_string()),
                 },
             );
@@ -392,6 +433,7 @@ fn build_views_plan(
                     source_path: None,
                     mammogram_type: None,
                     dbt_object_kind: None,
+                    conventional_orientation: None,
                     reason: Some(NO_ELIGIBLE_2D_VIEW_CANDIDATE_REASON.to_string()),
                 },
             );
@@ -619,6 +661,7 @@ fn build_source_diagnostics(
             ),
             refined_dbt_object_kind: Some(refined.metadata.dbt_object_kind.to_string()),
             refinement_reason: refinement.map(|diagnostic| diagnostic.reason.as_str().to_string()),
+            conventional_orientation: Some(refined.metadata.conventional_orientation.clone()),
             selected_as,
             filtered_by,
             status,
@@ -639,6 +682,7 @@ fn build_source_diagnostics(
             refined_mammogram_type: None,
             refined_dbt_object_kind: None,
             refinement_reason: None,
+            conventional_orientation: None,
             selected_as: roles,
             filtered_by: Vec::new(),
             status: SOURCE_STATUS_SELECTED.to_string(),
@@ -787,6 +831,7 @@ mod tests {
                 laterality,
                 view_position,
                 view_modifiers: Default::default(),
+                conventional_orientation: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -911,6 +956,54 @@ mod tests {
             .contains(&FILTER_REASON_ALLOWED_DBT_OBJECT_KINDS.to_string()));
         assert_eq!(slice_diag.status, SOURCE_STATUS_EXCLUDED);
         assert_eq!(plan.summary.views_selected, 1);
+    }
+
+    #[test]
+    fn orientation_assessment_is_reported_for_selected_views_and_sources() {
+        let mut record = make_record(
+            "lcc.dcm",
+            Laterality::Left,
+            ViewPosition::Cc,
+            MammogramType::Ffdm,
+            DbtObjectKind::None,
+        );
+        record.metadata.conventional_orientation = ConventionalOrientationAssessment {
+            status: ConventionalOrientationStatus::RequiresFlip,
+            expected_components: Some(vec!["A".to_string(), "R".to_string()]),
+            observed_components: Some(vec!["P".to_string(), "L".to_string()]),
+            horizontal_flip_required: Some(true),
+            vertical_flip_required: Some(true),
+        };
+
+        let plan = build_mammography_plan(
+            Path::new("."),
+            1,
+            vec![record],
+            None,
+            Vec::new(),
+            test_options(MammographyPlanSelection::include_2d_only()),
+        )
+        .unwrap();
+
+        let selected = &plan.views.as_ref().unwrap().selected_views["lcc"];
+        assert_eq!(
+            selected
+                .conventional_orientation
+                .as_ref()
+                .map(|assessment| assessment.status),
+            Some(ConventionalOrientationStatus::RequiresFlip)
+        );
+        assert_eq!(
+            plan.source_objects[0]
+                .conventional_orientation
+                .as_ref()
+                .map(|assessment| assessment.status),
+            Some(ConventionalOrientationStatus::RequiresFlip)
+        );
+        assert_eq!(plan.summary.conventional_orientation_requires_flip, 1);
+        assert_eq!(plan.summary.conventional_orientation_matches, 0);
+        assert_eq!(plan.summary.conventional_orientation_indeterminate, 0);
+        assert_eq!(plan.summary.conventional_orientation_not_applicable, 0);
     }
 
     #[test]

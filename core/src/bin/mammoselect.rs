@@ -462,6 +462,36 @@ impl<'a> fmt::Display for TextReport<'a> {
                     record.metadata.model.as_deref().unwrap_or("unknown")
                 )?;
                 writeln!(f, "  Frames: {}", record.metadata.number_of_frames)?;
+                writeln!(
+                    f,
+                    "  Orientation: {}",
+                    record.metadata.conventional_orientation.status
+                )?;
+                if let Some(expected) =
+                    &record.metadata.conventional_orientation.expected_components
+                {
+                    writeln!(f, "  Expected Orientation: {}", expected.join("\\"))?;
+                }
+                if let Some(observed) =
+                    &record.metadata.conventional_orientation.observed_components
+                {
+                    writeln!(f, "  Observed Orientation: {}", observed.join("\\"))?;
+                }
+                if let (Some(horizontal), Some(vertical)) = (
+                    record
+                        .metadata
+                        .conventional_orientation
+                        .horizontal_flip_required,
+                    record
+                        .metadata
+                        .conventional_orientation
+                        .vertical_flip_required,
+                ) {
+                    writeln!(
+                        f,
+                        "  Flip Required: horizontal={horizontal}, vertical={vertical}"
+                    )?;
+                }
                 if let Some(area) = record.image_area() {
                     writeln!(
                         f,
@@ -527,6 +557,7 @@ mod tests {
                 laterality,
                 view_position,
                 view_modifiers: Default::default(),
+                conventional_orientation: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),
@@ -833,6 +864,46 @@ mod tests {
         for record in selections.values().flatten() {
             assert_eq!(record.study_instance_uid.as_deref(), Some(complete_study));
         }
+    }
+
+    #[test]
+    fn text_report_includes_conventional_orientation_details() {
+        let view = MammogramView::new(Laterality::Right, ViewPosition::Cc);
+        let mut record = make_cli_test_record_with_path(view, "rcc.dcm", false);
+        record.metadata.conventional_orientation =
+            mammocat_core::ConventionalOrientationAssessment {
+                status: mammocat_core::ConventionalOrientationStatus::RequiresFlip,
+                expected_components: Some(vec!["P".to_string(), "L".to_string()]),
+                observed_components: Some(vec!["A".to_string(), "R".to_string()]),
+                horizontal_flip_required: Some(true),
+                vertical_flip_required: Some(true),
+            };
+        let selections = HashMap::from([(view, Some(record))]);
+
+        let output = TextReport::new(&selections).to_string();
+
+        assert!(output.contains("Orientation: requires_flip"));
+        assert!(output.contains("Expected Orientation: P\\L"));
+        assert!(output.contains("Observed Orientation: A\\R"));
+        assert!(output.contains("Flip Required: horizontal=true, vertical=true"));
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn json_report_embeds_conventional_orientation() {
+        let view = MammogramView::new(Laterality::Left, ViewPosition::Mlo);
+        let selections = HashMap::from([(
+            view,
+            Some(make_cli_test_record_with_path(view, "lmlo.dcm", false)),
+        )]);
+
+        let output: serde_json::Value =
+            serde_json::from_str(&output_json(&selections).unwrap()).unwrap();
+
+        assert_eq!(
+            output["selections"]["lmlo"]["metadata"]["conventional_orientation"]["status"],
+            "not_applicable"
+        );
     }
 
     #[test]

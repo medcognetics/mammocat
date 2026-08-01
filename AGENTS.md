@@ -264,6 +264,7 @@ The codebase follows a clear separation of concerns:
   - `PIXEL_DATA_TAG`, `DICOM_MAGIC_BYTES`: Shared constants
 - `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection) plus DBT object-kind detection
 - `laterality.rs`: Laterality extraction with fallback hierarchy
+- `orientation.rs`: Exact conventional RCC/LCC/RMLO/LMLO PatientOrientation assessment with conflict detection and nullable axis-flip requirements
 - `view_position.rs`: Shared canonical view descriptor parsing and conflict diagnostics
 - `view_modifiers.rs`: Convenience readers derived from the shared descriptor
 
@@ -292,12 +293,13 @@ The codebase follows a clear separation of concerns:
 
 **`api.rs`** - Public API surface
 - `MammogramExtractor`: Main entry point for metadata extraction
-- `MammogramMetadata`: Complete extracted metadata structure (includes dbt_object_kind, pixel_spacing, manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
+- `MammogramMetadata`: Complete extracted metadata structure (includes conventional_orientation, dbt_object_kind, pixel_spacing, manufacturer, model, number_of_frames, is_secondary_capture, modality, transfer_syntax_uid, transfer_syntax_name, compression_type)
 
 **`python/`** - PyO3 bindings (enabled with `--features python`)
 - `enums.rs`: Python wrappers for all enum types (PyMammogramType, PyLaterality, etc.)
 - `filter.rs`: PyFilterConfig wrapper
 - `metadata.rs`: PyMammogramMetadata wrapper
+- `orientation.rs`: Standalone `assess_conventional_orientation()` and Python assessment wrapper
 - `record.rs`: PyMammogramRecord wrapper
 - `selection.rs`: Python wrappers for selection functions (get_preferred_views_filtered, etc.)
 - `planning.rs`: Python wrapper for `plan_mammography_collection()`; returns the same planner schema as `mammoplan --format json`
@@ -305,7 +307,7 @@ The codebase follows a clear separation of concerns:
 - `macros.rs`: Boilerplate reduction macro (`impl_py_from!` for From trait implementations)
 
 **`node/`** - NAPI-RS Node/TypeScript bindings
-- `src/lib.rs`: Synchronous public API for `extractMetadata`, `selectPreferredViews`, and `selectPreferredViewsFromDirectory`
+- `src/lib.rs`: Synchronous public API for `assessConventionalOrientation`, `extractMetadata`, `selectPreferredViews`, and `selectPreferredViewsFromDirectory`
 - `index.js` and `index.d.ts`: Generated package loader and TypeScript declarations; keep these committed after `npm --prefix node run build`
 - `npm/`: Platform-specific optional native package metadata for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC
 - `test/`: Synthetic non-PHI DICOM fixtures, API tests, and the commit-pinned Git installation integration test
@@ -363,9 +365,14 @@ Filtering flow:
 
 **Node Selection Defaults**: The Node API is annotator-focused by default. It selects only FFDM, synthesized 2D, and SFM records with `DbtObjectKind::None` for the standard CC/MLO slots, uses recursive directory discovery for `selectPreferredViewsFromDirectory()`, and returns JSON-safe camelCase DTOs with fixed `rcc`, `lcc`, `rmlo`, and `lmlo` keys. Unreadable inputs in bulk selection go to `inputErrors`; only invalid API argument shapes should throw.
 
+**Conventional Orientation Assessment**: RCC expects `P\L`, LCC `A\R`, RMLO `P\FL`, and LMLO `A\FR`. Compare each component only with the exact expected value or its complete anatomical inverse (`A`/`P`, `R`/`L`, `F`/`H`). Missing, empty, malformed, partial, reordered, unsupported, lowercase, or conflicting evidence is `indeterminate` with null flip flags. Non-standard views and unsupported conflict-free laterality are `not_applicable`. The standalone Rust, Python, and Node APIs must remain ungated by SOP Class, modality, and mammogram type. The assessment reports metadata only and must not imply that downstream pixel flips update spatial or derived attributes.
+
 ### Validation Architecture
 
 `mammovalidate` and the Python validation functions use the same Rust report model. File validation records critical errors, warnings, info messages, and check details. Directory and ZIP validation aggregate per-file reports and run `get_preferred_views_filtered()` on valid records to verify standard-view coverage.
+
+Conventional orientation validation never fails a file: `matches` is a passing check,
+`requires_flip` and `indeterminate` are warnings, and `not_applicable` is informational.
 
 The default `Selection` profile is strict: it fails files with missing/invalid selection-critical tags such as `Modality`, `SOPInstanceUID`, `StudyInstanceUID`, `SeriesInstanceUID`, laterality, view position, dimensions, bit-depth fields, or `PixelData`. It warns about metadata that can cause default filtering or deprioritization, including `FOR PROCESSING`, secondary capture, non-standard views, spot/magnification views, implants, and optional manufacturer/model/spacing gaps.
 

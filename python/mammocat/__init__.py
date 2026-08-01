@@ -23,6 +23,7 @@ Example:
 
 from ._mammocat import (
     BREAST_TOMOSYNTHESIS_SOP_CLASS_UID,
+    ConventionalOrientationAssessment,
     DbtObjectKind,
     DicomError,
     ExtractionError,
@@ -48,6 +49,7 @@ from ._mammocat import (
     TagNotFoundError,
     ViewPosition,
     __version__,
+    assess_conventional_orientation,
     convert_dbt_study,
     # Selection functions
     get_preferred_views,
@@ -61,6 +63,7 @@ from ._mammocat import (
 
 __all__ = [
     "BREAST_TOMOSYNTHESIS_SOP_CLASS_UID",
+    "ConventionalOrientationAssessment",
     "DbtObjectKind",
     "DicomError",
     "ExtractionError",
@@ -81,6 +84,7 @@ __all__ = [
     "TagNotFoundError",
     "ViewPosition",
     "__version__",
+    "assess_conventional_orientation",
     "convert_dbt_study",
     "get_preferred_views",
     "get_preferred_views_filtered",
