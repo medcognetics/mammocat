@@ -7,6 +7,7 @@ use super::enums::{
     PyDbtObjectKind, PyImageType, PyLaterality, PyMammogramType, PyMammogramView,
     PyMammographyViewModifier, PyViewPosition,
 };
+use super::orientation::PyConventionalOrientationAssessment;
 use super::utils::option_string_to_py;
 
 /// Python wrapper for MammogramMetadata
@@ -51,6 +52,12 @@ impl PyMammogramMetadata {
             .copied()
             .map(Into::into)
             .collect()
+    }
+
+    /// Conventional PatientOrientation assessment.
+    #[getter]
+    fn conventional_orientation(&self) -> PyConventionalOrientationAssessment {
+        self.inner.conventional_orientation.clone().into()
     }
 
     /// Parsed ImageType field
@@ -197,6 +204,10 @@ impl PyMammogramMetadata {
                 .iter()
                 .map(|modifier| modifier.simple_name())
                 .collect::<Vec<_>>(),
+        )?;
+        dict.set_item(
+            "conventional_orientation",
+            self.conventional_orientation().to_dict(py)?,
         )?;
         dict.set_item("image_type", format!("{}", self.inner.image_type))?;
         dict.set_item("is_for_processing", self.is_for_processing())?;

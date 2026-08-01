@@ -999,6 +999,7 @@ mod tests {
                 laterality,
                 view_position: view_pos,
                 view_modifiers: Default::default(),
+                conventional_orientation: Default::default(),
                 image_type: ImageType::new(
                     "ORIGINAL".to_string(),
                     "PRIMARY".to_string(),

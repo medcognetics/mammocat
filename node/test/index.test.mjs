@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import {
+  assessConventionalOrientation,
   extractMetadata,
   selectPreferredViews,
   selectPreferredViewsFromDirectory,
@@ -26,8 +27,36 @@ test("extractMetadata returns JSON-safe metadata from a file path", async (t) =>
   assert.equal(metadata.laterality, "left")
   assert.equal(metadata.viewPosition, "mlo")
   assert.deepEqual(metadata.viewModifiers, [])
+  assert.deepEqual(metadata.conventionalOrientation, {
+    status: "matches",
+    expectedComponents: ["A", "FR"],
+    observedComponents: ["A", "FR"],
+    horizontalFlipRequired: false,
+    verticalFlipRequired: false,
+  })
   assert.deepEqual(metadata.pixelSpacing, { row: 0.07, column: 0.07 })
   assert.doesNotThrow(() => JSON.stringify(metadata))
+})
+
+test("assessConventionalOrientation accepts arbitrary DICOM modality and SOP class", () => {
+  const assessment = assessConventionalOrientation({
+    bytes: createMammogramBytes({
+      laterality: "R",
+      viewPosition: "MLO",
+      patientOrientation: ["A", "HR"],
+      modality: "CT",
+      sopClassUid: "1.2.840.10008.5.1.4.1.1.2",
+    }),
+    filename: "ungated-orientation.dcm",
+  })
+
+  assert.deepEqual(assessment, {
+    status: "requires_flip",
+    expectedComponents: ["P", "FL"],
+    observedComponents: ["A", "HR"],
+    horizontalFlipRequired: true,
+    verticalFlipRequired: true,
+  })
 })
 
 test("synthesized metadata uses the canonical machine value", () => {

@@ -32,7 +32,10 @@ pub use dicom_files::{
     collect_dicom_files_recursively_no_symlinks, ensure_no_symlink_components, is_dicom_file,
 };
 pub use error::{MammocatError, Result};
-pub use extraction::{extract_view_descriptor, Evidence, MammographyViewDescriptor};
+pub use extraction::{
+    assess_conventional_orientation, extract_view_descriptor, ConventionalOrientationAssessment,
+    ConventionalOrientationStatus, Evidence, MammographyViewDescriptor,
+};
 pub use planning::{
     plan_mammography_collection, DbtCompositionInput, DbtPlan, DbtVolumeCandidate, MammographyPlan,
     MammographyPlanConfig, MammographyPlanOptions, MammographyPlanSelection,

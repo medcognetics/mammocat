@@ -12,6 +12,12 @@ VIEW_CODES = {
     "CC": ("399162004", "cranio-caudal"),
     "MLO": ("399368009", "medio-lateral oblique"),
 }
+CONVENTIONAL_PATIENT_ORIENTATIONS = {
+    ("R", "CC"): ["P", "L"],
+    ("L", "CC"): ["A", "R"],
+    ("R", "MLO"): ["P", "FL"],
+    ("L", "MLO"): ["A", "FR"],
+}
 
 
 def _apply_mammogram_type(ds: Dataset, mammogram_type: str) -> None:
@@ -117,6 +123,8 @@ def create_mammogram_dicom(
     # Mammography-specific fields
     ds.ImageLaterality = laterality
     ds.ViewPosition = view_position
+    if patient_orientation := CONVENTIONAL_PATIENT_ORIENTATIONS.get((laterality, view_position)):
+        ds.PatientOrientation = patient_orientation
 
     _apply_mammogram_type(ds, mammogram_type)
 
