@@ -9,7 +9,9 @@ use super::laterality::{extract_frame_laterality, extract_laterality};
 use super::tags::{
     get_string_value, IMAGE_LATERALITY, LATERALITY as LATERALITY_TAG, PATIENT_ORIENTATION,
 };
+#[cfg(test)]
 use super::view_position::extract_view_descriptor;
+use super::view_position::extract_view_descriptor_with_diagnostics;
 
 /// Relationship between PatientOrientation and the conventional mammography orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -75,10 +77,10 @@ pub fn assess_conventional_orientation(
     dcm: &InMemDicomObject,
 ) -> ConventionalOrientationAssessment {
     let observed_components = patient_orientation_components(dcm);
-    let view_descriptor = extract_view_descriptor(dcm);
+    let view_diagnostics = extract_view_descriptor_with_diagnostics(dcm);
     let laterality = extract_laterality(dcm).unwrap_or(Laterality::Unknown);
 
-    if !view_descriptor.conflicts.is_empty() || has_laterality_conflict(dcm) {
+    if view_diagnostics.has_base_view_conflict || has_laterality_conflict(dcm) {
         return ConventionalOrientationAssessment::unresolved(
             ConventionalOrientationStatus::Indeterminate,
             None,
@@ -87,7 +89,7 @@ pub fn assess_conventional_orientation(
     }
 
     let Some(expected_components) =
-        conventional_components(laterality, view_descriptor.view_position)
+        conventional_components(laterality, view_diagnostics.descriptor.view_position)
     else {
         return ConventionalOrientationAssessment::unresolved(
             ConventionalOrientationStatus::NotApplicable,
@@ -220,7 +222,7 @@ mod tests {
     use crate::extraction::tags::{
         CODE_MEANING, CODE_VALUE, CODING_SCHEME_DESIGNATOR, FRAME_ANATOMY_SEQUENCE,
         FRAME_LATERALITY, SHARED_FUNCTIONAL_GROUPS_SEQUENCE, VIEW_CODE_SEQUENCE,
-        VIEW_POSITION as VIEW_POSITION_TAG,
+        VIEW_MODIFIER_CODE_SEQUENCE, VIEW_POSITION as VIEW_POSITION_TAG,
     };
 
     fn dicom(
@@ -467,6 +469,32 @@ mod tests {
             ConventionalOrientationStatus::Indeterminate
         );
         assert_eq!(assessment.expected_components, None);
+    }
+
+    #[test]
+    fn modifier_only_conflict_does_not_make_orientation_indeterminate() {
+        let mut dcm = dicom("R", "CC", Some(orientation(&["P", "L"])));
+        let conflicting_modifier = InMemDicomObject::from_element_iter([
+            DataElement::new(CODE_VALUE, VR::SH, PrimitiveValue::from("399055006")),
+            DataElement::new(
+                CODING_SCHEME_DESIGNATOR,
+                VR::SH,
+                PrimitiveValue::from("SCT"),
+            ),
+            DataElement::new(CODE_MEANING, VR::LO, PrimitiveValue::from("Magnification")),
+        ]);
+        dcm.put(DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![conflicting_modifier]),
+        ));
+
+        assert!(!extract_view_descriptor(&dcm).conflicts.is_empty());
+
+        let assessment = assess_conventional_orientation(&dcm);
+        assert_eq!(assessment.status, ConventionalOrientationStatus::Matches);
+        assert_eq!(assessment.horizontal_flip_required, Some(false));
+        assert_eq!(assessment.vertical_flip_required, Some(false));
     }
 
     #[test]
