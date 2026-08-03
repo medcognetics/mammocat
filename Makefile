@@ -63,7 +63,7 @@ security-audit:  ## Aggregate security scans and fail on findings or incomplete 
 	python -m scripts.ci.security_audit
 
 deprecation-report:  ## Report deprecations and fail only when the report is incomplete
-	PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 uv run --no-project --python 3.14 python -m scripts.ci.deprecation_report
+	uv run --no-project --python 3.14 python -m scripts.ci.deprecation_report
 
 # Code formatting
 format:  ## Format both Rust and Python code

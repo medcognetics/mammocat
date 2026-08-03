@@ -20,7 +20,7 @@ pub fn py_plan_mammography_collection(
     include_dbt: bool,
     prefer_synthetic_2d: bool,
     strict: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let path = path_to_pathbuf(path)?;
     let options = crate::MammographyPlanOptions {
         selection: crate::MammographyPlanSelection::new(include_2d, include_dbt),
@@ -31,10 +31,10 @@ pub fn py_plan_mammography_collection(
     report_to_py(py, &report)
 }
 
-fn report_to_py<T: Serialize>(py: Python, report: &T) -> PyResult<PyObject> {
+fn report_to_py<T: Serialize>(py: Python, report: &T) -> PyResult<Py<PyAny>> {
     let json = serde_json::to_string(report).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("failed to serialize report: {}", e))
     })?;
-    let json_module = PyModule::import_bound(py, "json")?;
+    let json_module = PyModule::import(py, "json")?;
     Ok(json_module.call_method1("loads", (json,))?.unbind())
 }

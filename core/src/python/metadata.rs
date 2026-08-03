@@ -8,10 +8,8 @@ use super::enums::{
     PyMammographyViewModifier, PyViewPosition,
 };
 use super::orientation::PyConventionalOrientationAssessment;
-use super::utils::option_string_to_py;
-
 /// Python wrapper for MammogramMetadata
-#[pyclass(name = "MammogramMetadata", module = "mammocat")]
+#[pyclass(name = "MammogramMetadata", module = "mammocat", from_py_object)]
 #[derive(Clone)]
 pub struct PyMammogramMetadata {
     pub(crate) inner: crate::api::MammogramMetadata,
@@ -98,14 +96,14 @@ impl PyMammogramMetadata {
 
     /// Manufacturer name (if available)
     #[getter]
-    fn manufacturer(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.manufacturer.clone())
+    fn manufacturer(&self) -> Option<String> {
+        self.inner.manufacturer.clone()
     }
 
     /// Manufacturer model name (if available)
     #[getter]
-    fn model(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.model.clone())
+    fn model(&self) -> Option<String> {
+        self.inner.model.clone()
     }
 
     /// Number of frames (for tomosynthesis)
@@ -116,30 +114,27 @@ impl PyMammogramMetadata {
 
     /// Pixel spacing in millimeters, when available.
     #[getter]
-    fn pixel_spacing(&self, py: Python) -> PyResult<PyObject> {
+    fn pixel_spacing(&self, py: Python) -> PyResult<Option<Py<PyDict>>> {
         let Some(pixel_spacing) = self.inner.pixel_spacing else {
-            return Ok(py.None());
+            return Ok(None);
         };
 
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("row", pixel_spacing.row)?;
         dict.set_item("column", pixel_spacing.col)?;
-        Ok(dict.unbind().into())
+        Ok(Some(dict.unbind()))
     }
 
     /// DICOM ConcatenationUID, when present
     #[getter]
-    fn concatenation_uid(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.concatenation_uid.clone())
+    fn concatenation_uid(&self) -> Option<String> {
+        self.inner.concatenation_uid.clone()
     }
 
     /// DICOM SOPInstanceUIDOfConcatenationSource, when present
     #[getter]
-    fn sop_instance_uid_of_concatenation_source(&self, py: Python) -> PyObject {
-        option_string_to_py(
-            py,
-            self.inner.sop_instance_uid_of_concatenation_source.clone(),
-        )
+    fn sop_instance_uid_of_concatenation_source(&self) -> Option<String> {
+        self.inner.sop_instance_uid_of_concatenation_source.clone()
     }
 
     /// Whether this is a secondary capture image
@@ -150,26 +145,26 @@ impl PyMammogramMetadata {
 
     /// DICOM Modality (should be "MG" for mammography)
     #[getter]
-    fn modality(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.modality.clone())
+    fn modality(&self) -> Option<String> {
+        self.inner.modality.clone()
     }
 
     /// DICOM Transfer Syntax UID from file meta information
     #[getter]
-    fn transfer_syntax_uid(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.transfer_syntax_uid.clone())
+    fn transfer_syntax_uid(&self) -> Option<String> {
+        self.inner.transfer_syntax_uid.clone()
     }
 
     /// Human-readable DICOM transfer syntax name
     #[getter]
-    fn transfer_syntax_name(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.transfer_syntax_name.clone())
+    fn transfer_syntax_name(&self) -> Option<String> {
+        self.inner.transfer_syntax_name.clone()
     }
 
     /// Derived compression category from the transfer syntax
     #[getter]
-    fn compression_type(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.compression_type.clone())
+    fn compression_type(&self) -> Option<String> {
+        self.inner.compression_type.clone()
     }
 
     /// Returns the mammogram view (laterality + view position)
@@ -189,7 +184,7 @@ impl PyMammogramMetadata {
 
     /// Convert metadata to dictionary
     pub fn to_dict(&self, py: Python) -> PyResult<Py<PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item(
             "mammogram_type",
             self.inner.mammogram_type.serialized_name(),
@@ -215,20 +210,20 @@ impl PyMammogramMetadata {
         dict.set_item("is_spot_compression", self.is_spot_compression())?;
         dict.set_item("is_magnified", self.is_magnified())?;
         dict.set_item("is_implant_displaced", self.is_implant_displaced())?;
-        dict.set_item("manufacturer", self.manufacturer(py))?;
-        dict.set_item("model", self.model(py))?;
+        dict.set_item("manufacturer", self.manufacturer())?;
+        dict.set_item("model", self.model())?;
         dict.set_item("number_of_frames", self.number_of_frames())?;
         dict.set_item("pixel_spacing", self.pixel_spacing(py)?)?;
-        dict.set_item("concatenation_uid", self.concatenation_uid(py))?;
+        dict.set_item("concatenation_uid", self.concatenation_uid())?;
         dict.set_item(
             "sop_instance_uid_of_concatenation_source",
-            self.sop_instance_uid_of_concatenation_source(py),
+            self.sop_instance_uid_of_concatenation_source(),
         )?;
         dict.set_item("is_secondary_capture", self.is_secondary_capture())?;
-        dict.set_item("modality", self.modality(py))?;
-        dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid(py))?;
-        dict.set_item("transfer_syntax_name", self.transfer_syntax_name(py))?;
-        dict.set_item("compression_type", self.compression_type(py))?;
+        dict.set_item("modality", self.modality())?;
+        dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid())?;
+        dict.set_item("transfer_syntax_name", self.transfer_syntax_name())?;
+        dict.set_item("compression_type", self.compression_type())?;
         Ok(dict.unbind())
     }
 

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use super::enums::{PyDbtObjectKind, PyMammogramType};
 use crate::types::FilterConfig;
 
-#[pyclass(name = "FilterConfig", module = "mammocat")]
+#[pyclass(name = "FilterConfig", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyFilterConfig {
     pub(crate) inner: FilterConfig,

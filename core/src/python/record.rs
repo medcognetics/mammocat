@@ -6,13 +6,13 @@ use pyo3::types::PyDict;
 use super::enums::PyPreferenceOrder;
 use super::errors::convert_error;
 use super::metadata::PyMammogramMetadata;
-use super::utils::{option_string_to_py, option_u16_to_py, path_to_pathbuf};
+use super::utils::path_to_pathbuf;
 
 /// Mammogram record combining file path and extracted metadata
 ///
 /// Used for preferred view selection with comparison logic for
 /// determining the best mammogram among multiple options.
-#[pyclass(name = "MammogramRecord", module = "mammocat")]
+#[pyclass(name = "MammogramRecord", module = "mammocat", from_py_object)]
 #[derive(Clone)]
 pub struct PyMammogramRecord {
     pub(crate) inner: crate::selection::MammogramRecord,
@@ -91,38 +91,38 @@ impl PyMammogramRecord {
 
     /// Study Instance UID (if available)
     #[getter]
-    fn study_instance_uid(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.study_instance_uid.clone())
+    fn study_instance_uid(&self) -> Option<String> {
+        self.inner.study_instance_uid.clone()
     }
 
     /// Series Instance UID (if available)
     #[getter]
-    fn series_instance_uid(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.series_instance_uid.clone())
+    fn series_instance_uid(&self) -> Option<String> {
+        self.inner.series_instance_uid.clone()
     }
 
     /// SOP Instance UID (if available)
     #[getter]
-    fn sop_instance_uid(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.sop_instance_uid.clone())
+    fn sop_instance_uid(&self) -> Option<String> {
+        self.inner.sop_instance_uid.clone()
     }
 
     /// Number of rows in image (if available)
     #[getter]
-    fn rows(&self, py: Python) -> PyObject {
-        option_u16_to_py(py, self.inner.rows)
+    fn rows(&self) -> Option<u16> {
+        self.inner.rows
     }
 
     /// Number of columns in image (if available)
     #[getter]
-    fn columns(&self, py: Python) -> PyObject {
-        option_u16_to_py(py, self.inner.columns)
+    fn columns(&self) -> Option<u16> {
+        self.inner.columns
     }
 
     /// Transfer Syntax UID from file metadata, if available
     #[getter]
-    fn transfer_syntax_uid(&self, py: Python) -> PyObject {
-        option_string_to_py(py, self.inner.transfer_syntax_uid.clone())
+    fn transfer_syntax_uid(&self) -> Option<String> {
+        self.inner.transfer_syntax_uid.clone()
     }
 
     /// Whether metadata indicates current or historical lossy compression
@@ -215,15 +215,15 @@ impl PyMammogramRecord {
 
     /// Convert record to dictionary
     fn to_dict(&self, py: Python) -> PyResult<Py<PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("file_path", self.file_path())?;
         dict.set_item("metadata", self.metadata().to_dict(py)?)?;
-        dict.set_item("study_instance_uid", self.study_instance_uid(py))?;
-        dict.set_item("series_instance_uid", self.series_instance_uid(py))?;
-        dict.set_item("sop_instance_uid", self.sop_instance_uid(py))?;
-        dict.set_item("rows", self.rows(py))?;
-        dict.set_item("columns", self.columns(py))?;
-        dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid(py))?;
+        dict.set_item("study_instance_uid", self.study_instance_uid())?;
+        dict.set_item("series_instance_uid", self.series_instance_uid())?;
+        dict.set_item("sop_instance_uid", self.sop_instance_uid())?;
+        dict.set_item("rows", self.rows())?;
+        dict.set_item("columns", self.columns())?;
+        dict.set_item("transfer_syntax_uid", self.transfer_syntax_uid())?;
         dict.set_item("is_lossy_compressed", self.is_lossy_compressed())?;
         dict.set_item("is_implant_displaced", self.is_implant_displaced())?;
         dict.set_item("is_spot_compression", self.is_spot_compression())?;

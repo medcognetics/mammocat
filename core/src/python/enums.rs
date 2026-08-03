@@ -14,7 +14,7 @@ use crate::types::{
 // MammogramType
 // ============================================================================
 
-#[pyclass(name = "MammogramType", module = "mammocat")]
+#[pyclass(name = "MammogramType", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyMammogramType {
     pub(crate) inner: MammogramType,
@@ -101,7 +101,7 @@ impl_py_from!(PyMammogramType, MammogramType);
 // DbtObjectKind
 // ============================================================================
 
-#[pyclass(name = "DbtObjectKind", module = "mammocat")]
+#[pyclass(name = "DbtObjectKind", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyDbtObjectKind {
     pub(crate) inner: DbtObjectKind,
@@ -160,7 +160,7 @@ impl_py_from!(PyDbtObjectKind, DbtObjectKind);
 // Laterality
 // ============================================================================
 
-#[pyclass(name = "Laterality", module = "mammocat")]
+#[pyclass(name = "Laterality", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyLaterality {
     pub(crate) inner: Laterality,
@@ -245,7 +245,7 @@ impl_py_from!(PyLaterality, Laterality);
 // ViewPosition
 // ============================================================================
 
-#[pyclass(name = "ViewPosition", module = "mammocat")]
+#[pyclass(name = "ViewPosition", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyViewPosition {
     pub(crate) inner: ViewPosition,
@@ -372,7 +372,7 @@ impl_py_from!(PyViewPosition, ViewPosition);
 // MammographyViewModifier
 // ============================================================================
 
-#[pyclass(name = "MammographyViewModifier", module = "mammocat")]
+#[pyclass(name = "MammographyViewModifier", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyMammographyViewModifier {
     pub(crate) inner: MammographyViewModifier,
@@ -467,7 +467,7 @@ impl_py_from!(PyMammographyViewModifier, MammographyViewModifier);
 // PreferenceOrder
 // ============================================================================
 
-#[pyclass(name = "PreferenceOrder", module = "mammocat")]
+#[pyclass(name = "PreferenceOrder", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyPreferenceOrder {
     pub(crate) inner: PreferenceOrder,
@@ -526,7 +526,11 @@ impl From<PreferenceOrder> for PyPreferenceOrder {
 // PhotometricInterpretation
 // ============================================================================
 
-#[pyclass(name = "PhotometricInterpretation", module = "mammocat")]
+#[pyclass(
+    name = "PhotometricInterpretation",
+    module = "mammocat",
+    from_py_object
+)]
 #[derive(Clone, Debug)]
 pub struct PyPhotometricInterpretation {
     pub(crate) inner: PhotometricInterpretation,
@@ -633,7 +637,7 @@ impl_py_from!(PyPhotometricInterpretation, PhotometricInterpretation);
 // ImageType
 // ============================================================================
 
-#[pyclass(name = "ImageType", module = "mammocat")]
+#[pyclass(name = "ImageType", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyImageType {
     pub(crate) inner: ImageType,
@@ -701,7 +705,7 @@ impl_py_from!(PyImageType, ImageType);
 // MammogramView
 // ============================================================================
 
-#[pyclass(name = "MammogramView", module = "mammocat")]
+#[pyclass(name = "MammogramView", module = "mammocat", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyMammogramView {
     pub(crate) inner: MammogramView,

@@ -18,6 +18,8 @@ from scripts.ci.deprecation_report import (
 )
 from scripts.ci.reporting import CommandResult, run_command, run_json_check
 from scripts.ci.security_audit import (
+    CARGO_AUDIT_COMMAND,
+    ZIZMOR_VERSION,
     count_cargo_findings,
     count_npm_findings,
     count_pip_findings,
@@ -29,6 +31,7 @@ EXPECTED_FINDING_EXIT_CODE = 1
 UNEXPECTED_SCANNER_EXIT_CODE = 2
 INVALID_SHA256 = "0" * 64
 BERYL_WORKFLOWS = ("ci.yml", "production-build.yml", "slow-linux.yml")
+PYTHON_314_WORKFLOWS = (*BERYL_WORKFLOWS, "dependency-health.yml")
 HOSTED_CACHE_WORKFLOWS = ("platforms.yml", "dependency-health.yml")
 CARGO_DOWNLOAD_CACHE_PATHS = {
     "~/.cargo/git/db",
@@ -66,10 +69,27 @@ def test_security_parsers_count_each_scanner_report() -> None:
     pip_report = {"dependencies": [{"name": "pkg", "vulns": [{"id": "PYSEC-test"}]}]}
     npm_report = {"metadata": {"vulnerabilities": {"total": 3}}}
 
-    assert count_cargo_findings(cargo_report) == 2
+    assert count_cargo_findings(cargo_report) == 1
     assert count_pip_findings(pip_report) == 1
     assert count_npm_findings(npm_report) == 3
     assert count_zizmor_findings([{"ident": "unpinned-uses"}]) == 1
+
+
+def test_security_cargo_parser_ignores_maintenance_notices() -> None:
+    cargo_report = {
+        "vulnerabilities": {"list": []},
+        "warnings": {
+            "unmaintained": [{"package": {"name": "old"}}],
+            "unsound": [{"package": {"name": "unsound"}}],
+            "yanked": [{"package": {"name": "yanked"}}],
+        },
+    }
+
+    assert count_cargo_findings(cargo_report) == 0
+
+
+def test_security_cargo_audit_does_not_deny_maintenance_notices() -> None:
+    assert "--deny" not in CARGO_AUDIT_COMMAND
 
 
 def test_security_parsers_reject_incomplete_reports() -> None:
@@ -181,6 +201,28 @@ def test_rustsec_notices_rejects_unexpected_exit_with_findings(monkeypatch, tmp_
     assert errors == ["Cargo Audit returned unexpected exit code 2"]
 
 
+def test_rustsec_maintenance_notices_remain_in_deprecation_report(monkeypatch, tmp_path) -> None:
+    payload = {
+        "vulnerabilities": {"list": []},
+        "warnings": {
+            "unmaintained": [{"package": {"name": "old"}}],
+            "unsound": [{"package": {"name": "unsound"}}],
+            "yanked": [{"package": {"name": "yanked"}}],
+        },
+    }
+
+    def cargo_audit_result(command: list[str], _cwd: Path) -> CommandResult:
+        return CommandResult(command=command, returncode=1, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(deprecation_report, "REPORT_DIRECTORY", tmp_path)
+    monkeypatch.setattr(deprecation_report, "run_command", cargo_audit_result)
+
+    notices, errors, _metadata = deprecation_report.rustsec_notices()
+
+    assert errors == []
+    assert {notice["type"] for notice in notices} == {"unmaintained", "unsound", "yanked"}
+
+
 def test_native_package_dry_run_uses_a_shell_independent_matrix_path() -> None:
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "platforms.yml").read_text(
         encoding="utf-8"
@@ -229,6 +271,18 @@ def test_deprecation_report_target_selects_python_314() -> None:
     makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "uv run --no-project --python 3.14 python -m scripts.ci.deprecation_report" in makefile
+
+
+def test_python_314_builds_do_not_use_forward_compatibility_override() -> None:
+    workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
+
+    for workflow_name in PYTHON_314_WORKFLOWS:
+        workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
+
+        assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in workflow
+
+    makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
+    assert "PYO3_USE_ABI3_FORWARD_COMPATIBILITY" not in makefile
 
 
 def test_existing_rustup_is_exported_without_downloading(monkeypatch, tmp_path) -> None:
@@ -334,3 +388,4 @@ def test_dependency_health_caches_are_scoped_by_ecosystem() -> None:
     assert workflow.count("- name: Restore uv downloads") == 1
     assert workflow.count("- name: Restore npm downloads") == 2
     assert "hashFiles('Cargo.lock', 'uv.lock'" not in workflow
+    assert f"zizmor-{ZIZMOR_VERSION}" in workflow

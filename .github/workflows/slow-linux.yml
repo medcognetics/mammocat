@@ -58,18 +58,12 @@ jobs:
           python-version: "3.14"
 
       - name: Install locked Python dependencies
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: uv sync --frozen --no-install-project --extra dev --python 3.14
 
       - name: Build Python 3.14 bindings
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: make build
 
       - name: Run Python coverage
-        env:
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: make test-cov
 
       - name: Set up Node 22.23.0

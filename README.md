@@ -516,7 +516,8 @@ mammocat/
 
 ## Dependencies
 
-- **dicom-rs** (0.9): DICOM reading and parsing
+- **dicom-rs** (0.10): DICOM reading and parsing. Public Rust APIs that accept or return
+  dicom-rs values require matching 0.10 types in downstream crates.
 - **clap** (4.5): Command-line argument parsing
 - **thiserror** (1.0): Error handling
 - **regex** (1.10): Pattern matching
@@ -572,8 +573,7 @@ make node-typecheck
 make node-pack
 ```
 
-Python 3.14 builds currently require `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`
-until the project upgrades PyO3 0.22.
+Python 3.14 builds are supported directly through PyO3 0.29.
 
 Current test coverage includes Rust unit/integration tests and Python tests covering:
 - Enum behavior and ordering
@@ -597,13 +597,13 @@ GitHub Actions uses five workflows:
   nightly at 05:17 UTC.
 - `Native Platforms` checks all four declared N-API targets each Saturday at 06:17 UTC.
 - `Dependency Health` runs security and deprecation reports each Monday at 03:17 UTC.
-  Security findings fail the security job; deprecation findings are informational, while
-  incomplete or unparsable reports fail either job.
+  Vulnerabilities fail the security job. RustSec maintenance notices, including unmaintained,
+  yanked, and unsound packages, remain visible in the informational deprecation report.
+  Incomplete or unparsable reports fail either job.
 
-The security job intentionally has no advisory exceptions and is expected to remain red
-until the separate dependency-remediation change lands. The GitHub Actions pull-request gate
-jobs are `CI / linux-python-min` and `CI / linux-full`. Verify both trusted and fork
-pull-request paths before making those checks required in branch protection.
+The security job intentionally has no advisory exceptions. The GitHub Actions pull-request gate
+jobs are `CI / linux-python-min` and `CI / linux-full`. Verify both trusted and fork pull-request
+paths before making those checks required in branch protection.
 
 ## Future Enhancements
 

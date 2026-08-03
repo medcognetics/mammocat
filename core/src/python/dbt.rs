@@ -10,7 +10,7 @@ use super::utils::path_to_pathbuf;
 /// Recursively scan a study directory for old-format DBT series.
 #[pyfunction]
 #[pyo3(name = "scan_dbt_study", signature = (input_dir))]
-pub fn py_scan_dbt_study(py: Python, input_dir: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+pub fn py_scan_dbt_study(py: Python, input_dir: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let input_dir = path_to_pathbuf(input_dir)?;
     let report = crate::scan_dbt_study(input_dir, crate::DbtScanOptions).map_err(convert_error)?;
     report_to_py(py, &report)
@@ -25,7 +25,7 @@ pub fn py_convert_dbt_study(
     output_dir: &Bound<'_, PyAny>,
     dry_run: bool,
     force: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let input_dir = path_to_pathbuf(input_dir)?;
     let output_dir = path_to_pathbuf(output_dir)?;
     let report = crate::convert_dbt_study(
@@ -37,10 +37,10 @@ pub fn py_convert_dbt_study(
     report_to_py(py, &report)
 }
 
-fn report_to_py<T: Serialize>(py: Python, report: &T) -> PyResult<PyObject> {
+fn report_to_py<T: Serialize>(py: Python, report: &T) -> PyResult<Py<PyAny>> {
     let json = serde_json::to_string(report).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("failed to serialize report: {}", e))
     })?;
-    let json_module = PyModule::import_bound(py, "json")?;
+    let json_module = PyModule::import(py, "json")?;
     Ok(json_module.call_method1("loads", (json,))?.unbind())
 }

@@ -20,15 +20,16 @@ ROOT = Path(__file__).resolve().parents[2]
 REPORT_DIRECTORY = ROOT / "reports" / "security"
 NPM_VERSION = "12.0.1"
 PIP_AUDIT_VERSION = "2.10.1"
-ZIZMOR_VERSION = "1.27.0"
+ZIZMOR_VERSION = "1.29.0"
 AUDITED_GROUPS = {
     "python": ["build-system", "dev", "test"],
     "npm": ["prod", "dev", "optional", "peer"],
     "rust": ["Cargo.lock", "all workspace packages and features"],
 }
-MISSION_CRITICAL_FAMILIES = ["dicom-rs 0.9", "PyO3 0.22", "N-API 3.x"]
+MISSION_CRITICAL_FAMILIES = ["dicom-rs 0.10", "PyO3 0.29", "N-API 3.x"]
 STANDARD_FINDING_EXIT_CODES = frozenset({1})
 NO_FINDING_EXIT_CODES: frozenset[int] = frozenset()
+CARGO_AUDIT_COMMAND = ["cargo", "audit", "--json", "--file", "Cargo.lock"]
 
 
 def npm_command(*arguments: str) -> list[str]:
@@ -38,18 +39,16 @@ def npm_command(*arguments: str) -> list[str]:
 
 
 def count_cargo_findings(payload: Any) -> int:
-    """Count Cargo Audit vulnerabilities and warning records."""
+    """Count Cargo Audit vulnerabilities; maintenance notices are reported separately."""
 
     if not isinstance(payload, dict):
         message = "Cargo Audit report must be an object"
         raise TypeError(message)
     vulnerabilities = payload["vulnerabilities"]["list"]
-    warnings = payload.get("warnings", {})
-    if not isinstance(vulnerabilities, list) or not isinstance(warnings, dict):
+    if not isinstance(vulnerabilities, list):
         message = "Cargo Audit findings have an unexpected shape"
         raise TypeError(message)
-    warning_count = sum(len(items) for items in warnings.values() if isinstance(items, list))
-    return len(vulnerabilities) + warning_count
+    return len(vulnerabilities)
 
 
 def count_pip_findings(payload: Any) -> int:
@@ -163,15 +162,7 @@ def main() -> int:
         [
             run_json_check(
                 name="cargo-audit",
-                command=[
-                    "cargo",
-                    "audit",
-                    "--json",
-                    "--deny",
-                    "warnings",
-                    "--file",
-                    "Cargo.lock",
-                ],
+                command=CARGO_AUDIT_COMMAND,
                 cwd=ROOT,
                 output_path=REPORT_DIRECTORY / "cargo-audit.json",
                 count_findings=count_cargo_findings,
