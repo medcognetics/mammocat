@@ -96,8 +96,7 @@ make deprecation-report
 
 - Normal Rust development and CI use Rust 1.97.1 from `rust-toolchain.toml`; Rust 1.88 is
   the workspace MSRV and is checked weekly.
-- Python support starts at 3.10. CI tests 3.10 and 3.14. Set
-  `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` for Python 3.14 while the project uses PyO3 0.22.
+- Python support starts at 3.10. CI tests 3.10 and 3.14 with PyO3 0.29.
 - Node support starts at 22. CI tests Node 22.23.0 and 26.5.0, plus all four native targets.
 - Trusted pull requests, `master` pushes, and Linux schedules use the ephemeral Beryl runner.
   Fork pull requests use `ubuntu-24.04`, never receive Beryl access, and cannot read or write
@@ -113,8 +112,9 @@ make deprecation-report
 - The GitHub Actions pull-request gate jobs are `CI / linux-python-min` and
   `CI / linux-full`. Verify the trusted and fork pull-request paths before making those checks
   required in branch protection.
-- Weekly security findings fail by design and must not be ignored. Deprecation findings are
-  informational; missing, failed, or unparsable report inputs fail the reporting job.
+- Weekly vulnerability findings fail by design and must not be ignored. RustSec maintenance
+  notices, including unmaintained, yanked, and unsound packages, are reported by the informational
+  deprecation job. Missing, failed, or unparsable report inputs fail either job.
 
 ### Running the CLI
 
@@ -233,9 +233,7 @@ DBT conversion is shared core functionality in `core/src/dbt.rs`; keep the Rust 
 fields or options. Python DBT APIs return dictionaries generated from the same serde report
 structs used by CLI JSON output.
 
-On this workstation, DBT all-features checks need `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`.
-For DBT changes, run `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make quality` and
-`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make test`. The local Apollo smoke is:
+For DBT changes, run `make quality` and `make test`. The local Apollo smoke is:
 `dbt-combine check "/home/chase/data apollo"` should report 15 conversion-needed DBT series
 and 26 copy-through DICOM files.
 
@@ -392,7 +390,8 @@ This implementation maintains behavioral compatibility with the Python `dicom-ut
 
 ## Dependencies
 
-- **dicom-rs (0.9)**: DICOM file parsing and tag reading
+- **dicom-rs (0.10)**: DICOM file parsing and tag reading. Public Rust APIs expose dicom-rs
+  types, so downstream Rust consumers must use matching 0.10 types.
 - **clap (4.5)**: CLI argument parsing with derive macros
 - **thiserror (1.0)**: Error type definitions
 - **regex (1.10)**: Pattern matching for view positions and metadata
@@ -475,8 +474,7 @@ with their PyO3 bindings.
 
 Add Rust unit tests next to core logic and Python tests under `tests/test_*.py`; use
 integration tests for cross-module or I/O behavior. Run focused tests first, then
-`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make quality` and
-`PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 make test` before handoff.
+`make quality` and `make test` before handoff.
 
 Keep commits focused and use short imperative subjects. Pull requests should summarize
 behavioral changes, list validation commands, describe CLI and Python API effects, and note

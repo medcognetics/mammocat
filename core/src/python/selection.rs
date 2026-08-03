@@ -3,6 +3,7 @@
 use pyo3::exceptions::PyUserWarning;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::ffi::CString;
 
 use super::enums::{PyMammogramView, PyPreferenceOrder};
 use super::errors::convert_error;
@@ -180,21 +181,24 @@ fn select_unfiltered_views(
 }
 
 fn emit_selection_warnings(py: Python, warnings: &[SelectionWarning]) -> PyResult<()> {
-    let category = py.get_type_bound::<PyUserWarning>();
+    let category = py.get_type::<PyUserWarning>();
     for warning in warnings {
-        PyErr::warn_bound(py, &category, warning.message(), 2)?;
+        let message = CString::new(warning.message()).map_err(|error| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid warning message: {error}"))
+        })?;
+        PyErr::warn(py, &category, &message, 2)?;
     }
     Ok(())
 }
 
 /// Convert HashMap<MammogramView, Option<MammogramRecord>> to Python dict
 fn hashmap_to_py_dict(py: Python, map: PreferredViewSelection) -> PyResult<Py<PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
 
     for (view, record) in map.into_iter() {
-        let py_view = PyMammogramView::from(view).into_py(py);
-        let py_record: PyObject = match record {
-            Some(r) => PyMammogramRecord::from(r).into_py(py),
+        let py_view = Py::new(py, PyMammogramView::from(view))?;
+        let py_record: Py<PyAny> = match record {
+            Some(r) => Py::new(py, PyMammogramRecord::from(r))?.into_any(),
             None => py.None(),
         };
         dict.set_item(py_view, py_record)?;

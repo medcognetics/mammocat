@@ -41,8 +41,7 @@ where
     let report_json = serde_json::to_string(report).map_err(|error| {
         PyRuntimeError::new_err(format!("Failed to serialize validation report: {error}"))
     })?;
-    py.import_bound("json")?
-        .call_method1("loads", (report_json,))
+    py.import("json")?.call_method1("loads", (report_json,))
 }
 
 #[pyfunction]

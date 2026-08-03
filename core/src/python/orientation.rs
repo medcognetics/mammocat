@@ -9,7 +9,11 @@ use crate::extraction::ConventionalOrientationAssessment;
 use super::utils::path_to_pathbuf;
 
 /// Python representation of a conventional orientation assessment.
-#[pyclass(name = "ConventionalOrientationAssessment", module = "mammocat")]
+#[pyclass(
+    name = "ConventionalOrientationAssessment",
+    module = "mammocat",
+    from_py_object
+)]
 #[derive(Clone)]
 pub struct PyConventionalOrientationAssessment {
     pub(crate) inner: ConventionalOrientationAssessment,
@@ -43,7 +47,7 @@ impl PyConventionalOrientationAssessment {
     }
 
     pub fn to_dict(&self, py: Python) -> PyResult<Py<PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("status", self.status())?;
         dict.set_item("expected_components", self.expected_components())?;
         dict.set_item("observed_components", self.observed_components())?;

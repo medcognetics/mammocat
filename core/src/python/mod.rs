@@ -38,27 +38,21 @@ pub use selection::*;
 #[pymodule]
 fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register exception classes
-    m.add(
-        "MammocatError",
-        py.get_type_bound::<errors::PyMammocatError>(),
-    )?;
-    m.add("DicomError", py.get_type_bound::<errors::PyDicomError>())?;
+    m.add("MammocatError", py.get_type::<errors::PyMammocatError>())?;
+    m.add("DicomError", py.get_type::<errors::PyDicomError>())?;
     m.add(
         "TagNotFoundError",
-        py.get_type_bound::<errors::PyTagNotFoundError>(),
+        py.get_type::<errors::PyTagNotFoundError>(),
     )?;
     m.add(
         "InvalidValueError",
-        py.get_type_bound::<errors::PyInvalidValueError>(),
+        py.get_type::<errors::PyInvalidValueError>(),
     )?;
     m.add(
         "ExtractionError",
-        py.get_type_bound::<errors::PyExtractionError>(),
+        py.get_type::<errors::PyExtractionError>(),
     )?;
-    m.add(
-        "SelectionError",
-        py.get_type_bound::<errors::PySelectionError>(),
-    )?;
+    m.add("SelectionError", py.get_type::<errors::PySelectionError>())?;
 
     // Register enum classes
     m.add_class::<PyMammogramType>()?;

@@ -20,19 +20,3 @@ pub fn path_to_pathbuf(path: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
         "Path must be a string or path-like object",
     ))
 }
-
-/// Converts an Option<String> to Python (None or str)
-pub fn option_string_to_py(py: Python, opt: Option<String>) -> PyObject {
-    match opt {
-        Some(s) => s.into_py(py),
-        None => py.None(),
-    }
-}
-
-/// Converts an Option<u16> to Python (None or int)
-pub fn option_u16_to_py(py: Python, opt: Option<u16>) -> PyObject {
-    match opt {
-        Some(v) => v.into_py(py),
-        None => py.None(),
-    }
-}

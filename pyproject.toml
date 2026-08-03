@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0", "pip"]
+requires = ["maturin>=1.0,<2.0", "pip==26.2"]
 build-backend = "maturin"
 
 [project]
@@ -21,18 +21,18 @@ dependencies = []
 
 [project.optional-dependencies]
 test = [
-    "pytest>=7.0",
+    "pytest==9.1.1",
     "pytest-cov>=4.0",
-    "pydicom>=2.4",  # For test DICOM files
+    "pydicom==3.0.2",  # For test DICOM files
 ]
 dev = [
-    "pip",  # Required for maturin develop
+    "pip==26.2",  # Required for maturin develop
     "maturin>=1.0,<2.0",
     "ruff>=0.8.0",
     "basedpyright>=1.24.0",
-    "pytest>=7.0",
+    "pytest==9.1.1",
     "pytest-cov>=4.0",
-    "pydicom>=2.4",
+    "pydicom==3.0.2",
 ]
 
 [tool.maturin]
