@@ -33,6 +33,7 @@ class MammogramType:
     TOMO: MammogramType
     FFDM: MammogramType
     SYNTH: MammogramType
+    DBT_MIP: MammogramType
     SFM: MammogramType
 
     @property
@@ -416,7 +417,7 @@ def get_preferred_views(
 
     For each of the 4 standard views (L-MLO, R-MLO, L-CC, R-CC), selects the
     most preferred mammogram based on comparison logic using the default
-    preference order (FFDM > SYNTH > TOMO > SFM).
+    preference order (FFDM > SYNTH > DBT MIP > TOMO > SFM).
 
     Args:
         records: List of MammogramRecord objects to select from

@@ -264,7 +264,7 @@ impl MammogramRecord {
     /// Checks if this record is preferred over another
     ///
     /// Implements Python logic from record.py:805-838
-    /// Uses the default preference order (FFDM > SYNTH > TOMO > SFM)
+    /// Uses the default preference order (FFDM > SYNTH > DBT MIP > TOMO > SFM)
     ///
     /// Priority order:
     /// 1. Standard views beat non-standard views
@@ -272,7 +272,7 @@ impl MammogramRecord {
     /// 3. Records are partitioned by StudyInstanceUID for stable cross-study ordering
     /// 4. Implant displaced beats non-displaced within a study
     /// 5. Lossless beats lossy compressed
-    /// 6. Type preference (FFDM > SYNTH > TOMO > SFM)
+    /// 6. Type preference (FFDM > SYNTH > DBT MIP > TOMO > SFM)
     /// 7. Higher resolution beats lower resolution
     /// 8. Stable source identifiers break remaining ties
     ///

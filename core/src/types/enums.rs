@@ -9,16 +9,16 @@ use std::fmt;
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "kebab-case"))]
 pub enum PreferenceOrder {
-    /// Default ordering: FFDM > SYNTH > TOMO > SFM
+    /// Default ordering: FFDM > SYNTH > DBT MIP > TOMO > SFM
     /// Prefers 2D images over tomosynthesis for general inference
     #[default]
     Default,
 
-    /// Tomosynthesis first: TOMO > FFDM > SYNTH > SFM
+    /// Tomosynthesis first: TOMO > FFDM > SYNTH > DBT MIP > SFM
     /// Maximizes use of 3D imaging when available
     TomoFirst,
 
-    /// Synthetic 2D first: SYNTH > FFDM > TOMO > SFM
+    /// Synthetic 2D first: SYNTH > FFDM > DBT MIP > TOMO > SFM
     /// Preserves the default ordering except synthetic 2D views are preferred over FFDM.
     #[cfg_attr(feature = "json", serde(rename = "synthetic-2d-first"))]
     Synthetic2dFirst,
@@ -31,25 +31,28 @@ impl PreferenceOrder {
     pub fn preference_value(&self, mammo_type: &MammogramType) -> i32 {
         match self {
             PreferenceOrder::Default => match mammo_type {
-                MammogramType::Unknown => 5,
+                MammogramType::Unknown => 6,
                 MammogramType::Ffdm => 1,
                 MammogramType::Synth => 2,
-                MammogramType::Tomo => 3,
-                MammogramType::Sfm => 4,
+                MammogramType::DbtMip => 3,
+                MammogramType::Tomo => 4,
+                MammogramType::Sfm => 5,
             },
             PreferenceOrder::TomoFirst => match mammo_type {
-                MammogramType::Unknown => 5,
+                MammogramType::Unknown => 6,
                 MammogramType::Tomo => 1,
                 MammogramType::Ffdm => 2,
                 MammogramType::Synth => 3,
-                MammogramType::Sfm => 4,
+                MammogramType::DbtMip => 4,
+                MammogramType::Sfm => 5,
             },
             PreferenceOrder::Synthetic2dFirst => match mammo_type {
-                MammogramType::Unknown => 5,
+                MammogramType::Unknown => 6,
                 MammogramType::Synth => 1,
                 MammogramType::Ffdm => 2,
-                MammogramType::Tomo => 3,
-                MammogramType::Sfm => 4,
+                MammogramType::DbtMip => 3,
+                MammogramType::Tomo => 4,
+                MammogramType::Sfm => 5,
             },
         }
     }
@@ -95,7 +98,7 @@ impl fmt::Display for DbtObjectKind {
 
 /// Mammogram type classification with intrinsic ordering.
 ///
-/// Intrinsic order: TOMO < FFDM < SYNTH < SFM < UNKNOWN. This powers
+/// Intrinsic order: TOMO < FFDM < SYNTH < DBT MIP < SFM < UNKNOWN. This powers
 /// [`Ord`] and [`MammogramType::is_preferred_to`]; preferred-view selection can
 /// override type ranking with [`PreferenceOrder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,6 +109,8 @@ pub enum MammogramType {
     Tomo,
     Ffdm,
     Synth,
+    #[cfg_attr(feature = "json", serde(rename = "dbt-mip"))]
+    DbtMip,
     Sfm,
 }
 
@@ -115,11 +120,11 @@ impl MammogramType {
         matches!(self, MammogramType::Unknown)
     }
 
-    /// Returns whether this type belongs to the 2D modality group (FFDM, SYNTH, SFM)
+    /// Returns whether this type belongs to the 2D modality group.
     pub fn is_2d_group(&self) -> bool {
         matches!(
             self,
-            MammogramType::Ffdm | MammogramType::Synth | MammogramType::Sfm
+            MammogramType::Ffdm | MammogramType::Synth | MammogramType::DbtMip | MammogramType::Sfm
         )
     }
 
@@ -135,6 +140,7 @@ impl MammogramType {
             MammogramType::Tomo => "tomo",
             MammogramType::Ffdm => "ffdm",
             MammogramType::Synth => "s-view",
+            MammogramType::DbtMip => "dbt-mip",
             MammogramType::Sfm => "sfm",
         }
     }
@@ -146,6 +152,7 @@ impl MammogramType {
             MammogramType::Tomo => "tomo",
             MammogramType::Ffdm => "ffdm",
             MammogramType::Synth => "synth",
+            MammogramType::DbtMip => "dbt-mip",
             MammogramType::Sfm => "sfm",
         }
     }
@@ -156,8 +163,9 @@ impl MammogramType {
             MammogramType::Tomo => 1,
             MammogramType::Ffdm => 2,
             MammogramType::Synth => 3,
-            MammogramType::Sfm => 4,
-            MammogramType::Unknown => 5,
+            MammogramType::DbtMip => 4,
+            MammogramType::Sfm => 5,
+            MammogramType::Unknown => 6,
         }
     }
 
@@ -183,7 +191,9 @@ impl MammogramType {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         let s_lower = s.to_lowercase();
-        if s_lower.contains("tomo") {
+        if s_lower.contains("mip") && (s_lower.contains("dbt") || s_lower.contains("laplacian")) {
+            MammogramType::DbtMip
+        } else if s_lower.contains("tomo") {
             MammogramType::Tomo
         } else if s_lower.contains("view") || s_lower.contains("synth") {
             MammogramType::Synth
@@ -563,7 +573,8 @@ mod tests {
     fn test_mammogram_type_ordering() {
         assert!(MammogramType::Tomo < MammogramType::Ffdm);
         assert!(MammogramType::Ffdm < MammogramType::Synth);
-        assert!(MammogramType::Synth < MammogramType::Sfm);
+        assert!(MammogramType::Synth < MammogramType::DbtMip);
+        assert!(MammogramType::DbtMip < MammogramType::Sfm);
         assert!(MammogramType::Sfm < MammogramType::Unknown);
     }
 
@@ -581,6 +592,7 @@ mod tests {
         assert_eq!(MammogramType::Tomo.serialized_name(), "tomo");
         assert_eq!(MammogramType::Ffdm.serialized_name(), "ffdm");
         assert_eq!(MammogramType::Synth.serialized_name(), "synth");
+        assert_eq!(MammogramType::DbtMip.serialized_name(), "dbt-mip");
         assert_eq!(MammogramType::Sfm.serialized_name(), "sfm");
         assert_eq!(MammogramType::Synth.simple_name(), "s-view");
         assert_eq!(MammogramType::Synth.to_string(), "s-view");
@@ -594,6 +606,7 @@ mod tests {
             (MammogramType::Tomo, "tomo"),
             (MammogramType::Ffdm, "ffdm"),
             (MammogramType::Synth, "synth"),
+            (MammogramType::DbtMip, "dbt-mip"),
             (MammogramType::Sfm, "sfm"),
         ];
 
@@ -623,6 +636,7 @@ mod tests {
     fn test_mammogram_type_2d_group() {
         assert!(MammogramType::Ffdm.is_2d_group());
         assert!(MammogramType::Synth.is_2d_group());
+        assert!(MammogramType::DbtMip.is_2d_group());
         assert!(MammogramType::Sfm.is_2d_group());
         assert!(!MammogramType::Tomo.is_2d_group());
         assert!(!MammogramType::Unknown.is_2d_group());
@@ -633,8 +647,42 @@ mod tests {
         assert!(MammogramType::Tomo.is_dbt_group());
         assert!(!MammogramType::Ffdm.is_dbt_group());
         assert!(!MammogramType::Synth.is_dbt_group());
+        assert!(!MammogramType::DbtMip.is_dbt_group());
         assert!(!MammogramType::Sfm.is_dbt_group());
         assert!(!MammogramType::Unknown.is_dbt_group());
+    }
+
+    #[test]
+    fn dbt_mip_parsing_accepts_public_and_laplacian_names() {
+        assert_eq!(MammogramType::from_str("dbt-mip"), MammogramType::DbtMip);
+        assert_eq!(
+            MammogramType::from_str("Laplacian MIP"),
+            MammogramType::DbtMip
+        );
+    }
+
+    #[test]
+    fn preference_orders_rank_dbt_mip_as_a_derived_2d_fallback() {
+        assert_eq!(
+            PreferenceOrder::Default.preference_value(&MammogramType::DbtMip),
+            3
+        );
+        assert_eq!(
+            PreferenceOrder::TomoFirst.preference_value(&MammogramType::DbtMip),
+            4
+        );
+        assert_eq!(
+            PreferenceOrder::Synthetic2dFirst.preference_value(&MammogramType::DbtMip),
+            3
+        );
+        assert!(
+            PreferenceOrder::Default.preference_value(&MammogramType::Synth)
+                < PreferenceOrder::Default.preference_value(&MammogramType::DbtMip)
+        );
+        assert!(
+            PreferenceOrder::Default.preference_value(&MammogramType::DbtMip)
+                < PreferenceOrder::Default.preference_value(&MammogramType::Tomo)
+        );
     }
 
     #[test]

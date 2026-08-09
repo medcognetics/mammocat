@@ -3,6 +3,10 @@ use dicom_object::InMemDicomObject;
 
 // Core Image Tags
 pub const IMAGE_TYPE: Tag = Tag(0x0008, 0x0008);
+pub const DERIVATION_DESCRIPTION: Tag = Tag(0x0008, 0x2111);
+pub const SOURCE_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x2112);
+pub const REFERENCED_SOP_CLASS_UID: Tag = Tag(0x0008, 0x1150);
+pub const DERIVATION_CODE_SEQUENCE: Tag = Tag(0x0008, 0x9215);
 pub const MODALITY: Tag = Tag(0x0008, 0x0060);
 pub const NUMBER_OF_FRAMES: Tag = Tag(0x0028, 0x0008);
 pub const PHOTOMETRIC_INTERPRETATION: Tag = Tag(0x0028, 0x0004);
@@ -155,6 +159,10 @@ mod tests {
     fn test_tag_values() {
         // Just ensure tags are correctly defined
         assert_eq!(IMAGE_TYPE, Tag(0x0008, 0x0008));
+        assert_eq!(DERIVATION_DESCRIPTION, Tag(0x0008, 0x2111));
+        assert_eq!(SOURCE_IMAGE_SEQUENCE, Tag(0x0008, 0x2112));
+        assert_eq!(REFERENCED_SOP_CLASS_UID, Tag(0x0008, 0x1150));
+        assert_eq!(DERIVATION_CODE_SEQUENCE, Tag(0x0008, 0x9215));
         assert_eq!(MODALITY, Tag(0x0008, 0x0060));
         assert_eq!(NUMBER_OF_FRAMES, Tag(0x0028, 0x0008));
         assert_eq!(VOLUMETRIC_PROPERTIES, Tag(0x0008, 0x9206));

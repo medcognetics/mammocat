@@ -4,7 +4,7 @@ Mammocat - DICOM Mammography Metadata Extraction
 A high-performance library for extracting metadata from mammography DICOM files.
 
 This library provides:
-- Mammogram type classification (TOMO, FFDM, SYNTH, SFM, UNKNOWN)
+- Mammogram type classification (TOMO, FFDM, SYNTH, DBT MIP, SFM, UNKNOWN)
 - DBT object classification (volume, slice, unknown, none)
 - Laterality and view position extraction
 - Preferred view selection from multiple mammograms

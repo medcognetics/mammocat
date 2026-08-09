@@ -174,7 +174,7 @@ impl PyMammogramRecord {
     /// 2. Non-spot/mag views beat spot/mag views
     /// 3. Implant displaced beats non-displaced (same study only)
     /// 4. Lossless beats lossy compressed
-    /// 5. Type preference (FFDM > SYNTH > TOMO > SFM)
+    /// 5. Type preference (FFDM > SYNTH > DBT MIP > TOMO > SFM)
     /// 6. Higher resolution beats lower resolution
     /// 7. Fallback to SOP Instance UID comparison
     ///

@@ -376,12 +376,14 @@ fn views_filter(preference_order: PreferenceOrder) -> FilterConfig {
         PreferenceOrder::TomoFirst => HashSet::from([
             MammogramType::Ffdm,
             MammogramType::Synth,
+            MammogramType::DbtMip,
             MammogramType::Sfm,
             MammogramType::Tomo,
         ]),
         PreferenceOrder::Default | PreferenceOrder::Synthetic2dFirst => HashSet::from([
             MammogramType::Ffdm,
             MammogramType::Synth,
+            MammogramType::DbtMip,
             MammogramType::Sfm,
         ]),
     };

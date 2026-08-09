@@ -19,6 +19,7 @@ class TestMammogramType:
         assert MammogramType.FFDM.value == "ffdm"
         assert MammogramType.TOMO.value == "tomo"
         assert MammogramType.SYNTH.value == "synth"
+        assert MammogramType.DBT_MIP.value == "dbt-mip"
         assert MammogramType.SFM.value == "sfm"
         assert MammogramType.UNKNOWN.value == "unknown"
 
@@ -47,6 +48,8 @@ class TestMammogramType:
         assert MammogramType.TOMO < MammogramType.FFDM
         assert MammogramType.FFDM < MammogramType.SYNTH
         assert MammogramType.SYNTH < MammogramType.SFM
+        assert MammogramType.SYNTH < MammogramType.DBT_MIP
+        assert MammogramType.DBT_MIP < MammogramType.SFM
 
     def test_is_preferred_to(self):
         """Test preference comparison."""

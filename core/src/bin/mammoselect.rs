@@ -32,7 +32,7 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Allowed mammogram types (comma-separated: ffdm,tomo,synth,sfm)
+    /// Allowed mammogram types (comma-separated: ffdm,tomo,synth,dbt-mip,sfm)
     #[arg(long, value_delimiter = ',')]
     allowed_types: Option<Vec<MammogramTypeArg>>,
 
@@ -91,9 +91,9 @@ enum OutputFormat {
 /// Preference ordering for mammogram type selection
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum PreferenceOrderArg {
-    /// Default ordering: FFDM > SYNTH > TOMO > SFM (prefers 2D for inference)
+    /// Default ordering: FFDM > SYNTH > DBT MIP > TOMO > SFM
     Default,
-    /// Tomosynthesis first: TOMO > FFDM > SYNTH > SFM (maximizes 3D imaging)
+    /// Tomosynthesis first: TOMO > FFDM > SYNTH > DBT MIP > SFM
     TomoFirst,
 }
 
@@ -115,6 +115,8 @@ enum MammogramTypeArg {
     Tomo,
     /// Synthesized 2D from tomosynthesis
     Synth,
+    /// Single-frame maximum intensity projection derived from DBT
+    DbtMip,
     /// Screen-film mammography
     Sfm,
 }
@@ -125,6 +127,7 @@ impl From<MammogramTypeArg> for MammogramType {
             MammogramTypeArg::Ffdm => MammogramType::Ffdm,
             MammogramTypeArg::Tomo => MammogramType::Tomo,
             MammogramTypeArg::Synth => MammogramType::Synth,
+            MammogramTypeArg::DbtMip => MammogramType::DbtMip,
             MammogramTypeArg::Sfm => MammogramType::Sfm,
         }
     }
@@ -749,6 +752,18 @@ mod tests {
         assert_eq!(allowed.len(), 2);
         assert!(allowed.contains(&DbtObjectKind::Volume));
         assert!(allowed.contains(&DbtObjectKind::Slice));
+    }
+
+    #[test]
+    fn test_build_filter_config_allows_dbt_mip_type() {
+        let cli =
+            Cli::try_parse_from(["mammoselect", "--allowed-types", "dbt-mip", "/tmp"]).unwrap();
+        let config = build_filter_config(&cli);
+
+        assert_eq!(
+            config.allowed_types,
+            Some(HashSet::from([MammogramType::DbtMip]))
+        );
     }
 
     #[test]

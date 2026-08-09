@@ -56,7 +56,7 @@ def create_mammogram_dicom(
     """Create a synthetic mammography DICOM dataset.
 
     Args:
-        mammogram_type: Type of mammogram (FFDM, TOMO, SYNTH, SFM)
+        mammogram_type: Type of mammogram (FFDM, TOMO, SYNTH, DBT MIP, SFM)
         laterality: L (left), R (right), or B (bilateral)
         view_position: MLO, CC, etc.
         rows: Image height in pixels

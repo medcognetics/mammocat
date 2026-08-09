@@ -260,7 +260,7 @@ The codebase follows a clear separation of concerns:
   - `get_string_value()`, `get_int_value()`: Read tag values from DICOM
   - `get_lowercase_string()`: Get normalized lowercase string (reduces boilerplate)
   - `PIXEL_DATA_TAG`, `DICOM_MAGIC_BYTES`: Shared constants
-- `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/SFM detection) plus DBT object-kind detection
+- `mammo_type.rs`: Type classification logic (TOMO/FFDM/SYNTH/DBT MIP/SFM detection) plus DBT object-kind detection
 - `laterality.rs`: Laterality extraction with fallback hierarchy
 - `orientation.rs`: Exact conventional RCC/LCC/RMLO/LMLO PatientOrientation assessment with conflict detection and nullable axis-flip requirements
 - `view_position.rs`: Shared canonical view descriptor parsing and conflict diagnostics
@@ -327,9 +327,10 @@ The codebase follows a clear separation of concerns:
 
 ### Key Design Patterns
 
-**Configurable Preference Ordering**: The `PreferenceOrder` enum defines different strategies for ranking mammogram types during view selection. Two strategies are available:
-- `Default`: FFDM > SYNTH > TOMO > SFM - Prefers 2D images for general inference
-- `TomoFirst`: TOMO > FFDM > SYNTH > SFM - Maximizes use of 3D imaging when available
+**Configurable Preference Ordering**: The `PreferenceOrder` enum defines different strategies for ranking mammogram types during view selection. Three strategies are available:
+- `Default`: FFDM > SYNTH > DBT MIP > TOMO > SFM - Prefers 2D images for general inference
+- `TomoFirst`: TOMO > FFDM > SYNTH > DBT MIP > SFM - Maximizes use of 3D imaging when available
+- `Synthetic2dFirst`: SYNTH > FFDM > DBT MIP > TOMO > SFM - Prefers conventional synthetic 2D views
 
 MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the selected preference order. The selection algorithm (`get_preferred_views_with_order`) first chooses one study, then picks the best mammogram for each standard view (L-MLO, R-MLO, L-CC, R-CC) within that study.
 
@@ -342,6 +343,7 @@ MammogramRecord comparison uses `is_preferred_to_with_order()` to respect the se
 
 **Rule-Based Classification**: Mammogram type classification follows the ordered algorithm documented in `core/src/extraction/mammo_type.rs`. Rules are applied from strongest evidence to fallback rules, preserving Python-compatible behavior where applicable. Defaults to FFDM when ImageType fields are missing.
 Exact `ImageType` component `TOMO_2D` remains `Synth`; exact component `TOMO` is `Tomo` even for single-frame slice-per-file DBT. `TOMO_PROJ` is not treated as `TOMO`. Fuji-like single-frame `DERIVED\PRIMARY` objects with `VolumetricProperties=VOLUME`, allowed/absent `VolumeBasedCalculationTechnique`, concatenation/source-volume tags, and supporting tomosynthesis evidence are ambiguous in single-file extraction because vendors may copy those fields onto singleton synthetic 2D objects. Single-file `mammocat` reports those as `Unknown`/`DbtObjectKind::Unknown`; collection-aware selection and directory validation refine only large same-series ambiguous groups to `Tomo`/`Slice`, and leave ambiguous singleton objects unknown even when paired with a split-slice series. Tomosynthesis acquisition tags alone are not enough because Fuji FFDM and synthetic objects can carry them. `DbtObjectKind` records whether DBT is a multi-frame volume, single-frame slice, unknown DBT representation, or non-DBT.
+`DbtMip` is the general single-frame DBT-derived MIP category and remains in the 2D selection group as a fallback behind FFDM and SYNTH. Current recognition is limited to the known Laplacian signatures: exact legacy `LAPLACIAN_MIP` ImageType metadata, or the structured producer contract with Laplacian/MIP text, DCM MIP and edge-enhancement codes, and a Breast Tomosynthesis source reference. Classification must use metadata, never filenames. `DbtObjectKind` remains `None` for DBT MIPs because they are not DBT volume or slice storage objects.
 
 **Enum Combinators**: Laterality has a `reduce()` method for combining lateralities (e.g., LEFT + RIGHT → BILATERAL). ViewPosition has helper methods like `is_standard_view()`, `is_mlo_like()`, `is_cc_like()`.
 
@@ -361,7 +363,7 @@ Filtering flow:
 5. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
 6. Return best views from remaining candidates
 
-**Node Selection Defaults**: The Node API is annotator-focused by default. It selects only FFDM, synthesized 2D, and SFM records with `DbtObjectKind::None` for the standard CC/MLO slots, uses recursive directory discovery for `selectPreferredViewsFromDirectory()`, and returns JSON-safe camelCase DTOs with fixed `rcc`, `lcc`, `rmlo`, and `lmlo` keys. Unreadable inputs in bulk selection go to `inputErrors`; only invalid API argument shapes should throw.
+**Node Selection Defaults**: The Node API is annotator-focused by default. It selects FFDM, synthesized 2D, DBT MIP, and SFM records with `DbtObjectKind::None` for the standard CC/MLO slots, uses recursive directory discovery for `selectPreferredViewsFromDirectory()`, and returns JSON-safe camelCase DTOs with fixed `rcc`, `lcc`, `rmlo`, and `lmlo` keys. Unreadable inputs in bulk selection go to `inputErrors`; only invalid API argument shapes should throw.
 
 **Conventional Orientation Assessment**: RCC expects `P\L`, LCC `A\R`, RMLO `P\FL`, and LMLO `A\FR`. Compare each component only with the exact expected value or its complete anatomical inverse (`A`/`P`, `R`/`L`, `F`/`H`). Missing, empty, malformed, partial, reordered, unsupported, lowercase, or conflicting evidence is `indeterminate` with null flip flags. Non-standard views and unsupported conflict-free laterality are `not_applicable`. The standalone Rust, Python, and Node APIs must remain ungated by SOP Class, modality, and mammogram type. The assessment reports metadata only and must not imply that downstream pixel flips update spatial or derived attributes.
 
@@ -383,9 +385,9 @@ New metadata fields for filtering:
 ### Python Compatibility
 
 This implementation maintains behavioral compatibility with the Python `dicom-utils` library:
-- Classification algorithm in `mammo_type.rs` matches `dicom-utils/dicom_utils/types.py:159-195`
-- Type preference ordering preserved
-- Pattern matching behavior identical
+- Classification algorithm in `mammo_type.rs` preserves the `dicom-utils/dicom_utils/types.py:159-195` rules and adds Mammocat-specific DBT slice, ambiguity, and DBT MIP handling
+- Legacy type preference ordering is preserved around the added DBT MIP fallback
+- Python-compatible matching remains unchanged for the legacy TOMO, FFDM, SYNTH, and SFM rules
 - When making changes to classification logic, verify against Python reference
 
 ## Dependencies
