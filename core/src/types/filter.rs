@@ -258,7 +258,7 @@ impl FilterConfig {
     /// Builder: Require common modality across all selected views
     ///
     /// When enabled, enforces that all selected views come from the same
-    /// modality group: 2D (FFDM, SYNTH, SFM) or DBT (TOMO).
+    /// modality group: 2D (FFDM, SYNTH, DBT MIP, SFM) or DBT (TOMO).
     ///
     /// # Example
     ///

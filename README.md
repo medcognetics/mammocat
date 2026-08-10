@@ -4,7 +4,7 @@ A Rust library and CLI tool for extracting mammography metadata from DICOM files
 
 ## Features
 
-- **Mammogram Type Classification**: Automatically determines if a mammogram is TOMO, FFDM, SYNTH, or SFM
+- **Mammogram Type Classification**: Automatically determines if a mammogram is TOMO, FFDM, SYNTH, DBT MIP, or SFM
 - **DBT Object Classification**: Reports whether DBT is stored as a multi-frame volume or split slice object
 - **Laterality Detection**: Extracts breast laterality (Left/Right/Bilateral) with fallback hierarchy
 - **View Position Parsing**: Identifies view positions (CC, MLO, ML, etc.) with pattern matching
@@ -124,7 +124,7 @@ Select the best mammogram for each standard view (L-CC, R-CC, L-MLO, R-MLO) from
 # Select preferred views from the most complete study
 mammoselect /path/to/dicom_directory
 
-# Use tomo-first ordering (TOMO > FFDM > SYNTH > SFM)
+# Use tomo-first ordering (TOMO > FFDM > SYNTH > DBT MIP > SFM)
 mammoselect --preference tomo-first /path/to/directory
 
 # Error if usable records contain multiple studies or missing StudyInstanceUID
@@ -381,9 +381,11 @@ Mammograms are classified into types:
 - **TOMO**: Tomosynthesis/DBT imaging - detected by `NumberOfFrames > 1`, exact `ImageType` component `TOMO`, or collection refinement of ambiguous split-slice DBT series
 - **FFDM**: Full Field Digital Mammography - default for "ORIGINAL" images
 - **SYNTH**: Synthetic 2D from tomosynthesis - detected by series description, exact `ImageType` component `TOMO_2D`, or `GENERATED_2D` flag
+- **DBT MIP**: Single-frame maximum intensity projection derived from a DBT volume. Current recognition covers legacy `LAPLACIAN_MIP` ImageType metadata and the structured Laplacian producer contract using derivation codes and a DBT source reference
 - **SFM**: Screen Film Mammography - manually flagged
 
-`DbtObjectKind` separately reports whether TOMO objects are multi-frame `volume`, single-frame `slice`, or `unknown`; non-DBT images report `none`. Single-file extraction treats Fuji-like `DERIVED\PRIMARY` objects with `VolumetricProperties=VOLUME`, allowed/absent `VolumeBasedCalculationTechnique`, concatenation/source-volume tags, and supporting tomosynthesis evidence as `unknown` because some vendors copy those fields onto singleton synthetic 2D objects. Directory selection and validation refine only large same-series ambiguous groups to `Tomo`/`slice`; ambiguous singleton objects stay `unknown` even when they pair with a split-slice series. Tomosynthesis acquisition tags like `TomoClass`, source-image count, or processing text are supporting evidence only; tomo angle is not used as a classifier by itself.
+`DbtObjectKind` separately reports whether TOMO objects are multi-frame `volume`, single-frame `slice`, or `unknown`. DBT MIPs and other non-DBT storage objects report `none`. Single-file extraction treats Fuji-like `DERIVED\PRIMARY` objects with `VolumetricProperties=VOLUME`, allowed/absent `VolumeBasedCalculationTechnique`, concatenation/source-volume tags, and supporting tomosynthesis evidence as `unknown` because some vendors copy those fields onto singleton synthetic 2D objects. Directory selection and validation refine only large same-series ambiguous groups to `Tomo`/`slice`; ambiguous singleton objects stay `unknown` even when they pair with a split-slice series. Tomosynthesis acquisition tags like `TomoClass`, source-image count, or processing text are supporting evidence only; tomo angle is not used as a classifier by itself.
+DBT MIP recognition uses DICOM metadata only. Filenames are not classification evidence. The type is an eligible 2D fallback ranked after FFDM and SYNTH.
 `ImageType` component matching is exact: `TOMO_PROJ` is not treated as `TOMO`.
 
 ### Laterality
@@ -485,10 +487,10 @@ mammocat/
 
 ### Enums
 
-- **`MammogramType`**: Unknown, Tomo, Ffdm, Synth, Sfm
+- **`MammogramType`**: Unknown, Tomo, Ffdm, Synth, DbtMip, Sfm
   - Implements preference ordering for deduplication
   - `is_preferred_to()` method for comparison
-  - Machine-readable values are `unknown`, `tomo`, `ffdm`, `synth`, and `sfm`
+  - Machine-readable values are `unknown`, `tomo`, `ffdm`, `synth`, `dbt-mip`, and `sfm`
   - Human-readable display uses `s-view` for `Synth`; serialized output uses `synth`
 
 - **`DbtObjectKind`**: None, Volume, Slice, Unknown

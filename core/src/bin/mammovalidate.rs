@@ -158,6 +158,7 @@ enum MammogramTypeArg {
     Ffdm,
     Tomo,
     Synth,
+    DbtMip,
     Sfm,
 }
 
@@ -167,6 +168,7 @@ impl From<MammogramTypeArg> for MammogramType {
             MammogramTypeArg::Ffdm => MammogramType::Ffdm,
             MammogramTypeArg::Tomo => MammogramType::Tomo,
             MammogramTypeArg::Synth => MammogramType::Synth,
+            MammogramTypeArg::DbtMip => MammogramType::DbtMip,
             MammogramTypeArg::Sfm => MammogramType::Sfm,
         }
     }
@@ -558,6 +560,18 @@ mod tests {
         assert_eq!(allowed.len(), 2);
         assert!(allowed.contains(&DbtObjectKind::Volume));
         assert!(allowed.contains(&DbtObjectKind::Slice));
+    }
+
+    #[test]
+    fn build_validation_options_allows_dbt_mip_type() {
+        let args = Args::try_parse_from([TOOL_NAME, "--allowed-types", "dbt-mip", "/tmp"]).unwrap();
+
+        let options = build_validation_options(&args);
+
+        assert_eq!(
+            options.filter_config.allowed_types,
+            Some(HashSet::from([MammogramType::DbtMip]))
+        );
     }
 
     #[test]

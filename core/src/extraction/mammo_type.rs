@@ -1,14 +1,20 @@
 use crate::error::Result;
 use crate::types::{DbtObjectKind, ImageType, MammogramType};
+use dicom_dictionary_std::uids;
 use dicom_object::InMemDicomObject;
 
 use super::tags::{
     get_int_value, get_lowercase_string, get_multi_string_value, get_string_value,
-    ACQUISITION_DEVICE_PROCESSING_DESCRIPTION, CONCATENATION_UID, IMAGE_TYPE,
+    ACQUISITION_DEVICE_PROCESSING_DESCRIPTION, CODE_VALUE, CODING_SCHEME_DESIGNATOR,
+    CONCATENATION_UID, DERIVATION_CODE_SEQUENCE, DERIVATION_DESCRIPTION, IMAGE_TYPE,
     MANUFACTURER_MODEL_NAME, MODALITY, NUMBER_OF_FRAMES, NUMBER_OF_TOMOSYNTHESIS_SOURCE_IMAGES,
-    SERIES_DESCRIPTION, SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE, TOMO_CLASS,
-    VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
+    REFERENCED_SOP_CLASS_UID, SERIES_DESCRIPTION, SOP_INSTANCE_UID_OF_CONCATENATION_SOURCE,
+    SOURCE_IMAGE_SEQUENCE, TOMO_CLASS, VOLUMETRIC_PROPERTIES, VOLUME_BASED_CALCULATION_TECHNIQUE,
 };
+
+const DICOM_CODING_SCHEME: &str = "DCM";
+const MIP_DERIVATION_CODE: &str = "113078";
+const EDGE_ENHANCEMENT_DERIVATION_CODE: &str = "113086";
 
 /// Extracts mammogram type from DICOM file
 ///
@@ -22,13 +28,14 @@ use super::tags::{
 /// 3. Extract ImageType components (pixels, exam, flavor, extras)
 /// 4. Apply classification rules IN ORDER:
 ///    a) is_sfm flag → SFM
-///    b) SeriesDescription contains "s-view"/"c-view" → SYNTH
-///    c) exact ImageType component "TOMO_2D" → SYNTH
-///    d) extras contains "generated_2d" → SYNTH
-///    e) exact ImageType component "TOMO" → TOMO
-///    f) ambiguous single-frame volumetric tomo evidence → UNKNOWN
-///    g) pixels contains "ORIGINAL" → FFDM
-///    h) Machine-specific rule (fdr-3000aws) → SYNTH
+///    b) known DBT MIP signature → DBT MIP
+///    c) SeriesDescription contains "s-view"/"c-view" → SYNTH
+///    d) exact ImageType component "TOMO_2D" → SYNTH
+///    e) extras contains "generated_2d" → SYNTH
+///    f) exact ImageType component "TOMO" → TOMO
+///    g) ambiguous single-frame volumetric tomo evidence → UNKNOWN
+///    h) pixels contains "ORIGINAL" → FFDM
+///    i) Machine-specific rule (fdr-3000aws) → SYNTH
 /// 5. Default → FFDM
 pub fn extract_mammogram_type(dcm: &InMemDicomObject, is_sfm: bool) -> Result<MammogramType> {
     extract_mammogram_type_impl(dcm, is_sfm, false)
@@ -80,6 +87,10 @@ pub fn extract_mammogram_type_impl(
     // High-confidence explicit rules
     if is_sfm {
         return Ok(MammogramType::Sfm);
+    }
+
+    if is_known_dbt_mip(dcm, &img_type) {
+        return Ok(MammogramType::DbtMip);
     }
 
     if !series_desc.is_empty() && (series_desc.contains("s-view") || series_desc.contains("c-view"))
@@ -189,6 +200,71 @@ fn image_type_component_eq(img_type: &ImageType, expected: &str) -> bool {
             .is_some_and(|extras| extras.iter().any(|extra| component_eq(extra, expected)))
 }
 
+fn is_known_dbt_mip(dcm: &InMemDicomObject, img_type: &ImageType) -> bool {
+    image_type_component_eq(img_type, "laplacian_mip")
+        || is_current_laplacian_dbt_mip(dcm, img_type)
+}
+
+fn is_current_laplacian_dbt_mip(dcm: &InMemDicomObject, img_type: &ImageType) -> bool {
+    component_eq(&img_type.pixels, "derived")
+        && has_laplacian_mip_description(dcm)
+        && coded_sequence_contains(dcm, DERIVATION_CODE_SEQUENCE, MIP_DERIVATION_CODE)
+        && coded_sequence_contains(
+            dcm,
+            DERIVATION_CODE_SEQUENCE,
+            EDGE_ENHANCEMENT_DERIVATION_CODE,
+        )
+        && sequence_references_sop_class(
+            dcm,
+            SOURCE_IMAGE_SEQUENCE,
+            uids::BREAST_TOMOSYNTHESIS_IMAGE_STORAGE,
+        )
+}
+
+fn has_laplacian_mip_description(dcm: &InMemDicomObject) -> bool {
+    [SERIES_DESCRIPTION, DERIVATION_DESCRIPTION]
+        .into_iter()
+        .filter_map(|tag| get_string_value(dcm, tag))
+        .any(|value| {
+            let value = value.to_lowercase();
+            value.contains("laplacian")
+                && (contains_exact_token(&value, "mip")
+                    || value.contains("maximum intensity projection"))
+        })
+}
+
+fn coded_sequence_contains(
+    dcm: &InMemDicomObject,
+    sequence_tag: dicom_core::Tag,
+    code: &str,
+) -> bool {
+    dcm.element(sequence_tag)
+        .ok()
+        .and_then(|element| element.items())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                get_string_value(item, CODING_SCHEME_DESIGNATOR)
+                    .is_some_and(|scheme| scheme.eq_ignore_ascii_case(DICOM_CODING_SCHEME))
+                    && get_string_value(item, CODE_VALUE).as_deref() == Some(code)
+            })
+        })
+}
+
+fn sequence_references_sop_class(
+    dcm: &InMemDicomObject,
+    sequence_tag: dicom_core::Tag,
+    sop_class_uid: &str,
+) -> bool {
+    dcm.element(sequence_tag)
+        .ok()
+        .and_then(|element| element.items())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                get_string_value(item, REFERENCED_SOP_CLASS_UID).as_deref() == Some(sop_class_uid)
+            })
+        })
+}
+
 fn component_eq(value: &str, expected: &str) -> bool {
     value.trim().eq_ignore_ascii_case(expected)
 }
@@ -274,12 +350,20 @@ fn contains_exact_token(value: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dicom_core::value::DataSetSequence;
     use dicom_core::Tag;
     use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::uids;
     use dicom_object::InMemDicomObject;
 
     const FUJI_SPLIT_SLICE_IMAGE_TYPE: &str = "DERIVED|PRIMARY";
     const FUJI_SYNTH_IMAGE_TYPE: &str = "DERIVED|PRIMARY|TOMOSYNTHESIS|GENERATED_2D|||||100000";
+    const DERIVATION_DESCRIPTION: Tag = Tag(0x0008, 0x2111);
+    const SOURCE_IMAGE_SEQUENCE: Tag = Tag(0x0008, 0x2112);
+    const REFERENCED_SOP_CLASS_UID: Tag = Tag(0x0008, 0x1150);
+    const DERIVATION_CODE_SEQUENCE: Tag = Tag(0x0008, 0x9215);
+    const CODE_VALUE: Tag = Tag(0x0008, 0x0100);
+    const CODING_SCHEME_DESIGNATOR: Tag = Tag(0x0008, 0x0102);
 
     /// Helper to create a minimal DICOM object for testing
     fn create_test_dicom(image_type: &str, modality: &str) -> InMemDicomObject {
@@ -313,6 +397,52 @@ mod tests {
 
     fn put_frames(dcm: &mut InMemDicomObject, frames: &str) {
         put_str(dcm, NUMBER_OF_FRAMES, VR::IS, frames);
+    }
+
+    fn coded_item(code_value: &str) -> InMemDicomObject {
+        let mut item = InMemDicomObject::new_empty();
+        put_str(&mut item, CODE_VALUE, VR::SH, code_value);
+        put_str(&mut item, CODING_SCHEME_DESIGNATOR, VR::SH, "DCM");
+        item
+    }
+
+    fn put_sequence(dcm: &mut InMemDicomObject, tag: Tag, items: Vec<InMemDicomObject>) {
+        dcm.put(DataElement::new(tag, VR::SQ, DataSetSequence::from(items)));
+    }
+
+    fn add_current_laplacian_mip_evidence(dcm: &mut InMemDicomObject) {
+        add_laplacian_mip_descriptions(dcm);
+        add_derivation_codes(dcm, &["113078", "113086"]);
+        add_source_sop_class(dcm, uids::BREAST_TOMOSYNTHESIS_IMAGE_STORAGE);
+    }
+
+    fn add_laplacian_mip_descriptions(dcm: &mut InMemDicomObject) {
+        put_str(
+            dcm,
+            SERIES_DESCRIPTION,
+            VR::LO,
+            "Laplacian MIP synthetic 2D",
+        );
+        put_str(
+            dcm,
+            DERIVATION_DESCRIPTION,
+            VR::ST,
+            "Laplacian-weighted maximum intensity projection of a DBT volume",
+        );
+    }
+
+    fn add_derivation_codes(dcm: &mut InMemDicomObject, codes: &[&str]) {
+        put_sequence(
+            dcm,
+            DERIVATION_CODE_SEQUENCE,
+            codes.iter().map(|code| coded_item(code)).collect(),
+        );
+    }
+
+    fn add_source_sop_class(dcm: &mut InMemDicomObject, sop_class_uid: &str) {
+        let mut source = InMemDicomObject::new_empty();
+        put_str(&mut source, REFERENCED_SOP_CLASS_UID, VR::UI, sop_class_uid);
+        put_sequence(dcm, SOURCE_IMAGE_SEQUENCE, vec![source]);
     }
 
     fn add_split_slice_core_evidence(dcm: &mut InMemDicomObject) {
@@ -363,6 +493,87 @@ mod tests {
         let dcm = create_test_dicom("DERIVED|PRIMARY|tomo_2d", "MG");
         let result = extract_mammogram_type(&dcm, false).unwrap();
         assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn legacy_laplacian_mip_image_type_classifies_as_dbt_mip() {
+        let dcm = create_test_dicom("DERIVED|PRIMARY|LAPLACIAN_MIP", "MG");
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result.serialized_name(), "dbt-mip");
+        assert_eq!(extract_dbt_object_kind(&dcm, result), DbtObjectKind::None);
+    }
+
+    #[test]
+    fn structured_laplacian_mip_contract_classifies_as_dbt_mip() {
+        let mut dcm = create_test_dicom(FUJI_SYNTH_IMAGE_TYPE, "MG");
+        add_current_laplacian_mip_evidence(&mut dcm);
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result.serialized_name(), "dbt-mip");
+        assert_eq!(extract_dbt_object_kind(&dcm, result), DbtObjectKind::None);
+    }
+
+    #[test]
+    fn laplacian_mip_text_without_structured_evidence_remains_synth() {
+        let mut dcm = create_test_dicom(FUJI_SYNTH_IMAGE_TYPE, "MG");
+        add_laplacian_mip_descriptions(&mut dcm);
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn laplacian_mip_without_edge_enhancement_code_remains_synth() {
+        let mut dcm = create_test_dicom(FUJI_SYNTH_IMAGE_TYPE, "MG");
+        add_laplacian_mip_descriptions(&mut dcm);
+        add_derivation_codes(&mut dcm, &["113078"]);
+        add_source_sop_class(&mut dcm, uids::BREAST_TOMOSYNTHESIS_IMAGE_STORAGE);
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn laplacian_mip_without_mip_code_remains_synth() {
+        let mut dcm = create_test_dicom(FUJI_SYNTH_IMAGE_TYPE, "MG");
+        add_laplacian_mip_descriptions(&mut dcm);
+        add_derivation_codes(&mut dcm, &["113086"]);
+        add_source_sop_class(&mut dcm, uids::BREAST_TOMOSYNTHESIS_IMAGE_STORAGE);
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn laplacian_mip_with_non_dbt_source_remains_synth() {
+        let mut dcm = create_test_dicom(FUJI_SYNTH_IMAGE_TYPE, "MG");
+        add_laplacian_mip_descriptions(&mut dcm);
+        add_derivation_codes(&mut dcm, &["113078", "113086"]);
+        add_source_sop_class(
+            &mut dcm,
+            uids::DIGITAL_MAMMOGRAPHY_X_RAY_IMAGE_STORAGE_FOR_PRESENTATION,
+        );
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result, MammogramType::Synth);
+    }
+
+    #[test]
+    fn multiframe_laplacian_mip_remains_tomo() {
+        let mut dcm = create_test_dicom("DERIVED|PRIMARY|LAPLACIAN_MIP", "MG");
+        put_frames(&mut dcm, "10");
+
+        let result = extract_mammogram_type(&dcm, false).unwrap();
+
+        assert_eq!(result, MammogramType::Tomo);
+        assert_eq!(extract_dbt_object_kind(&dcm, result), DbtObjectKind::Volume);
     }
 
     #[test]

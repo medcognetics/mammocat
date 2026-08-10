@@ -380,6 +380,7 @@ fn views_filter() -> FilterConfig {
     let allowed_types = HashSet::from([
         MammogramType::Ffdm,
         MammogramType::Synth,
+        MammogramType::DbtMip,
         MammogramType::Sfm,
     ]);
     let allowed_dbt_object_kinds = HashSet::from([DbtObjectKind::None]);
@@ -956,6 +957,65 @@ mod tests {
             .contains(&FILTER_REASON_ALLOWED_DBT_OBJECT_KINDS.to_string()));
         assert_eq!(slice_diag.status, SOURCE_STATUS_EXCLUDED);
         assert_eq!(plan.summary.views_selected, 1);
+    }
+
+    #[test]
+    fn views_plan_includes_dbt_mip_as_a_2d_fallback() {
+        let records = vec![make_record(
+            "dbt_mip.dcm",
+            Laterality::Right,
+            ViewPosition::Cc,
+            MammogramType::DbtMip,
+            DbtObjectKind::None,
+        )];
+
+        let plan = build_mammography_plan(
+            Path::new("."),
+            records.len(),
+            records,
+            None,
+            Vec::new(),
+            test_options(MammographyPlanSelection::include_2d_only()),
+        )
+        .unwrap();
+
+        let selected = &plan.views.as_ref().unwrap().selected_views["rcc"];
+        assert_eq!(selected.source_path.as_deref(), Some("dbt_mip.dcm"));
+        assert_eq!(selected.mammogram_type.as_deref(), Some("dbt-mip"));
+        assert_eq!(selected.dbt_object_kind.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn views_plan_prefers_synth_over_dbt_mip() {
+        let records = vec![
+            make_record(
+                "dbt_mip.dcm",
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::DbtMip,
+                DbtObjectKind::None,
+            ),
+            make_record(
+                "synth.dcm",
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Synth,
+                DbtObjectKind::None,
+            ),
+        ];
+
+        let plan = build_mammography_plan(
+            Path::new("."),
+            records.len(),
+            records,
+            None,
+            Vec::new(),
+            test_options(MammographyPlanSelection::include_2d_only()),
+        )
+        .unwrap();
+
+        let selected = &plan.views.as_ref().unwrap().selected_views["rcc"];
+        assert_eq!(selected.source_path.as_deref(), Some("synth.dcm"));
     }
 
     #[test]

@@ -170,6 +170,17 @@ class TestMammogramExtractor:
         assert metadata.mammogram_type.value == "synth"
         assert str(metadata.mammogram_type) == "s-view"
 
+    def test_dbt_mip_fixture_uses_legacy_signature(self, fixtures_dir, mammogram_dicom_factory):
+        dicom_path = fixtures_dir / "dbt_mip.dcm"
+        ds = mammogram_dicom_factory(mammogram_type="DBT_MIP")
+        ds.save_as(dicom_path, enforce_file_format=True)
+
+        metadata = MammogramExtractor.extract_from_file(dicom_path)
+
+        assert metadata.mammogram_type == MammogramType.DBT_MIP
+        assert metadata.dbt_object_kind == DbtObjectKind.NONE
+        assert list(ds.ImageType) == ["DERIVED", "PRIMARY", "LAPLACIAN_MIP"]
+
     def test_canonical_nested_modifiers_are_exposed(self, fixtures_dir, mammogram_dicom_factory):
         path = fixtures_dir / "canonical_modifiers.dcm"
         ds = mammogram_dicom_factory(

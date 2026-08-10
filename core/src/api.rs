@@ -309,7 +309,7 @@ fn compression_type_from_name(name: &str) -> &'static str {
 /// Contains all the key metadata fields extracted from a mammography DICOM file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MammogramMetadata {
-    /// Mammogram type (TOMO, FFDM, SYNTH, SFM, or UNKNOWN)
+    /// Mammogram type (TOMO, FFDM, SYNTH, DBT MIP, SFM, or UNKNOWN)
     pub mammogram_type: MammogramType,
 
     /// DBT object representation (volume, slice, unknown, or none)

@@ -68,6 +68,16 @@ test("synthesized metadata uses the canonical machine value", () => {
   assert.equal(metadata.mammogramType, "synth")
 })
 
+test("DBT MIP metadata uses the canonical machine value", () => {
+  const metadata = extractMetadata({
+    bytes: createMammogramBytes({ mammogramType: "DBT_MIP" }),
+    filename: "dbt_mip.dcm",
+  })
+
+  assert.equal(metadata.mammogramType, "dbt-mip")
+  assert.equal(metadata.dbtObjectKind, "none")
+})
+
 test("file path and byte inputs produce matching metadata", async (t) => {
   const directory = await tempDir()
   const path = await writeMammogramFile(directory, "r_cc.dcm", {
@@ -220,6 +230,24 @@ test("TOMO inputs are excluded from default 2D annotation selection", () => {
   assert.equal(selection.candidates[0].status, "excluded")
   assert.ok(selection.candidates[0].filterReasons.includes("allowedTypes"))
   assert.ok(selection.candidates[0].filterReasons.includes("allowedDbtObjectKinds"))
+})
+
+test("DBT MIPs remain eligible for default 2D annotation selection", () => {
+  const selection = selectPreferredViews([
+    {
+      bytes: createMammogramBytes({
+        mammogramType: "DBT_MIP",
+        laterality: "R",
+        viewPosition: "CC",
+      }),
+      filename: "rcc_dbt_mip.dcm",
+    },
+  ])
+
+  assert.equal(selection.views.rcc?.source, "rcc_dbt_mip.dcm")
+  assert.equal(selection.views.rcc?.metadata.mammogramType, "dbt-mip")
+  assert.equal(selection.candidates[0].status, "selected")
+  assert.deepEqual(selection.candidates[0].filterReasons, [])
 })
 
 test("tomo-first can select TOMO inputs explicitly", () => {

@@ -144,6 +144,8 @@ function sequenceItem(dataset) {
 
 function imageTypeForMammogramType(mammogramType) {
   switch (mammogramType) {
+    case "DBT_MIP":
+      return "DERIVED\\PRIMARY\\LAPLACIAN_MIP"
     case "SYNTH":
       return "DERIVED\\PRIMARY\\TOMO_2D"
     case "TOMO":
@@ -154,6 +156,7 @@ function imageTypeForMammogramType(mammogramType) {
 }
 
 function seriesDescriptionForMammogramType(mammogramType) {
+  if (mammogramType === "DBT_MIP") return "Laplacian MIP DBT reduction"
   return mammogramType === "SYNTH" ? "Synthetic 2D s-view" : "Mammography"
 }
 

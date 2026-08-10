@@ -30,6 +30,8 @@ def _apply_mammogram_type(ds: Dataset, mammogram_type: str) -> None:
     elif mammogram_type == "SYNTH":
         ds.ImageType = ["DERIVED", "SECONDARY", ""]
         ds.PresentationIntentType = "FOR PROCESSING"
+    elif mammogram_type == "DBT_MIP":
+        ds.ImageType = ["DERIVED", "PRIMARY", "LAPLACIAN_MIP"]
     elif mammogram_type == "SFM":
         ds.ImageType = ["ORIGINAL", "PRIMARY", ""]
         # SFM is identified by manufacturer-specific fields or absence of digital indicators
@@ -56,7 +58,7 @@ def create_mammogram_dicom(
     """Create a synthetic mammography DICOM dataset.
 
     Args:
-        mammogram_type: Type of mammogram (FFDM, TOMO, SYNTH, SFM)
+        mammogram_type: Type of mammogram (FFDM, TOMO, SYNTH, DBT_MIP, SFM)
         laterality: L (left), R (right), or B (bilateral)
         view_position: MLO, CC, etc.
         rows: Image height in pixels

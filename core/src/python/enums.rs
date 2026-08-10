@@ -39,6 +39,10 @@ impl PyMammogramType {
         inner: MammogramType::Synth,
     };
     #[classattr]
+    const DBT_MIP: Self = Self {
+        inner: MammogramType::DbtMip,
+    };
+    #[classattr]
     const SFM: Self = Self {
         inner: MammogramType::Sfm,
     };
