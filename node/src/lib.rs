@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -7,7 +7,9 @@ use mammocat_core::{
     assess_conventional_orientation as assess_core_conventional_orientation,
     collect_dicom_files_recursively, get_preferred_views_filtered_with_study_mode_and_warnings,
     DbtObjectKind, FilterConfig, Laterality, MammogramRecord as CoreMammogramRecord, MammogramType,
-    MammogramView, PreferenceOrder, StudySelectionMode, ViewPosition,
+    MammogramView, MammographyViewModifier, PreferenceOrder, StudySelectionMode,
+    ViewFallbackPolicy as CoreViewFallbackPolicy, ViewModifierPolicy as CoreViewModifierPolicy,
+    ViewPosition,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -27,6 +29,26 @@ pub struct SelectionOptions {
     #[napi(ts_type = "\"default\" | \"synthetic-2d-first\" | \"tomo-first\"")]
     pub preference_order: Option<String>,
     pub strict: Option<bool>,
+    pub view_fallback_policy: Option<ViewFallbackPolicy>,
+    pub view_modifier_policy: Option<ViewModifierPolicy>,
+}
+
+#[napi(object)]
+pub struct ViewFallbackPolicy {
+    #[napi(ts_type = "\"all-recognized\" | \"standard-only\" | \"allow-list\"")]
+    pub mode: String,
+    #[napi(ts_type = "(\"ml\" | \"lm\" | \"lmo\" | \"xccl\" | \"xccm\")[]")]
+    pub allowed_views: Option<Vec<String>>,
+}
+
+#[napi(object)]
+pub struct ViewModifierPolicy {
+    #[napi(ts_type = "\"all-recognized\" | \"unmodified-only\" | \"allow-list\"")]
+    pub mode: String,
+    #[napi(
+        ts_type = "(\"cleavage\" | \"axillary-tail\" | \"rolled-lateral\" | \"rolled-medial\" | \"rolled-inferior\" | \"rolled-superior\" | \"implant-displaced\" | \"magnification\" | \"spot-compression\" | \"tangential\" | \"nipple-in-profile\" | \"anterior-compression\" | \"infra-mammary-fold\" | \"axillary-tissue\")[]"
+    )]
+    pub allowed_modifiers: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -297,7 +319,7 @@ fn build_selection(
     options: Option<SelectionOptions>,
 ) -> Result<PreferredViewSelection> {
     let preference_order = preference_order_from_options(options.as_ref())?;
-    let filter_config = views_filter(preference_order);
+    let filter_config = views_filter(preference_order, options.as_ref())?;
     let study_selection_mode = StudySelectionMode::from_strict(
         options
             .as_ref()
@@ -371,7 +393,10 @@ fn empty_selection(
     }
 }
 
-fn views_filter(preference_order: PreferenceOrder) -> FilterConfig {
+fn views_filter(
+    preference_order: PreferenceOrder,
+    options: Option<&SelectionOptions>,
+) -> Result<FilterConfig> {
     let allowed_types = match preference_order {
         PreferenceOrder::TomoFirst => HashSet::from([
             MammogramType::Ffdm,
@@ -399,9 +424,119 @@ fn views_filter(preference_order: PreferenceOrder) -> FilterConfig {
         }
     };
 
-    FilterConfig::default()
+    Ok(FilterConfig::default()
         .with_allowed_types(allowed_types)
         .with_allowed_dbt_object_kinds(allowed_dbt_object_kinds)
+        .with_view_fallback_policy(view_fallback_policy_from_options(options)?)
+        .with_view_modifier_policy(view_modifier_policy_from_options(options)?))
+}
+
+fn view_fallback_policy_from_options(
+    options: Option<&SelectionOptions>,
+) -> Result<CoreViewFallbackPolicy> {
+    let Some(policy) = options.and_then(|options| options.view_fallback_policy.as_ref()) else {
+        return Ok(CoreViewFallbackPolicy::AllRecognized);
+    };
+    match policy.mode.as_str() {
+        "all-recognized" => {
+            require_omitted(&policy.allowed_views, "allowedViews", &policy.mode)?;
+            Ok(CoreViewFallbackPolicy::AllRecognized)
+        }
+        "standard-only" => {
+            require_omitted(&policy.allowed_views, "allowedViews", &policy.mode)?;
+            Ok(CoreViewFallbackPolicy::StandardOnly)
+        }
+        "allow-list" => {
+            let values = policy.allowed_views.as_ref().ok_or_else(|| {
+                invalid_arg("allowedViews is required when viewFallbackPolicy.mode is allow-list")
+            })?;
+            let allowed = values
+                .iter()
+                .map(|value| parse_fallback_view(value))
+                .collect::<Result<BTreeSet<_>>>()?;
+            Ok(CoreViewFallbackPolicy::AllowList(allowed))
+        }
+        value => Err(invalid_arg(format!(
+            "Unsupported viewFallbackPolicy mode '{value}'. Expected all-recognized, standard-only, or allow-list"
+        ))),
+    }
+}
+
+fn view_modifier_policy_from_options(
+    options: Option<&SelectionOptions>,
+) -> Result<CoreViewModifierPolicy> {
+    let Some(policy) = options.and_then(|options| options.view_modifier_policy.as_ref()) else {
+        return Ok(CoreViewModifierPolicy::AllRecognized);
+    };
+    match policy.mode.as_str() {
+        "all-recognized" => {
+            require_omitted(&policy.allowed_modifiers, "allowedModifiers", &policy.mode)?;
+            Ok(CoreViewModifierPolicy::AllRecognized)
+        }
+        "unmodified-only" => {
+            require_omitted(&policy.allowed_modifiers, "allowedModifiers", &policy.mode)?;
+            Ok(CoreViewModifierPolicy::UnmodifiedOnly)
+        }
+        "allow-list" => {
+            let values = policy.allowed_modifiers.as_ref().ok_or_else(|| {
+                invalid_arg(
+                    "allowedModifiers is required when viewModifierPolicy.mode is allow-list",
+                )
+            })?;
+            let allowed = values
+                .iter()
+                .map(|value| parse_view_modifier(value))
+                .collect::<Result<BTreeSet<_>>>()?;
+            Ok(CoreViewModifierPolicy::AllowList(allowed))
+        }
+        value => Err(invalid_arg(format!(
+            "Unsupported viewModifierPolicy mode '{value}'. Expected all-recognized, unmodified-only, or allow-list"
+        ))),
+    }
+}
+
+fn require_omitted<T>(value: &Option<T>, field: &str, mode: &str) -> Result<()> {
+    if value.is_some() {
+        return Err(invalid_arg(format!(
+            "{field} must be omitted when policy mode is {mode}"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_fallback_view(value: &str) -> Result<ViewPosition> {
+    match value {
+        "ml" => Ok(ViewPosition::Ml),
+        "lm" => Ok(ViewPosition::Lm),
+        "lmo" => Ok(ViewPosition::Lmo),
+        "xccl" => Ok(ViewPosition::Xccl),
+        "xccm" => Ok(ViewPosition::Xccm),
+        value => Err(invalid_arg(format!(
+            "Unsupported fallback view '{value}'. Expected ml, lm, lmo, xccl, or xccm"
+        ))),
+    }
+}
+
+fn parse_view_modifier(value: &str) -> Result<MammographyViewModifier> {
+    match value {
+        "cleavage" => Ok(MammographyViewModifier::Cleavage),
+        "axillary-tail" => Ok(MammographyViewModifier::AxillaryTail),
+        "rolled-lateral" => Ok(MammographyViewModifier::RolledLateral),
+        "rolled-medial" => Ok(MammographyViewModifier::RolledMedial),
+        "rolled-inferior" => Ok(MammographyViewModifier::RolledInferior),
+        "rolled-superior" => Ok(MammographyViewModifier::RolledSuperior),
+        "implant-displaced" => Ok(MammographyViewModifier::ImplantDisplaced),
+        "magnification" => Ok(MammographyViewModifier::Magnification),
+        "spot-compression" => Ok(MammographyViewModifier::SpotCompression),
+        "tangential" => Ok(MammographyViewModifier::Tangential),
+        "nipple-in-profile" => Ok(MammographyViewModifier::NippleInProfile),
+        "anterior-compression" => Ok(MammographyViewModifier::AnteriorCompression),
+        "infra-mammary-fold" => Ok(MammographyViewModifier::InfraMammaryFold),
+        "axillary-tissue" => Ok(MammographyViewModifier::AxillaryTissue),
+        value => Err(invalid_arg(format!(
+            "Unsupported view modifier '{value}'. Expected a recognized CID 4015 modifier"
+        ))),
+    }
 }
 
 fn preference_order_from_options(options: Option<&SelectionOptions>) -> Result<PreferenceOrder> {
@@ -527,8 +662,17 @@ fn filter_reasons(record: &CoreMammogramRecord, filter_config: &FilterConfig) ->
     if filter_config.exclude_implants && record.metadata.has_implant {
         reasons.push("excludeImplants".to_string());
     }
-    if filter_config.exclude_non_standard_views && !record.metadata.is_standard_view() {
-        reasons.push("excludeNonStandardViews".to_string());
+    if !filter_config
+        .view_fallback_policy
+        .allows(record.metadata.view_position)
+    {
+        reasons.push("viewFallbackPolicy".to_string());
+    }
+    if !filter_config
+        .view_modifier_policy
+        .allows(&record.metadata.view_modifiers)
+    {
+        reasons.push("viewModifierPolicy".to_string());
     }
     if filter_config.exclude_for_processing && record.metadata.is_for_processing {
         reasons.push("excludeForProcessing".to_string());

@@ -366,6 +366,35 @@ def validate_directory(
 ) -> dict[str, Any]:
     """Validate a DICOM directory or ZIP archive and report preferred-view coverage."""
 
+# View filtering policies
+class ViewFallbackPolicy:
+    """Controls which non-standard views may fill standard CC and MLO slots."""
+    @staticmethod
+    def all_recognized() -> ViewFallbackPolicy: ...
+    @staticmethod
+    def standard_only() -> ViewFallbackPolicy: ...
+    @staticmethod
+    def allow_list(views: list[ViewPosition]) -> ViewFallbackPolicy: ...
+    @property
+    def mode(self) -> Literal["all_recognized", "standard_only", "allow_list"]: ...
+    @property
+    def allowed_views(self) -> list[ViewPosition] | None: ...
+    def __repr__(self) -> str: ...
+
+class ViewModifierPolicy:
+    """Controls which recognized CID 4015 view modifiers are eligible."""
+    @staticmethod
+    def all_recognized() -> ViewModifierPolicy: ...
+    @staticmethod
+    def unmodified_only() -> ViewModifierPolicy: ...
+    @staticmethod
+    def allow_list(modifiers: list[MammographyViewModifier]) -> ViewModifierPolicy: ...
+    @property
+    def mode(self) -> Literal["all_recognized", "unmodified_only", "allow_list"]: ...
+    @property
+    def allowed_modifiers(self) -> list[MammographyViewModifier] | None: ...
+    def __repr__(self) -> str: ...
+
 # Filter configuration
 class FilterConfig:
     """Configuration for filtering mammogram records during selection."""
@@ -373,7 +402,8 @@ class FilterConfig:
         self,
         allowed_types: list[MammogramType] | None = None,
         exclude_implants: bool = False,
-        exclude_non_standard_views: bool = False,
+        view_fallback_policy: ViewFallbackPolicy | None = None,
+        view_modifier_policy: ViewModifierPolicy | None = None,
         exclude_for_processing: bool = True,
         exclude_secondary_capture: bool = True,
         exclude_non_mg_modality: bool = True,
@@ -393,7 +423,9 @@ class FilterConfig:
     @property
     def exclude_implants(self) -> bool: ...
     @property
-    def exclude_non_standard_views(self) -> bool: ...
+    def view_fallback_policy(self) -> ViewFallbackPolicy: ...
+    @property
+    def view_modifier_policy(self) -> ViewModifierPolicy: ...
     @property
     def exclude_for_processing(self) -> bool: ...
     @property

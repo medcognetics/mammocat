@@ -1,6 +1,7 @@
 """Tests for mammocat main API (requires DICOM fixtures)."""
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -15,6 +16,9 @@ from mammocat import (
     MammographyViewModifier,
     PreferenceOrder,
     SelectionError,
+    ViewFallbackPolicy,
+    ViewModifierPolicy,
+    ViewPosition,
     assess_conventional_orientation,
     get_preferred_views,
     get_preferred_views_filtered,
@@ -602,13 +606,114 @@ class TestFilterConfig:
         assert config.allowed_types is None
         assert config.allowed_dbt_object_kinds is None
         assert config.exclude_implants is False
-        assert config.exclude_non_standard_views is False
+        assert config.view_fallback_policy == ViewFallbackPolicy.all_recognized()
+        assert config.view_modifier_policy == ViewModifierPolicy.all_recognized()
         assert config.exclude_for_processing is True
         assert config.exclude_secondary_capture is True
         assert config.exclude_non_mg_modality is True
         assert config.require_common_modality is False
         assert config.exclude_lossy_compressed is False
         assert config.deprioritize_lossy_compressed is True
+
+    def test_policy_factories_and_filter_config(self):
+        fallback_policy = ViewFallbackPolicy.allow_list([ViewPosition.ML, ViewPosition.XCCM])
+        modifier_policy = ViewModifierPolicy.allow_list(
+            [
+                MammographyViewModifier.SPOT_COMPRESSION,
+                MammographyViewModifier.IMPLANT_DISPLACED,
+            ]
+        )
+
+        config = FilterConfig(
+            view_fallback_policy=fallback_policy,
+            view_modifier_policy=modifier_policy,
+        )
+
+        assert config.view_fallback_policy == fallback_policy
+        assert config.view_modifier_policy == modifier_policy
+        assert set(fallback_policy.allowed_views or []) == {ViewPosition.ML, ViewPosition.XCCM}
+        assert set(modifier_policy.allowed_modifiers or []) == {
+            MammographyViewModifier.SPOT_COMPRESSION,
+            MammographyViewModifier.IMPLANT_DISPLACED,
+        }
+
+    def test_policy_modes(self):
+        assert ViewFallbackPolicy.all_recognized().mode == "all_recognized"
+        assert ViewFallbackPolicy.standard_only().mode == "standard_only"
+        assert ViewModifierPolicy.all_recognized().mode == "all_recognized"
+        assert ViewModifierPolicy.unmodified_only().mode == "unmodified_only"
+
+    def test_fallback_allow_list_rejects_non_fallback_positions(self):
+        with pytest.raises(ValueError, match="supported fallback"):
+            ViewFallbackPolicy.allow_list([ViewPosition.FB])
+
+    def test_removed_non_standard_filter_argument_is_rejected(self):
+        unchecked_filter_config = cast(Any, FilterConfig)
+        with pytest.raises(TypeError, match="exclude_non_standard_views"):
+            unchecked_filter_config(exclude_non_standard_views=True)
+
+    def test_fallback_policy_controls_python_selection(self, tmp_path, mammogram_dicom_factory):
+        path = _write_test_dicom(
+            tmp_path,
+            mammogram_dicom_factory,
+            filename="left_ml.dcm",
+            study_uid="1.2.826.0.1.3680043.10.100",
+            sop_suffix="1",
+            laterality="L",
+            view_position="ML",
+        )
+        record = MammogramRecord.from_file(str(path))
+
+        standard_only = get_preferred_views_filtered(
+            [record],
+            FilterConfig(
+                view_fallback_policy=ViewFallbackPolicy.standard_only(),
+                exclude_for_processing=False,
+            ),
+            PreferenceOrder.DEFAULT,
+        )
+        ml_allowed = get_preferred_views_filtered(
+            [record],
+            FilterConfig(
+                view_fallback_policy=ViewFallbackPolicy.allow_list([ViewPosition.ML]),
+                exclude_for_processing=False,
+            ),
+            PreferenceOrder.DEFAULT,
+        )
+
+        assert all(selected is None for selected in standard_only.values())
+        assert any(selected is not None for selected in ml_allowed.values())
+
+    def test_modifier_policy_controls_python_selection(self, tmp_path, mammogram_dicom_factory):
+        path = tmp_path / "left_mlo_spot.dcm"
+        mammogram_dicom_factory(
+            laterality="L",
+            view_position="MLO",
+            is_spot_compression=True,
+        ).save_as(path, enforce_file_format=True)
+        record = MammogramRecord.from_file(str(path))
+
+        unmodified_only = get_preferred_views_filtered(
+            [record],
+            FilterConfig(
+                view_modifier_policy=ViewModifierPolicy.unmodified_only(),
+                exclude_for_processing=False,
+            ),
+            PreferenceOrder.DEFAULT,
+        )
+        spot_allowed = get_preferred_views_filtered(
+            [record],
+            FilterConfig(
+                view_modifier_policy=ViewModifierPolicy.allow_list(
+                    [MammographyViewModifier.SPOT_COMPRESSION]
+                ),
+                exclude_for_processing=False,
+            ),
+            PreferenceOrder.DEFAULT,
+        )
+
+        assert all(selected is None for selected in unmodified_only.values())
+        assert any(selected is not None for selected in spot_allowed.values())
 
     def test_lossy_compression_options(self):
         """Test FilterConfig lossy compression options."""

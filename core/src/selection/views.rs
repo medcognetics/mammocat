@@ -467,8 +467,19 @@ fn apply_filters(records: &[MammogramRecord], config: &FilterConfig) -> Vec<Mamm
                 return false;
             }
 
-            // Filter: Exclude non-standard views
-            if config.exclude_non_standard_views && !record.metadata.is_standard_view() {
+            // Filter: View fallback admission
+            if !config
+                .view_fallback_policy
+                .allows(record.metadata.view_position)
+            {
+                return false;
+            }
+
+            // Filter: Recognized view modifier admission
+            if !config
+                .view_modifier_policy
+                .allows(&record.metadata.view_modifiers)
+            {
                 return false;
             }
 
@@ -962,8 +973,9 @@ mod tests {
     use crate::error::MammocatError;
     use crate::types::{
         DbtObjectKind, ImageType, Laterality, MammogramType, MammographyViewModifier,
-        PreferenceOrder, ViewPosition,
+        PreferenceOrder, ViewFallbackPolicy, ViewModifierPolicy, ViewPosition,
     };
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     const DEFAULT_STUDY_UID: &str = "1.2.826.0.1";
@@ -2119,8 +2131,9 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_filters_exclude_non_standard() {
-        let config = FilterConfig::default().exclude_non_standard_views(true);
+    fn standard_only_filter_excludes_non_standard_views() {
+        let config =
+            FilterConfig::default().with_view_fallback_policy(ViewFallbackPolicy::StandardOnly);
 
         let records = vec![
             make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm),
@@ -2130,6 +2143,144 @@ mod tests {
 
         let filtered = apply_filters(&records, &config);
         assert_eq!(filtered.len(), 2); // Only MLO and CC
+    }
+
+    #[test]
+    fn fallback_allow_list_controls_each_mlo_and_cc_family_member() {
+        let fallback_views = [
+            ViewPosition::Ml,
+            ViewPosition::Lm,
+            ViewPosition::Lmo,
+            ViewPosition::Xccl,
+            ViewPosition::Xccm,
+        ];
+        let records: Vec<_> = fallback_views
+            .iter()
+            .copied()
+            .map(|view| make_test_record(Laterality::Left, view, MammogramType::Ffdm))
+            .collect();
+
+        for allowed_view in fallback_views {
+            let config = FilterConfig::default().with_view_fallback_policy(
+                ViewFallbackPolicy::AllowList(BTreeSet::from([allowed_view])),
+            );
+            let filtered = apply_filters(&records, &config);
+
+            assert_eq!(filtered.len(), 1);
+            assert_eq!(filtered[0].metadata.view_position, allowed_view);
+        }
+    }
+
+    #[test]
+    fn exact_standard_view_outranks_allowed_fallback() {
+        let records = vec![
+            make_test_record(Laterality::Left, ViewPosition::Ml, MammogramType::Ffdm),
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Tomo),
+        ];
+        let config = FilterConfig::default().with_view_fallback_policy(
+            ViewFallbackPolicy::AllowList(BTreeSet::from([ViewPosition::Ml])),
+        );
+
+        let selected = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default)
+            [&MammogramView::new(Laterality::Left, ViewPosition::Mlo)]
+            .as_ref()
+            .unwrap()
+            .clone();
+
+        assert_eq!(selected.metadata.view_position, ViewPosition::Mlo);
+    }
+
+    #[test]
+    fn modifier_policy_filters_compound_modifiers_before_selection() {
+        let mut allowed =
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm);
+        allowed.metadata.view_modifiers = BTreeSet::from([
+            MammographyViewModifier::ImplantDisplaced,
+            MammographyViewModifier::SpotCompression,
+        ]);
+        let mut rejected =
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Ffdm);
+        rejected.metadata.view_modifiers = BTreeSet::from([
+            MammographyViewModifier::ImplantDisplaced,
+            MammographyViewModifier::Magnification,
+        ]);
+        let config = FilterConfig::default().with_view_modifier_policy(
+            ViewModifierPolicy::AllowList(BTreeSet::from([
+                MammographyViewModifier::ImplantDisplaced,
+                MammographyViewModifier::SpotCompression,
+            ])),
+        );
+
+        let filtered = apply_filters(&[allowed, rejected], &config);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].metadata.laterality, Laterality::Left);
+    }
+
+    #[test]
+    fn implant_presence_filter_is_independent_from_implant_displaced_modifier() {
+        let mut implant_displaced =
+            make_test_record(Laterality::Left, ViewPosition::Mlo, MammogramType::Ffdm);
+        implant_displaced
+            .metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::ImplantDisplaced);
+        let mut implant_present =
+            make_test_record(Laterality::Right, ViewPosition::Mlo, MammogramType::Ffdm);
+        implant_present.metadata.has_implant = true;
+        let config = FilterConfig::default()
+            .exclude_implants(true)
+            .with_view_modifier_policy(ViewModifierPolicy::AllowList(BTreeSet::from([
+                MammographyViewModifier::ImplantDisplaced,
+            ])));
+
+        let filtered = apply_filters(&[implant_displaced, implant_present], &config);
+
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].metadata.is_implant_displaced());
+        assert!(!filtered[0].metadata.has_implant);
+    }
+
+    #[test]
+    fn fallback_filter_does_not_mix_studies() {
+        const STANDARD_STUDY: &str = "1.2.826.0.10";
+        const FALLBACK_STUDY: &str = "1.2.826.0.20";
+        let records = vec![
+            make_test_record_with_study(
+                Laterality::Right,
+                ViewPosition::Mlo,
+                MammogramType::Ffdm,
+                Some(STANDARD_STUDY),
+            ),
+            make_test_record_with_study(
+                Laterality::Left,
+                ViewPosition::Cc,
+                MammogramType::Ffdm,
+                Some(STANDARD_STUDY),
+            ),
+            make_test_record_with_study(
+                Laterality::Right,
+                ViewPosition::Cc,
+                MammogramType::Ffdm,
+                Some(STANDARD_STUDY),
+            ),
+            make_test_record_with_study(
+                Laterality::Left,
+                ViewPosition::Ml,
+                MammogramType::Ffdm,
+                Some(FALLBACK_STUDY),
+            ),
+        ];
+        let config = FilterConfig::default().with_view_fallback_policy(
+            ViewFallbackPolicy::AllowList(BTreeSet::from([ViewPosition::Ml])),
+        );
+
+        let selections = get_preferred_views_filtered(&records, &config, PreferenceOrder::Default);
+
+        assert!(selections[&MammogramView::new(Laterality::Left, ViewPosition::Mlo)].is_none());
+        for selected in selections.values().flatten() {
+            assert_eq!(selected.study_instance_uid.as_deref(), Some(STANDARD_STUDY));
+        }
     }
 
     #[test]

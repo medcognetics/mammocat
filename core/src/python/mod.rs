@@ -69,6 +69,8 @@ fn _mammocat(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMammogramMetadata>()?;
     m.add_class::<PyConventionalOrientationAssessment>()?;
     m.add_class::<PyMammogramRecord>()?;
+    m.add_class::<PyViewFallbackPolicy>()?;
+    m.add_class::<PyViewModifierPolicy>()?;
     m.add_class::<PyFilterConfig>()?;
 
     // Register main API

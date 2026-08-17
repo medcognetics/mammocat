@@ -191,6 +191,80 @@ test("missing views are reported without throwing", () => {
   assert.deepEqual(selection.missingViews.sort(), ["lcc", "rcc", "rmlo"])
 })
 
+test("fallback view policy controls non-standard slot candidates", () => {
+  const inputs = [
+    { bytes: createMammogramBytes({ laterality: "L", viewPosition: "ML" }), filename: "lml.dcm" },
+  ]
+
+  const standardOnly = selectPreferredViews(inputs, {
+    viewFallbackPolicy: { mode: "standard-only" },
+  })
+  const defaultPolicy = selectPreferredViews(inputs)
+  const mlAllowed = selectPreferredViews(inputs, {
+    viewFallbackPolicy: { mode: "allow-list", allowedViews: ["ml"] },
+  })
+
+  assert.equal(standardOnly.views.lmlo, null)
+  assert.ok(standardOnly.candidates[0].filterReasons.includes("viewFallbackPolicy"))
+  assert.equal(defaultPolicy.views.lmlo?.source, "lml.dcm")
+  assert.equal(mlAllowed.views.lmlo?.source, "lml.dcm")
+})
+
+test("modifier policy requires every modifier on compound views", () => {
+  const inputs = [
+    {
+      bytes: createMammogramBytes({
+        laterality: "L",
+        viewPosition: "MLO",
+        nestedViewModifiers: ["implant displaced", "spot compression"],
+      }),
+      filename: "compound.dcm",
+    },
+  ]
+
+  const partiallyAllowed = selectPreferredViews(inputs, {
+    viewModifierPolicy: { mode: "allow-list", allowedModifiers: ["implant-displaced"] },
+  })
+  const fullyAllowed = selectPreferredViews(inputs, {
+    viewModifierPolicy: {
+      mode: "allow-list",
+      allowedModifiers: ["implant-displaced", "spot-compression"],
+    },
+  })
+
+  assert.equal(partiallyAllowed.views.lmlo, null)
+  assert.ok(partiallyAllowed.candidates[0].filterReasons.includes("viewModifierPolicy"))
+  assert.equal(fullyAllowed.views.lmlo?.source, "compound.dcm")
+})
+
+test("invalid view policy objects throw actionable argument errors", () => {
+  const inputs = [
+    { bytes: createMammogramBytes({ laterality: "L", viewPosition: "ML" }), filename: "lml.dcm" },
+  ]
+
+  assert.throws(
+    () =>
+      selectPreferredViews(inputs, {
+        viewFallbackPolicy: { mode: "allow-list" },
+      }),
+    /allowedViews is required/,
+  )
+  assert.throws(
+    () =>
+      selectPreferredViews(inputs, {
+        viewFallbackPolicy: { mode: "allow-list", allowedViews: ["fb"] },
+      }),
+    /Unsupported fallback view/,
+  )
+  assert.throws(
+    () =>
+      selectPreferredViews(inputs, {
+        viewModifierPolicy: { mode: "unmodified-only", allowedModifiers: ["magnification"] },
+      }),
+    /allowedModifiers must be omitted/,
+  )
+})
+
 test("selection failures report missing view slot keys", () => {
   const selection = selectPreferredViews(
     [

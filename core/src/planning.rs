@@ -33,7 +33,8 @@ const SOURCE_STATUS_UNUSED: &str = "unused";
 const FILTER_REASON_ALLOWED_TYPES: &str = "allowed_types";
 const FILTER_REASON_ALLOWED_DBT_OBJECT_KINDS: &str = "allowed_dbt_object_kinds";
 const FILTER_REASON_EXCLUDE_IMPLANTS: &str = "exclude_implants";
-const FILTER_REASON_ONLY_STANDARD_VIEWS: &str = "only_standard_views";
+const FILTER_REASON_VIEW_FALLBACK_POLICY: &str = "view_fallback_policy";
+const FILTER_REASON_VIEW_MODIFIER_POLICY: &str = "view_modifier_policy";
 const FILTER_REASON_EXCLUDE_FOR_PROCESSING: &str = "exclude_for_processing";
 const FILTER_REASON_EXCLUDE_SECONDARY_CAPTURE: &str = "exclude_secondary_capture";
 const FILTER_REASON_EXCLUDE_NON_MG: &str = "exclude_non_mg";
@@ -768,8 +769,17 @@ fn filter_reasons(record: &MammogramRecord, config: &FilterConfig) -> Vec<String
     if config.exclude_implants && record.metadata.has_implant {
         reasons.push(FILTER_REASON_EXCLUDE_IMPLANTS.to_string());
     }
-    if config.exclude_non_standard_views && !record.metadata.is_standard_view() {
-        reasons.push(FILTER_REASON_ONLY_STANDARD_VIEWS.to_string());
+    if !config
+        .view_fallback_policy
+        .allows(record.metadata.view_position)
+    {
+        reasons.push(FILTER_REASON_VIEW_FALLBACK_POLICY.to_string());
+    }
+    if !config
+        .view_modifier_policy
+        .allows(&record.metadata.view_modifiers)
+    {
+        reasons.push(FILTER_REASON_VIEW_MODIFIER_POLICY.to_string());
     }
     if config.exclude_for_processing && record.metadata.is_for_processing {
         reasons.push(FILTER_REASON_EXCLUDE_FOR_PROCESSING.to_string());
@@ -794,7 +804,10 @@ fn filter_reasons(record: &MammogramRecord, config: &FilterConfig) -> Vec<String
 mod tests {
     use super::*;
     use crate::api::MammogramMetadata;
-    use crate::types::{ImageType, Laterality, ViewPosition};
+    use crate::types::{
+        ImageType, Laterality, MammographyViewModifier, ViewFallbackPolicy, ViewModifierPolicy,
+        ViewPosition,
+    };
 
     const STUDY_UID: &str = "1.2.826.0.1";
     const SERIES_UID: &str = "1.2.826.0.1.1";
@@ -878,6 +891,29 @@ mod tests {
         record.series_instance_uid = Some(series_uid.to_string());
         record.sop_instance_uid = Some(format!("{series_uid}.{index}"));
         record
+    }
+
+    #[test]
+    fn source_diagnostics_use_stable_view_policy_reasons() {
+        let mut record = make_record(
+            "left_ml_spot.dcm",
+            Laterality::Left,
+            ViewPosition::Ml,
+            MammogramType::Ffdm,
+            DbtObjectKind::None,
+        );
+        record
+            .metadata
+            .view_modifiers
+            .insert(MammographyViewModifier::SpotCompression);
+        let config = FilterConfig::default()
+            .with_view_fallback_policy(ViewFallbackPolicy::StandardOnly)
+            .with_view_modifier_policy(ViewModifierPolicy::UnmodifiedOnly);
+
+        let reasons = filter_reasons(&record, &config);
+
+        assert!(reasons.contains(&FILTER_REASON_VIEW_FALLBACK_POLICY.to_string()));
+        assert!(reasons.contains(&FILTER_REASON_VIEW_MODIFIER_POLICY.to_string()));
     }
 
     fn split_series_scan_report() -> DbtScanReport {

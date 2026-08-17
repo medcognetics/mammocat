@@ -345,7 +345,7 @@ impl fmt::Display for Laterality {
 
 /// View position enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "json", derive(serde::Serialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "lowercase"))]
 pub enum ViewPosition {
     Unknown,
@@ -415,7 +415,7 @@ impl ViewPosition {
 
 /// Standard CID 4015 mammography view modifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "json", derive(serde::Serialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
 pub enum MammographyViewModifier {
     Cleavage,

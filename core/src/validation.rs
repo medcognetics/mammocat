@@ -1876,8 +1876,17 @@ fn validate_selection_eligibility(
     if filter_config.exclude_implants && metadata.has_implant {
         filtered_by.push("exclude_implants".to_string());
     }
-    if filter_config.exclude_non_standard_views && !metadata.is_standard_view() {
-        filtered_by.push("only_standard_views".to_string());
+    if !filter_config
+        .view_fallback_policy
+        .allows(metadata.view_position)
+    {
+        filtered_by.push("view_fallback_policy".to_string());
+    }
+    if !filter_config
+        .view_modifier_policy
+        .allows(&metadata.view_modifiers)
+    {
+        filtered_by.push("view_modifier_policy".to_string());
     }
     if filter_config.exclude_for_processing && metadata.is_for_processing {
         filtered_by.push("exclude_for_processing".to_string());
@@ -2611,6 +2620,14 @@ mod tests {
         dcm: &mut FileDicomObject<InMemDicomObject>,
         profile: ValidationProfile,
     ) -> FileValidationReport {
+        validate_object_with_filter(dcm, profile, &FilterConfig::default())
+    }
+
+    fn validate_object_with_filter(
+        dcm: &mut FileDicomObject<InMemDicomObject>,
+        profile: ValidationProfile,
+        filter_config: &FilterConfig,
+    ) -> FileValidationReport {
         let mut report = FileValidationReport::new(Path::new("test.dcm"), profile);
         collect_file_meta(&mut report, dcm);
         validate_identity(&mut report, dcm, profile, false);
@@ -2618,7 +2635,7 @@ mod tests {
         validate_pixel_fields(&mut report, dcm, profile, None);
         validate_canonical_completion(&mut report, dcm);
         let metadata = validate_extraction(&mut report, dcm, profile, false);
-        validate_selection_eligibility(&mut report, metadata.as_ref(), &FilterConfig::default());
+        validate_selection_eligibility(&mut report, metadata.as_ref(), filter_config);
         report.finalize();
         report
     }
@@ -2886,6 +2903,35 @@ mod tests {
         assert!(report.selection.eligible);
         assert!(report.selection.filtered_by.is_empty());
         assert!(warning_codes(&report).contains("selection_ranking_warning"));
+    }
+
+    #[test]
+    fn validation_reports_view_policy_filter_reasons() {
+        let mut dcm = valid_metadata_object_with("L", "ML");
+        let modifier = InMemDicomObject::from_element_iter([DataElement::new(
+            crate::extraction::tags::CODE_MEANING,
+            VR::LO,
+            PrimitiveValue::from("Spot Compression"),
+        )]);
+        dcm.put(DataElement::new(
+            VIEW_MODIFIER_CODE_SEQUENCE,
+            VR::SQ,
+            DataSetSequence::from(vec![modifier]),
+        ));
+        let filter = FilterConfig::default()
+            .with_view_fallback_policy(crate::types::ViewFallbackPolicy::StandardOnly)
+            .with_view_modifier_policy(crate::types::ViewModifierPolicy::UnmodifiedOnly);
+
+        let report = validate_object_with_filter(&mut dcm, ValidationProfile::Selection, &filter);
+
+        assert!(report
+            .selection
+            .filtered_by
+            .contains(&"view_fallback_policy".to_string()));
+        assert!(report
+            .selection
+            .filtered_by
+            .contains(&"view_modifier_policy".to_string()));
     }
 
     #[test]

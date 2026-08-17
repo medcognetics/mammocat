@@ -24,6 +24,11 @@ orientation.expectedComponents?.map((component) => component.toUpperCase())
 
 const selection: PreferredViewSelection = selectPreferredViews([pathInput, bytesInput], {
   preferenceOrder: "synthetic-2d-first",
+  viewFallbackPolicy: { mode: "allow-list", allowedViews: ["ml", "xccl"] },
+  viewModifierPolicy: {
+    mode: "allow-list",
+    allowedModifiers: ["implant-displaced", "spot-compression"],
+  },
 })
 const rcc: MammogramRecord | null = selection.views.rcc
 const lcc: MammogramRecord | null = selection.views.lcc
@@ -34,4 +39,9 @@ lcc?.source.toString()
 rmlo?.source.toString()
 lmlo?.source.toString()
 
-selectPreferredViewsFromDirectory("study", { preferenceOrder: "default", strict: false })
+selectPreferredViewsFromDirectory("study", {
+  preferenceOrder: "default",
+  strict: false,
+  viewFallbackPolicy: { mode: "standard-only" },
+  viewModifierPolicy: { mode: "unmodified-only" },
+})
