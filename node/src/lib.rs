@@ -33,22 +33,38 @@ pub struct SelectionOptions {
     pub view_modifier_policy: Option<ViewModifierPolicy>,
 }
 
-#[napi(object)]
-pub struct ViewFallbackPolicy {
-    #[napi(ts_type = "\"all-recognized\" | \"standard-only\" | \"allow-list\"")]
-    pub mode: String,
-    #[napi(ts_type = "(\"ml\" | \"lm\" | \"lmo\" | \"xccl\" | \"xccm\")[]")]
-    pub allowed_views: Option<Vec<String>>,
+#[napi(discriminant = "mode", discriminant_case = "kebab-case")]
+pub enum ViewFallbackPolicy {
+    AllRecognized {
+        #[napi(ts_type = "never")]
+        allowed_views: Option<Vec<String>>,
+    },
+    StandardOnly {
+        #[napi(ts_type = "never")]
+        allowed_views: Option<Vec<String>>,
+    },
+    AllowList {
+        #[napi(ts_type = "(\"ml\" | \"lm\" | \"lmo\" | \"xccl\" | \"xccm\")[]")]
+        allowed_views: Vec<String>,
+    },
 }
 
-#[napi(object)]
-pub struct ViewModifierPolicy {
-    #[napi(ts_type = "\"all-recognized\" | \"unmodified-only\" | \"allow-list\"")]
-    pub mode: String,
-    #[napi(
-        ts_type = "(\"cleavage\" | \"axillary-tail\" | \"rolled-lateral\" | \"rolled-medial\" | \"rolled-inferior\" | \"rolled-superior\" | \"implant-displaced\" | \"magnification\" | \"spot-compression\" | \"tangential\" | \"nipple-in-profile\" | \"anterior-compression\" | \"infra-mammary-fold\" | \"axillary-tissue\")[]"
-    )]
-    pub allowed_modifiers: Option<Vec<String>>,
+#[napi(discriminant = "mode", discriminant_case = "kebab-case")]
+pub enum ViewModifierPolicy {
+    AllRecognized {
+        #[napi(ts_type = "never")]
+        allowed_modifiers: Option<Vec<String>>,
+    },
+    UnmodifiedOnly {
+        #[napi(ts_type = "never")]
+        allowed_modifiers: Option<Vec<String>>,
+    },
+    AllowList {
+        #[napi(
+            ts_type = "(\"cleavage\" | \"axillary-tail\" | \"rolled-lateral\" | \"rolled-medial\" | \"rolled-inferior\" | \"rolled-superior\" | \"implant-displaced\" | \"magnification\" | \"spot-compression\" | \"tangential\" | \"nipple-in-profile\" | \"anterior-compression\" | \"infra-mammary-fold\" | \"axillary-tissue\")[]"
+        )]
+        allowed_modifiers: Vec<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -437,28 +453,22 @@ fn view_fallback_policy_from_options(
     let Some(policy) = options.and_then(|options| options.view_fallback_policy.as_ref()) else {
         return Ok(CoreViewFallbackPolicy::AllRecognized);
     };
-    match policy.mode.as_str() {
-        "all-recognized" => {
-            require_omitted(&policy.allowed_views, "allowedViews", &policy.mode)?;
+    match policy {
+        ViewFallbackPolicy::AllRecognized { allowed_views } => {
+            require_omitted(allowed_views, "allowedViews", "all-recognized")?;
             Ok(CoreViewFallbackPolicy::AllRecognized)
         }
-        "standard-only" => {
-            require_omitted(&policy.allowed_views, "allowedViews", &policy.mode)?;
+        ViewFallbackPolicy::StandardOnly { allowed_views } => {
+            require_omitted(allowed_views, "allowedViews", "standard-only")?;
             Ok(CoreViewFallbackPolicy::StandardOnly)
         }
-        "allow-list" => {
-            let values = policy.allowed_views.as_ref().ok_or_else(|| {
-                invalid_arg("allowedViews is required when viewFallbackPolicy.mode is allow-list")
-            })?;
-            let allowed = values
+        ViewFallbackPolicy::AllowList { allowed_views } => {
+            let allowed = allowed_views
                 .iter()
                 .map(|value| parse_fallback_view(value))
                 .collect::<Result<BTreeSet<_>>>()?;
             Ok(CoreViewFallbackPolicy::AllowList(allowed))
         }
-        value => Err(invalid_arg(format!(
-            "Unsupported viewFallbackPolicy mode '{value}'. Expected all-recognized, standard-only, or allow-list"
-        ))),
     }
 }
 
@@ -468,30 +478,22 @@ fn view_modifier_policy_from_options(
     let Some(policy) = options.and_then(|options| options.view_modifier_policy.as_ref()) else {
         return Ok(CoreViewModifierPolicy::AllRecognized);
     };
-    match policy.mode.as_str() {
-        "all-recognized" => {
-            require_omitted(&policy.allowed_modifiers, "allowedModifiers", &policy.mode)?;
+    match policy {
+        ViewModifierPolicy::AllRecognized { allowed_modifiers } => {
+            require_omitted(allowed_modifiers, "allowedModifiers", "all-recognized")?;
             Ok(CoreViewModifierPolicy::AllRecognized)
         }
-        "unmodified-only" => {
-            require_omitted(&policy.allowed_modifiers, "allowedModifiers", &policy.mode)?;
+        ViewModifierPolicy::UnmodifiedOnly { allowed_modifiers } => {
+            require_omitted(allowed_modifiers, "allowedModifiers", "unmodified-only")?;
             Ok(CoreViewModifierPolicy::UnmodifiedOnly)
         }
-        "allow-list" => {
-            let values = policy.allowed_modifiers.as_ref().ok_or_else(|| {
-                invalid_arg(
-                    "allowedModifiers is required when viewModifierPolicy.mode is allow-list",
-                )
-            })?;
-            let allowed = values
+        ViewModifierPolicy::AllowList { allowed_modifiers } => {
+            let allowed = allowed_modifiers
                 .iter()
                 .map(|value| parse_view_modifier(value))
                 .collect::<Result<BTreeSet<_>>>()?;
             Ok(CoreViewModifierPolicy::AllowList(allowed))
         }
-        value => Err(invalid_arg(format!(
-            "Unsupported viewModifierPolicy mode '{value}'. Expected all-recognized, unmodified-only, or allow-list"
-        ))),
     }
 }
 

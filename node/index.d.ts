@@ -108,12 +108,12 @@ export declare function selectPreferredViews(inputs: DicomInput[], options?: Sel
 
 export declare function selectPreferredViewsFromDirectory(path: string, options?: SelectionOptions | undefined | null): PreferredViewSelection
 
-export interface ViewFallbackPolicy {
-  mode: "all-recognized" | "standard-only" | "allow-list"
-  allowedViews?: ("ml" | "lm" | "lmo" | "xccl" | "xccm")[]
-}
+export type ViewFallbackPolicy =
+  | { mode: 'all-recognized', allowedViews?: never }
+  | { mode: 'standard-only', allowedViews?: never }
+  | { mode: 'allow-list', allowedViews: ("ml" | "lm" | "lmo" | "xccl" | "xccm")[] }
 
-export interface ViewModifierPolicy {
-  mode: "all-recognized" | "unmodified-only" | "allow-list"
-  allowedModifiers?: ("cleavage" | "axillary-tail" | "rolled-lateral" | "rolled-medial" | "rolled-inferior" | "rolled-superior" | "implant-displaced" | "magnification" | "spot-compression" | "tangential" | "nipple-in-profile" | "anterior-compression" | "infra-mammary-fold" | "axillary-tissue")[]
-}
+export type ViewModifierPolicy =
+  | { mode: 'all-recognized', allowedModifiers?: never }
+  | { mode: 'unmodified-only', allowedModifiers?: never }
+  | { mode: 'allow-list', allowedModifiers: ("cleavage" | "axillary-tail" | "rolled-lateral" | "rolled-medial" | "rolled-inferior" | "rolled-superior" | "implant-displaced" | "magnification" | "spot-compression" | "tangential" | "nipple-in-profile" | "anterior-compression" | "infra-mammary-fold" | "axillary-tissue")[] }

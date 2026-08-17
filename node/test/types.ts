@@ -45,3 +45,20 @@ selectPreferredViewsFromDirectory("study", {
   viewFallbackPolicy: { mode: "standard-only" },
   viewModifierPolicy: { mode: "unmodified-only" },
 })
+
+selectPreferredViews([], {
+  // @ts-expect-error allow-list fallback policies require allowedViews
+  viewFallbackPolicy: { mode: "allow-list" },
+})
+selectPreferredViews([], {
+  // @ts-expect-error non-allow-list fallback policies forbid allowedViews
+  viewFallbackPolicy: { mode: "standard-only", allowedViews: ["ml"] },
+})
+selectPreferredViews([], {
+  // @ts-expect-error allow-list modifier policies require allowedModifiers
+  viewModifierPolicy: { mode: "allow-list" },
+})
+selectPreferredViews([], {
+  // @ts-expect-error non-allow-list modifier policies forbid allowedModifiers
+  viewModifierPolicy: { mode: "unmodified-only", allowedModifiers: ["magnification"] },
+})

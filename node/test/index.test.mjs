@@ -247,7 +247,7 @@ test("invalid view policy objects throw actionable argument errors", () => {
       selectPreferredViews(inputs, {
         viewFallbackPolicy: { mode: "allow-list" },
       }),
-    /allowedViews is required/,
+    /Missing field `allowedViews` on SelectionOptions\.viewFallbackPolicy/,
   )
   assert.throws(
     () =>
