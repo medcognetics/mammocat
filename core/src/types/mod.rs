@@ -20,7 +20,7 @@ pub use enums::{
     DbtObjectKind, Laterality, MammogramType, MammographyViewModifier, PhotometricInterpretation,
     PreferenceOrder, ViewPosition,
 };
-pub use filter::FilterConfig;
+pub use filter::{FilterConfig, ViewFallbackPolicy, ViewModifierPolicy};
 pub use image_type::ImageType;
 pub use pixel_spacing::PixelSpacing;
 pub use view::{MammogramView, STANDARD_MAMMO_VIEWS};

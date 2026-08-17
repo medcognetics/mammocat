@@ -11,7 +11,13 @@ import {
 
 const metadata = extractMetadata({ path: "study/L_CC.dcm" })
 const orientation = assessConventionalOrientation({ path: "study/L_CC.dcm" })
-const selection = selectPreferredViewsFromDirectory("study")
+const selection = selectPreferredViewsFromDirectory("study", {
+  viewFallbackPolicy: { mode: "allow-list", allowedViews: ["ml"] },
+  viewModifierPolicy: {
+    mode: "allow-list",
+    allowedModifiers: ["implant-displaced", "spot-compression"],
+  },
+})
 
 console.log(metadata.mammogramType)
 console.log(metadata.viewModifiers)
@@ -23,6 +29,8 @@ console.log(selection.views.rcc?.source)
 The public API returns JSON-serializable objects suitable for Electron IPC boundaries. Bulk selection keeps unreadable or unsupported DICOM inputs in `inputErrors` instead of throwing; malformed API arguments still throw.
 
 `viewPosition` uses the complete CID 4014 base-view set. `viewModifiers` contains normalized CID 4015 values such as `implant_displaced` and `spot_compression`. Version 0.2.0 removes AT and CV as base views; they are exposed as `axillary_tail` and `cleavage` modifiers.
+
+Version 0.3.0 adds explicit `viewFallbackPolicy` and `viewModifierPolicy` selection options. The fallback allow-list always admits exact CC/MLO views. The modifier allow-list always admits unmodified records, and every modifier on a compound view must be listed. A record must pass both policies. Omitted policies retain all recognized fallbacks and modifiers. Invalid modes, unsupported values, and inconsistent mode payloads throw argument errors.
 
 `assessConventionalOrientation` accepts the same path-or-bytes input as `extractMetadata`,
 but does not require a mammography SOP Class, `MG` modality, or recognized mammogram type.

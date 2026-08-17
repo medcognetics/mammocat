@@ -136,6 +136,12 @@ mammoselect --format json /path/to/directory
 # Output file paths only (useful for scripting)
 mammoselect --format paths /path/to/directory
 
+# Permit ML, but not LM or LMO, as an MLO fallback
+mammoselect --allowed-fallback-views ml /path/to/directory
+
+# Permit only implant-displaced and spot-compression modifiers
+mammoselect --allowed-view-modifiers implant-displaced,spot-compression /path/to/directory
+
 ```
 
 `mammoselect` never mixes studies in its output. After filtering, it groups usable
@@ -153,7 +159,9 @@ Use `--strict` when a directory must contain exactly one usable study. Strict
 mode fails if usable candidates span more than one `StudyInstanceUID` or if any
 usable candidate is missing `StudyInstanceUID`.
 
-Candidate ranking first prefers standard CC/MLO base views, then views without CID 4015 modifiers other than Implant Displaced. An otherwise equivalent Implant Displaced view is preferred. Implant Displaced combined with another modifier remains a modified view. `--only-standard-views` examines only the CID 4014 base view.
+Candidate ranking first prefers standard CC/MLO base views, then views without CID 4015 modifiers other than Implant Displaced. An otherwise equivalent Implant Displaced view is preferred. Implant Displaced combined with another modifier remains a modified view.
+
+View admission is configured independently from ranking. `--only-standard-views` rejects all non-standard base views. `--allowed-fallback-views` always retains exact CC/MLO and admits only the listed ML, LM, LMO, XCCL, or XCCM fallbacks. `--only-unmodified-views` requires no recognized CID 4015 modifiers. `--allowed-view-modifiers` admits an unmodified view or a compound view only when every recognized modifier is listed. These filters run before study selection, so a fallback can never be merged from a different study. `--exclude-implants` remains separate because it evaluates breast-implant presence, not the Implant Displaced view modifier.
 
 Text and JSON output include the conventional orientation assessment for each selected
 record. `--format paths` remains path-only.
@@ -268,6 +276,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Preferred-view filtering uses explicit policies:
+
+```rust
+use mammocat_core::{
+    FilterConfig, ViewFallbackPolicy, ViewModifierPolicy, ViewPosition,
+};
+use std::collections::BTreeSet;
+
+let filter = FilterConfig::default()
+    .with_view_fallback_policy(ViewFallbackPolicy::AllowList(BTreeSet::from([
+        ViewPosition::Ml,
+    ])))
+    .with_view_modifier_policy(ViewModifierPolicy::UnmodifiedOnly);
+```
+
+`AllRecognized` preserves the default behavior. `StandardOnly` rejects every fallback, and `UnmodifiedOnly` rejects every recognized modifier. Within the fallback policy, an `AllowList` always admits exact CC/MLO views. Within the modifier policy, an `AllowList` always admits unmodified records. A record must pass both policies.
+
 Completion is also available as a reusable Rust API:
 
 ```rust
@@ -296,7 +321,13 @@ import {
 
 const metadata = extractMetadata({ path: "study/R_CC.dcm" })
 const orientation = assessConventionalOrientation({ path: "study/R_CC.dcm" })
-const selection = selectPreferredViewsFromDirectory("study")
+const selection = selectPreferredViewsFromDirectory("study", {
+  viewFallbackPolicy: { mode: "allow-list", allowedViews: ["ml"] },
+  viewModifierPolicy: {
+    mode: "allow-list",
+    allowedModifiers: ["implant-displaced", "spot-compression"],
+  },
+})
 
 const bufferSelection = selectPreferredViews([
   { path: "study/R_CC.dcm" },
@@ -311,9 +342,20 @@ console.log(selection.views.rcc?.source)
 console.log(bufferSelection.inputErrors)
 ```
 
-`PreferredViewSelection.views` always uses the fixed keys `rcc`, `lcc`, `rmlo`, and `lmlo`; missing slots are `null`. Bulk selection reports unreadable or unsupported DICOM inputs in `inputErrors`, while invalid API argument shapes throw. The default selection policy targets annotator-focused 2D standard views, excluding TOMO and DBT objects unless an explicit `preferenceOrder` override is supplied.
+`PreferredViewSelection.views` always uses the fixed keys `rcc`, `lcc`, `rmlo`, and `lmlo`; missing slots are `null`. Bulk selection reports unreadable or unsupported DICOM inputs in `inputErrors`, while invalid API argument shapes throw. Omitted view policies allow all recognized fallbacks and modifiers. The default type policy targets annotator-focused 2D inputs, excluding TOMO and DBT objects unless an explicit `preferenceOrder` override is supplied.
 
 The publish-oriented package metadata under `node/` supports prebuilt native packages for Linux x64 GNU, macOS x64, macOS arm64, and Windows x64 MSVC. A commit-pinned Git install instead builds the matching native binary from source and stores it inside the installed package.
+
+Python exposes the same policy model through factory methods:
+
+```python
+from mammocat import FilterConfig, ViewFallbackPolicy, ViewModifierPolicy, ViewPosition
+
+filter_config = FilterConfig(
+    view_fallback_policy=ViewFallbackPolicy.allow_list([ViewPosition.ML]),
+    view_modifier_policy=ViewModifierPolicy.unmodified_only(),
+)
+```
 
 ### Python Planning, Validation, and Orientation API
 
@@ -410,6 +452,8 @@ View metadata is resolved by the shared canonical parser from:
 [CID 4014](https://dicom.nema.org/medical/dicom/current/output/chtml/part16/sect_cid_4014.html) base views are ML, MLO, LM, LMO, CC, FB, SIO, ISO, XCCL, XCCM, and breast specimen. [CID 4015](https://dicom.nema.org/medical/dicom/current/output/chtml/part16/sect_CID_4015.html) modifiers are parsed from the standard nested `ViewModifierCodeSequence` and tolerated at the non-standard top level. Coded base views are authoritative; disagreements remain visible as diagnostics. `AT` and `CV` are modifiers, not base views.
 
 Version 0.2.0 removes `ViewPosition::At` and `ViewPosition::Cv` from Rust, Python, and Node metadata. Use `MammographyViewModifier::AxillaryTail` and `MammographyViewModifier::Cleavage`.
+
+Version 0.3.0 replaces `FilterConfig.exclude_non_standard_views` with `ViewFallbackPolicy` and adds `ViewModifierPolicy`. Migrate `exclude_non_standard_views=true` to `ViewFallbackPolicy::StandardOnly` in Rust or `ViewFallbackPolicy.standard_only()` in Python. The removed JSON field is rejected so an old restrictive configuration cannot silently become permissive.
 
 ## Architecture
 

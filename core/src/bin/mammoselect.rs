@@ -2,10 +2,11 @@ use clap::{Parser, ValueEnum};
 use log::{error, info, warn};
 use mammocat_core::{
     collect_dicom_files, get_preferred_views_filtered_with_study_mode_and_warnings, DbtObjectKind,
-    FilterConfig, MammogramRecord, MammogramType, MammogramView, PreferenceOrder,
-    PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode, STANDARD_MAMMO_VIEWS,
+    FilterConfig, MammogramRecord, MammogramType, MammogramView, MammographyViewModifier,
+    PreferenceOrder, PreferredViewSelectionWithWarnings, SelectionWarning, StudySelectionMode,
+    ViewFallbackPolicy, ViewModifierPolicy, ViewPosition, STANDARD_MAMMO_VIEWS,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::process;
@@ -45,8 +46,20 @@ struct Cli {
     exclude_implants: bool,
 
     /// Only include standard views (CC and MLO)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "allowed_fallback_views")]
     only_standard_views: bool,
+
+    /// Allowed non-standard fallback views (comma-separated: ml,lm,lmo,xccl,xccm)
+    #[arg(long, value_delimiter = ',', conflicts_with = "only_standard_views")]
+    allowed_fallback_views: Option<Vec<FallbackViewArg>>,
+
+    /// Only include views without recognized CID 4015 modifiers
+    #[arg(long, conflicts_with = "allowed_view_modifiers")]
+    only_unmodified_views: bool,
+
+    /// Allowed CID 4015 view modifiers, comma-separated
+    #[arg(long, value_delimiter = ',', conflicts_with = "only_unmodified_views")]
+    allowed_view_modifiers: Option<Vec<ViewModifierArg>>,
 
     /// Include FOR PROCESSING views (excluded by default)
     #[arg(long)]
@@ -144,6 +157,68 @@ enum DbtObjectKindArg {
     Slice,
     /// Ambiguous DBT object kind
     Unknown,
+}
+
+/// Non-standard views that can fill a standard CC or MLO slot.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FallbackViewArg {
+    Ml,
+    Lm,
+    Lmo,
+    Xccl,
+    Xccm,
+}
+
+impl From<FallbackViewArg> for ViewPosition {
+    fn from(arg: FallbackViewArg) -> Self {
+        match arg {
+            FallbackViewArg::Ml => ViewPosition::Ml,
+            FallbackViewArg::Lm => ViewPosition::Lm,
+            FallbackViewArg::Lmo => ViewPosition::Lmo,
+            FallbackViewArg::Xccl => ViewPosition::Xccl,
+            FallbackViewArg::Xccm => ViewPosition::Xccm,
+        }
+    }
+}
+
+/// Recognized CID 4015 view modifiers.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ViewModifierArg {
+    Cleavage,
+    AxillaryTail,
+    RolledLateral,
+    RolledMedial,
+    RolledInferior,
+    RolledSuperior,
+    ImplantDisplaced,
+    Magnification,
+    SpotCompression,
+    Tangential,
+    NippleInProfile,
+    AnteriorCompression,
+    InfraMammaryFold,
+    AxillaryTissue,
+}
+
+impl From<ViewModifierArg> for MammographyViewModifier {
+    fn from(arg: ViewModifierArg) -> Self {
+        match arg {
+            ViewModifierArg::Cleavage => Self::Cleavage,
+            ViewModifierArg::AxillaryTail => Self::AxillaryTail,
+            ViewModifierArg::RolledLateral => Self::RolledLateral,
+            ViewModifierArg::RolledMedial => Self::RolledMedial,
+            ViewModifierArg::RolledInferior => Self::RolledInferior,
+            ViewModifierArg::RolledSuperior => Self::RolledSuperior,
+            ViewModifierArg::ImplantDisplaced => Self::ImplantDisplaced,
+            ViewModifierArg::Magnification => Self::Magnification,
+            ViewModifierArg::SpotCompression => Self::SpotCompression,
+            ViewModifierArg::Tangential => Self::Tangential,
+            ViewModifierArg::NippleInProfile => Self::NippleInProfile,
+            ViewModifierArg::AnteriorCompression => Self::AnteriorCompression,
+            ViewModifierArg::InfraMammaryFold => Self::InfraMammaryFold,
+            ViewModifierArg::AxillaryTissue => Self::AxillaryTissue,
+        }
+    }
 }
 
 impl From<DbtObjectKindArg> for DbtObjectKind {
@@ -267,9 +342,28 @@ fn build_filter_config(cli: &Cli) -> FilterConfig {
         config = config.with_allowed_dbt_object_kinds(allowed);
     }
 
-    // Handle exclude flags
+    // Handle hard-exclusion policies and flags
     config = config.exclude_implants(cli.exclude_implants);
-    config = config.exclude_non_standard_views(cli.only_standard_views);
+    if cli.only_standard_views {
+        config = config.with_view_fallback_policy(ViewFallbackPolicy::StandardOnly);
+    } else if let Some(view_args) = &cli.allowed_fallback_views {
+        let allowed = view_args
+            .iter()
+            .copied()
+            .map(ViewPosition::from)
+            .collect::<BTreeSet<_>>();
+        config = config.with_view_fallback_policy(ViewFallbackPolicy::AllowList(allowed));
+    }
+    if cli.only_unmodified_views {
+        config = config.with_view_modifier_policy(ViewModifierPolicy::UnmodifiedOnly);
+    } else if let Some(modifier_args) = &cli.allowed_view_modifiers {
+        let allowed = modifier_args
+            .iter()
+            .copied()
+            .map(MammographyViewModifier::from)
+            .collect::<BTreeSet<_>>();
+        config = config.with_view_modifier_policy(ViewModifierPolicy::AllowList(allowed));
+    }
 
     // Handle include flags (inverted logic)
     config = config.exclude_for_processing(!cli.include_for_processing);
@@ -526,7 +620,11 @@ impl<'a> fmt::Display for TextReport<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mammocat_core::{DbtObjectKind, ImageType, Laterality, MammogramMetadata, ViewPosition};
+    use mammocat_core::{
+        DbtObjectKind, ImageType, Laterality, MammogramMetadata, MammographyViewModifier,
+        ViewFallbackPolicy, ViewModifierPolicy, ViewPosition,
+    };
+    use std::collections::BTreeSet;
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
@@ -724,6 +822,69 @@ mod tests {
 
         assert!(!config.exclude_lossy_compressed);
         assert!(config.deprioritize_lossy_compressed);
+    }
+
+    #[test]
+    fn test_build_filter_config_allows_selected_fallback_views() {
+        let cli =
+            Cli::try_parse_from(["mammoselect", "--allowed-fallback-views", "ml,xccm", "/tmp"])
+                .unwrap();
+
+        let config = build_filter_config(&cli);
+
+        assert_eq!(
+            config.view_fallback_policy,
+            ViewFallbackPolicy::AllowList(BTreeSet::from([ViewPosition::Ml, ViewPosition::Xccm,]))
+        );
+    }
+
+    #[test]
+    fn test_only_standard_views_conflicts_with_fallback_allow_list() {
+        let error = Cli::try_parse_from([
+            "mammoselect",
+            "--only-standard-views",
+            "--allowed-fallback-views",
+            "ml",
+            "/tmp",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn test_build_filter_config_allows_selected_modifiers() {
+        let cli = Cli::try_parse_from([
+            "mammoselect",
+            "--allowed-view-modifiers",
+            "spot-compression,implant-displaced",
+            "/tmp",
+        ])
+        .unwrap();
+
+        let config = build_filter_config(&cli);
+
+        assert_eq!(
+            config.view_modifier_policy,
+            ViewModifierPolicy::AllowList(BTreeSet::from([
+                MammographyViewModifier::SpotCompression,
+                MammographyViewModifier::ImplantDisplaced,
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_only_unmodified_views_conflicts_with_modifier_allow_list() {
+        let error = Cli::try_parse_from([
+            "mammoselect",
+            "--only-unmodified-views",
+            "--allowed-view-modifiers",
+            "spot-compression",
+            "/tmp",
+        ])
+        .unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

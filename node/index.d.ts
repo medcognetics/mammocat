@@ -100,8 +100,20 @@ export interface PreferredViewSlots {
 export interface SelectionOptions {
   preferenceOrder?: "default" | "synthetic-2d-first" | "tomo-first"
   strict?: boolean
+  viewFallbackPolicy?: ViewFallbackPolicy
+  viewModifierPolicy?: ViewModifierPolicy
 }
 
 export declare function selectPreferredViews(inputs: DicomInput[], options?: SelectionOptions): PreferredViewSelection
 
 export declare function selectPreferredViewsFromDirectory(path: string, options?: SelectionOptions | undefined | null): PreferredViewSelection
+
+export type ViewFallbackPolicy =
+  | { mode: 'all-recognized', allowedViews?: never }
+  | { mode: 'standard-only', allowedViews?: never }
+  | { mode: 'allow-list', allowedViews: ("ml" | "lm" | "lmo" | "xccl" | "xccm")[] }
+
+export type ViewModifierPolicy =
+  | { mode: 'all-recognized', allowedModifiers?: never }
+  | { mode: 'unmodified-only', allowedModifiers?: never }
+  | { mode: 'allow-list', allowedModifiers: ("cleavage" | "axillary-tail" | "rolled-lateral" | "rolled-medial" | "rolled-inferior" | "rolled-superior" | "implant-displaced" | "magnification" | "spot-compression" | "tangential" | "nipple-in-profile" | "anterior-compression" | "infra-mammary-fold" | "axillary-tissue")[] }

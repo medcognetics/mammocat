@@ -155,6 +155,9 @@ make deprecation-report
 ./target/release/mammoselect --allowed-types ffdm /path/to/directory
 ./target/release/mammoselect --allowed-types ffdm,tomo --exclude-implants /path/to/directory
 ./target/release/mammoselect --only-standard-views /path/to/directory
+./target/release/mammoselect --allowed-fallback-views ml,xccl /path/to/directory
+./target/release/mammoselect --only-unmodified-views /path/to/directory
+./target/release/mammoselect --allowed-view-modifiers implant-displaced,spot-compression /path/to/directory
 ./target/release/mammoselect --include-for-processing /path/to/directory
 ./target/release/mammoselect --include-secondary-capture /path/to/directory
 ```
@@ -349,7 +352,9 @@ Exact `ImageType` component `TOMO_2D` remains `Synth`; exact component `TOMO` is
 
 **Filtering Architecture**: The `FilterConfig` struct bundles all filtering options for view selection:
 - `allowed_types`: Whitelist approach - only specified types included (None = allow all)
-- Boolean exclusion flags: `exclude_implants`, `exclude_non_standard_views`, etc.
+- `view_fallback_policy`: `AllRecognized`, `StandardOnly`, or an allow-list of non-standard base views. Exact CC/MLO views always pass an allow-list.
+- `view_modifier_policy`: `AllRecognized`, `UnmodifiedOnly`, or an allow-list of CID 4015 modifiers. Every modifier on a compound view must be allowed; unmodified views always pass an allow-list.
+- Boolean exclusion flags remain for independent properties such as implant presence, presentation intent, secondary capture, modality, and lossy compression.
 - Default behavior: Excludes FOR PROCESSING, secondary capture, and non-MG modality
 - Permissive mode: `FilterConfig::permissive()` disables all filters
 
@@ -363,7 +368,7 @@ Filtering flow:
 5. Run view selection algorithm (`get_preferred_views_with_order`) on the chosen study
 6. Return best views from remaining candidates
 
-**Node Selection Defaults**: The Node API is annotator-focused by default. It selects FFDM, synthesized 2D, DBT MIP, and SFM records with `DbtObjectKind::None` for the standard CC/MLO slots, uses recursive directory discovery for `selectPreferredViewsFromDirectory()`, and returns JSON-safe camelCase DTOs with fixed `rcc`, `lcc`, `rmlo`, and `lmlo` keys. Unreadable inputs in bulk selection go to `inputErrors`; only invalid API argument shapes should throw.
+**Node Selection Defaults**: The Node API is annotator-focused by default. It selects FFDM, synthesized 2D, DBT MIP, and SFM records with `DbtObjectKind::None` for the standard CC/MLO slots, uses recursive directory discovery for `selectPreferredViewsFromDirectory()`, and returns JSON-safe camelCase DTOs with fixed `rcc`, `lcc`, `rmlo`, and `lmlo` keys. Omitted view policies allow all recognized fallbacks and modifiers. Policy objects use kebab-case modes and values; invalid modes, unsupported values, and inconsistent payloads throw. Unreadable inputs in bulk selection go to `inputErrors`; only invalid API argument shapes should throw.
 
 **Conventional Orientation Assessment**: RCC expects `P\L`, LCC `A\R`, RMLO `P\FL`, and LMLO `A\FR`. Compare each component only with the exact expected value or its complete anatomical inverse (`A`/`P`, `R`/`L`, `F`/`H`). Missing, empty, malformed, partial, reordered, unsupported, lowercase, or conflicting evidence is `indeterminate` with null flip flags. Non-standard views and unsupported conflict-free laterality are `not_applicable`. The standalone Rust, Python, and Node APIs must remain ungated by SOP Class, modality, and mammogram type. The assessment reports metadata only and must not imply that downstream pixel flips update spatial or derived attributes.
 

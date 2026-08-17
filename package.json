@@ -1,6 +1,6 @@
 {
   "name": "@medcognetics/mammocat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Node/TypeScript bindings for mammocat DICOM mammography metadata extraction and preferred-view selection",
   "license": "Apache-2.0",
