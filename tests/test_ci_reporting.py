@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from scripts.ci import deprecation_report, reporting
+from scripts.ci import deprecation_report, reporting, security_audit
 from scripts.ci.bootstrap_rustup import ensure_rustup, verify_rustup_checksum
 from scripts.ci.deprecation_report import (
     direct_npm_dependencies,
@@ -16,7 +16,13 @@ from scripts.ci.deprecation_report import (
     requirement_name,
     runtime_status,
 )
-from scripts.ci.reporting import CommandResult, run_command, run_json_check
+from scripts.ci.reporting import (
+    MAX_LISTED_FINDINGS,
+    CheckResult,
+    CommandResult,
+    run_command,
+    run_json_check,
+)
 from scripts.ci.security_audit import (
     CARGO_AUDIT_COMMAND,
     ZIZMOR_VERSION,
@@ -24,6 +30,10 @@ from scripts.ci.security_audit import (
     count_npm_findings,
     count_pip_findings,
     count_zizmor_findings,
+    describe_cargo_findings,
+    describe_npm_findings,
+    describe_pip_findings,
+    describe_zizmor_findings,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +56,11 @@ NATIVE_NODE_PACK_COMMAND = "npm pack --dry-run --ignore-scripts"
 ROOT_NODE_PACK_COMMAND = "npm pack --dry-run"
 ROOT_NODE_CLEAN_COMMAND = "rm -rf node_modules/"
 PUBLISH_NODE_CLEAN_COMMAND = "rm -rf node/node_modules/"
+ARTIFACT_UPLOAD_ACTION = "actions/upload-artifact@"
+SECURITY_SUMMARY_COMMAND = (
+    "test -f reports/security/report.md && "
+    "sed -n '1,240p' reports/security/report.md >> \"$GITHUB_STEP_SUMMARY\""
+)
 
 
 def make_commands(target: str) -> list[str]:
@@ -73,6 +88,145 @@ def test_security_parsers_count_each_scanner_report() -> None:
     assert count_pip_findings(pip_report) == 1
     assert count_npm_findings(npm_report) == 3
     assert count_zizmor_findings([{"ident": "unpinned-uses"}]) == 1
+
+
+def test_security_describers_identify_each_finding() -> None:
+    cargo_report = {
+        "vulnerabilities": {
+            "list": [
+                {
+                    "advisory": {"id": "RUSTSEC-test"},
+                    "package": {"name": "crate", "version": "1.0.0"},
+                    "versions": {"patched": [">=1.0.1"]},
+                }
+            ]
+        }
+    }
+    pip_report = {
+        "dependencies": [
+            {"name": "clean", "version": "1.0", "vulns": []},
+            {
+                "name": "pkg",
+                "version": "2.0",
+                "vulns": [{"id": "PYSEC-test", "fix_versions": ["2.1"]}],
+            },
+        ]
+    }
+    npm_report = {
+        "metadata": {"vulnerabilities": {"total": 2}},
+        "vulnerabilities": {
+            "direct": {
+                "severity": "high",
+                "range": "<2.0.0",
+                "via": [{"url": "https://github.com/advisories/GHSA-test"}],
+            },
+            "parent": {"severity": "moderate", "range": "1.x", "via": ["direct"]},
+        },
+    }
+    zizmor_report = [
+        {
+            "ident": "unpinned-uses",
+            "determinations": {"severity": "High"},
+            "locations": [{"symbolic": {"key": {"Local": {"verbatim_path": "ci.yml"}}}}],
+        }
+    ]
+
+    assert describe_cargo_findings(cargo_report) == [
+        "RUSTSEC-test in crate 1.0.0 (patched: >=1.0.1)"
+    ]
+    assert describe_pip_findings(pip_report) == ["PYSEC-test in pkg 2.0 (fixed in: 2.1)"]
+    assert describe_npm_findings(npm_report) == [
+        "GHSA-test in direct, affected range <2.0.0 (high)",
+        "via direct in parent, affected range 1.x (moderate)",
+    ]
+    assert describe_zizmor_findings(zizmor_report) == ["unpinned-uses in ci.yml (High)"]
+    assert describe_zizmor_findings({"diagnostics": [{"ident": "excessive-permissions"}]}) == [
+        "excessive-permissions"
+    ]
+
+
+def test_security_describers_tolerate_missing_finding_fields() -> None:
+    assert describe_cargo_findings({"vulnerabilities": {"list": [{}]}}) == [
+        "unknown in unknown unknown"
+    ]
+    assert describe_pip_findings({"dependencies": [{"vulns": [{}]}]}) == [
+        "unknown in unknown unknown"
+    ]
+    assert describe_npm_findings({"vulnerabilities": {"pkg": None}}) == [
+        "via unknown in pkg, affected range unknown (unknown)"
+    ]
+    assert describe_npm_findings({}) == []
+    assert describe_zizmor_findings([None]) == ["unknown"]
+
+
+def test_security_report_lists_findings_within_the_summary_limit() -> None:
+    findings = tuple(f"ADVISORY-{index}" for index in range(MAX_LISTED_FINDINGS + 1))
+    check = CheckResult(
+        name="cargo-audit",
+        command="cargo audit --json",
+        returncode=1,
+        status="findings",
+        finding_count=len(findings),
+        output="cargo-audit.json",
+        findings=findings,
+    )
+
+    markdown = security_audit.render_markdown([check])
+
+    assert "## cargo-audit findings" in markdown
+    assert f"- ADVISORY-{MAX_LISTED_FINDINGS - 1}" in markdown
+    assert f"- ADVISORY-{MAX_LISTED_FINDINGS}" not in markdown
+    assert "- 1 more not shown; run `make security-audit` locally." in markdown
+
+
+def test_json_check_records_finding_descriptions(monkeypatch, tmp_path) -> None:
+    def scanner_result(command: list[str], _cwd: Path) -> CommandResult:
+        return CommandResult(
+            command=command, returncode=1, stdout=json.dumps({"ids": ["A"]}), stderr=""
+        )
+
+    monkeypatch.setattr(reporting, "run_command", scanner_result)
+
+    result = run_json_check(
+        name="test-scanner",
+        command=["test-scanner", "--json"],
+        cwd=tmp_path,
+        output_path=tmp_path / "report.json",
+        count_findings=lambda report: len(report["ids"]),
+        finding_exit_codes=frozenset({EXPECTED_FINDING_EXIT_CODE}),
+        describe_findings=lambda report: [f"{value} finding" for value in report["ids"]],
+    )
+
+    assert result.status == "findings"
+    assert result.findings == ("A finding",)
+
+
+def test_deprecation_report_lists_findings() -> None:
+    report = {
+        "errors": [],
+        "findings": {
+            "npm_deprecated": [
+                {"package": "old-npm", "version": "1.0.0", "message": "use\nnew-npm"}
+            ],
+            "pypi_yanked": [{"package": "old-py", "version": "2.0"}],
+            "rustsec": [
+                {
+                    "type": "unmaintained",
+                    "advisory": {"id": "RUSTSEC-test"},
+                    "package": {"name": "old-crate", "version": "0.1.0"},
+                },
+                {"type": "yanked", "advisory": None, "package": {"name": "gone", "version": "3"}},
+            ],
+        },
+        "runtime_lifecycle": [],
+    }
+
+    markdown = deprecation_report.render_markdown(report)
+
+    assert "- unmaintained: RUSTSEC-test in old-crate 0.1.0" in markdown
+    assert "- yanked: gone 3" in markdown
+    assert "- old-py 2.0" in markdown
+    assert "- old-npm 1.0.0: use new-npm" in markdown
 
 
 def test_security_cargo_parser_ignores_maintenance_notices() -> None:
@@ -389,3 +543,24 @@ def test_dependency_health_caches_are_scoped_by_ecosystem() -> None:
     assert workflow.count("- name: Restore npm downloads") == 2
     assert "hashFiles('Cargo.lock', 'uv.lock'" not in workflow
     assert f"zizmor-{ZIZMOR_VERSION}" in workflow
+
+
+def test_workflows_do_not_upload_artifacts() -> None:
+    workflow_paths = sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml"))
+
+    assert workflow_paths
+    for workflow_path in workflow_paths:
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        assert ARTIFACT_UPLOAD_ACTION not in workflow, workflow_path.name
+
+
+def test_security_report_is_appended_to_the_job_summary() -> None:
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "dependency-health.yml").read_text(
+        encoding="utf-8"
+    )
+
+    security_scan = workflow.index("run: make security-audit")
+    security_summary = workflow.index(SECURITY_SUMMARY_COMMAND)
+
+    assert security_scan < security_summary < workflow.index("deprecation-report:")

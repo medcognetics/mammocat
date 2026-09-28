@@ -115,6 +115,7 @@ make deprecation-report
 - Weekly vulnerability findings fail by design and must not be ignored. RustSec maintenance
   notices, including unmaintained, yanked, and unsound packages, are reported by the informational
   deprecation job. Missing, failed, or unparsable report inputs fail either job.
+- Workflows do not upload artifacts. Write concise reports to the job summary or log.
 
 ### Running the CLI
 
