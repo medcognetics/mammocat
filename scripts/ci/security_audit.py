@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from scripts.ci.reporting import (
+    UNKNOWN_TEXT,
     CheckResult,
+    limited_findings,
+    report_text,
     run_command,
     run_json_check,
     serialized_checks,
@@ -84,6 +87,90 @@ def count_zizmor_findings(payload: Any) -> int:
     raise TypeError(message)
 
 
+def version_suffix(label: str, versions: Any) -> str:
+    """Describe remediation versions when a scanner reports them."""
+
+    if not isinstance(versions, list) or not versions:
+        return ""
+    return f" ({label}: {', '.join(str(version) for version in versions)})"
+
+
+def describe_cargo_findings(payload: Any) -> list[str]:
+    """Identify each Cargo Audit vulnerability by advisory, package, and version."""
+
+    findings = []
+    for vulnerability in payload["vulnerabilities"]["list"]:
+        versions = vulnerability.get("versions") if isinstance(vulnerability, dict) else None
+        patched = versions.get("patched") if isinstance(versions, dict) else None
+        findings.append(
+            f"{report_text(vulnerability, 'advisory', 'id')} in "
+            f"{report_text(vulnerability, 'package', 'name')} "
+            f"{report_text(vulnerability, 'package', 'version')}"
+            f"{version_suffix('patched', patched)}"
+        )
+    return findings
+
+
+def describe_pip_findings(payload: Any) -> list[str]:
+    """Identify each Pip Audit vulnerability by advisory, package, and version."""
+
+    findings = []
+    for dependency in payload["dependencies"]:
+        vulnerabilities = dependency.get("vulns", []) if isinstance(dependency, dict) else []
+        for vulnerability in vulnerabilities:
+            fixes = vulnerability.get("fix_versions") if isinstance(vulnerability, dict) else None
+            findings.append(
+                f"{report_text(vulnerability, 'id')} in {report_text(dependency, 'name')} "
+                f"{report_text(dependency, 'version')}{version_suffix('fixed in', fixes)}"
+            )
+    return findings
+
+
+def describe_npm_findings(payload: Any) -> list[str]:
+    """Identify each vulnerable npm package by advisory or vulnerable dependency."""
+
+    vulnerabilities = payload.get("vulnerabilities") if isinstance(payload, dict) else None
+    if not isinstance(vulnerabilities, dict):
+        return []
+    findings = []
+    for name, vulnerability in sorted(vulnerabilities.items()):
+        sources = vulnerability.get("via", []) if isinstance(vulnerability, dict) else []
+        sources = sources if isinstance(sources, list) else []
+        advisories = sorted(
+            {
+                source["url"].rstrip("/").rsplit("/", 1)[-1]
+                for source in sources
+                if isinstance(source, dict) and isinstance(source.get("url"), str)
+            }
+        )
+        dependencies = sorted({source for source in sources if isinstance(source, str)})
+        origin = ", ".join(advisories) or f"via {', '.join(dependencies) or UNKNOWN_TEXT}"
+        findings.append(
+            f"{origin} in {name}, affected range {report_text(vulnerability, 'range')} "
+            f"({report_text(vulnerability, 'severity')})"
+        )
+    return findings
+
+
+def describe_zizmor_findings(payload: Any) -> list[str]:
+    """Identify each Zizmor diagnostic by audit, workflow path, and severity."""
+
+    diagnostics = payload if isinstance(payload, list) else payload["diagnostics"]
+    findings = []
+    for diagnostic in diagnostics:
+        finding = report_text(diagnostic, "ident")
+        locations = diagnostic.get("locations") if isinstance(diagnostic, dict) else None
+        if isinstance(locations, list) and locations:
+            path = report_text(locations[0], "symbolic", "key", "Local", "verbatim_path")
+            if path != UNKNOWN_TEXT:
+                finding = f"{finding} in {path}"
+        severity = report_text(diagnostic, "determinations", "severity")
+        if severity != UNKNOWN_TEXT:
+            finding = f"{finding} ({severity})"
+        findings.append(finding)
+    return findings
+
+
 def command_version(command: list[str]) -> tuple[str | None, str | None]:
     """Capture a scanner version without aborting the report."""
 
@@ -134,7 +221,7 @@ def export_python_requirements() -> CheckResult:
 
 
 def render_markdown(checks: list[CheckResult]) -> str:
-    """Render a compact report suitable for artifacts and job summaries."""
+    """Render a compact report for the job summary."""
 
     lines = [
         "# Security audit",
@@ -150,6 +237,10 @@ def render_markdown(checks: list[CheckResult]) -> str:
     if errors:
         lines.extend(["", "## Incomplete scans", ""])
         lines.extend(f"- `{check.name}`: {check.error}" for check in errors)
+    for check in checks:
+        if check.findings:
+            lines.extend(["", f"## {check.name} findings", ""])
+            lines.extend(limited_findings(check.findings, "make security-audit"))
     return "\n".join(lines) + "\n"
 
 
@@ -167,6 +258,7 @@ def main() -> int:
                 output_path=REPORT_DIRECTORY / "cargo-audit.json",
                 count_findings=count_cargo_findings,
                 finding_exit_codes=STANDARD_FINDING_EXIT_CODES,
+                describe_findings=describe_cargo_findings,
             ),
             run_json_check(
                 name="pip-audit",
@@ -184,6 +276,7 @@ def main() -> int:
                 output_path=REPORT_DIRECTORY / "pip-audit.json",
                 count_findings=count_pip_findings,
                 finding_exit_codes=STANDARD_FINDING_EXIT_CODES,
+                describe_findings=describe_pip_findings,
             ),
             run_json_check(
                 name="npm-audit-root",
@@ -201,6 +294,7 @@ def main() -> int:
                 output_path=REPORT_DIRECTORY / "npm-root.json",
                 count_findings=count_npm_findings,
                 finding_exit_codes=STANDARD_FINDING_EXIT_CODES,
+                describe_findings=describe_npm_findings,
             ),
             run_json_check(
                 name="npm-audit-node",
@@ -218,6 +312,7 @@ def main() -> int:
                 output_path=REPORT_DIRECTORY / "npm-node.json",
                 count_findings=count_npm_findings,
                 finding_exit_codes=STANDARD_FINDING_EXIT_CODES,
+                describe_findings=describe_npm_findings,
             ),
             run_json_check(
                 name="zizmor",
@@ -236,6 +331,7 @@ def main() -> int:
                 output_path=REPORT_DIRECTORY / "zizmor.json",
                 count_findings=count_zizmor_findings,
                 finding_exit_codes=NO_FINDING_EXIT_CODES,
+                describe_findings=describe_zizmor_findings,
             ),
         ]
     )

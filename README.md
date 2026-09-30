@@ -645,7 +645,12 @@ GitHub Actions uses five workflows:
 - `Dependency Health` runs security and deprecation reports each Monday at 03:17 UTC.
   Vulnerabilities fail the security job. RustSec maintenance notices, including unmaintained,
   yanked, and unsound packages, remain visible in the informational deprecation report.
-  Incomplete or unparsable reports fail either job.
+  Incomplete or unparsable reports fail either job. Each job writes its report, including
+  finding identifiers, to the job summary.
+
+Workflows do not upload artifacts. The Python coverage summary appears in the `Slow Linux`
+job log. For full reports, run `make test-cov`, `make security-audit`, or
+`make deprecation-report` locally.
 
 The security job intentionally has no advisory exceptions. The GitHub Actions pull-request gate
 jobs are `CI / linux-python-min` and `CI / linux-full`. Verify both trusted and fork pull-request

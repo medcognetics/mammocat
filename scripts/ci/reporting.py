@@ -10,6 +10,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+MAX_LISTED_FINDINGS = 20
+UNKNOWN_TEXT = "unknown"
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -38,6 +41,29 @@ class CheckResult:
     finding_count: int
     output: str
     error: str | None = None
+    findings: tuple[str, ...] = ()
+
+
+def report_text(value: Any, *keys: str) -> str:
+    """Read one nested scalar for report text without failing on unexpected shapes."""
+
+    for key in keys:
+        if not isinstance(value, dict):
+            return UNKNOWN_TEXT
+        value = value.get(key)
+    if value is None or value == "" or isinstance(value, (dict, list)):
+        return UNKNOWN_TEXT
+    return " ".join(str(value).split())
+
+
+def limited_findings(findings: list[str] | tuple[str, ...], command: str) -> list[str]:
+    """Render at most `MAX_LISTED_FINDINGS` findings as Markdown list items."""
+
+    lines = [f"- {finding}" for finding in findings[:MAX_LISTED_FINDINGS]]
+    omitted = len(findings) - MAX_LISTED_FINDINGS
+    if omitted > 0:
+        lines.append(f"- {omitted} more not shown; run `{command}` locally.")
+    return lines
 
 
 def run_command(command: list[str], cwd: Path) -> CommandResult:
@@ -64,6 +90,7 @@ def run_json_check(
     output_path: Path,
     count_findings: Callable[[Any], int],
     finding_exit_codes: frozenset[int],
+    describe_findings: Callable[[Any], list[str]] | None = None,
 ) -> CheckResult:
     """Run one JSON scanner and distinguish findings from scanner failures."""
 
@@ -74,6 +101,7 @@ def run_json_check(
     try:
         payload = json.loads(result.stdout)
         finding_count = count_findings(payload)
+        findings = tuple(describe_findings(payload)) if describe_findings else ()
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         return CheckResult(
             name=name,
@@ -114,6 +142,7 @@ def run_json_check(
         status="findings" if finding_count else "passed",
         finding_count=finding_count,
         output=str(output_path),
+        findings=findings,
     )
 
 

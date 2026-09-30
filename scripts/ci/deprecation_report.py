@@ -13,7 +13,13 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts.ci.reporting import run_command, write_json
+from scripts.ci.reporting import (
+    UNKNOWN_TEXT,
+    limited_findings,
+    report_text,
+    run_command,
+    write_json,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_DIRECTORY = ROOT / "reports" / "deprecation"
@@ -388,6 +394,40 @@ def lifecycle_report(today: date) -> list[dict[str, str]]:
     return report
 
 
+def describe_rustsec_notice(notice: dict[str, Any]) -> str:
+    """Identify one RustSec notice by type, advisory, package, and version."""
+
+    advisory = report_text(notice, "advisory", "id")
+    package = (
+        f"{report_text(notice, 'package', 'name')} {report_text(notice, 'package', 'version')}"
+    )
+    target = package if advisory == UNKNOWN_TEXT else f"{advisory} in {package}"
+    return f"{report_text(notice, 'type')}: {target}"
+
+
+def describe_findings(findings: dict[str, list[dict[str, Any]]]) -> list[tuple[str, list[str]]]:
+    """List each deprecation finding under its report category."""
+
+    return [
+        ("RustSec notices", [describe_rustsec_notice(notice) for notice in findings["rustsec"]]),
+        (
+            "Yanked PyPI releases",
+            [
+                f"{report_text(finding, 'package')} {report_text(finding, 'version')}"
+                for finding in findings["pypi_yanked"]
+            ],
+        ),
+        (
+            "Deprecated npm dependencies",
+            [
+                f"{report_text(finding, 'package')} {report_text(finding, 'version')}: "
+                f"{report_text(finding, 'message')}"
+                for finding in findings["npm_deprecated"]
+            ],
+        ),
+    ]
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     """Render findings without making deprecation notices job-fatal."""
 
@@ -413,6 +453,10 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"| {runtime['runtime']} | {runtime['minimum']} | {runtime['status']} | "
             f"{runtime.get('end_of_life', 'project policy')} |"
         )
+    for category, descriptions in describe_findings(findings):
+        if descriptions:
+            lines.extend(["", f"## {category}", ""])
+            lines.extend(limited_findings(descriptions, "make deprecation-report"))
     if report["errors"]:
         lines.extend(["", "## Incomplete report", ""])
         lines.extend(f"- {error}" for error in report["errors"])

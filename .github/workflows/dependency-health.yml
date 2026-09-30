@@ -74,14 +74,9 @@ jobs:
       - name: Run and aggregate security scans
         run: make security-audit
 
-      - name: Upload security reports
+      - name: Append security summary
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dependency-security-reports
-          path: reports/security/
-          if-no-files-found: error
-          retention-days: 14
+        run: test -f reports/security/report.md && sed -n '1,240p' reports/security/report.md >> "$GITHUB_STEP_SUMMARY"
 
   deprecation-report:
     name: deprecation-report
@@ -136,14 +131,3 @@ jobs:
       - name: Append deprecation summary
         if: always()
         run: test -f reports/deprecation/report.md && sed -n '1,240p' reports/deprecation/report.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload deprecation report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dependency-deprecation-report
-          path: |
-            reports/deprecation/report.json
-            reports/deprecation/report.md
-          if-no-files-found: error
-          retention-days: 14
