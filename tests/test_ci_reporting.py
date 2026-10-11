@@ -43,7 +43,25 @@ UNEXPECTED_SCANNER_EXIT_CODE = 2
 INVALID_SHA256 = "0" * 64
 LINUX_WORKFLOWS = ("ci.yml", "production-build.yml", "slow-linux.yml")
 PYTHON_314_WORKFLOWS = (*LINUX_WORKFLOWS, "dependency-health.yml")
-HOSTED_RUNNER_LABEL_PATTERN = re.compile(r"(?:ubuntu|windows|macos)-[0-9a-z.-]+")
+# Self-hosted runners can carry any custom label, such as `ubuntu-beryl`, so match exact
+# GitHub-hosted labels, not a name pattern.
+GITHUB_HOSTED_RUNNER_LABELS = frozenset(
+    {
+        "ubuntu-latest",
+        "ubuntu-24.04",
+        "ubuntu-22.04",
+        "ubuntu-24.04-arm",
+        "ubuntu-22.04-arm",
+        "windows-latest",
+        "windows-2025",
+        "windows-2022",
+        "windows-11-arm",
+        "macos-latest",
+        "macos-15",
+        "macos-15-intel",
+        "macos-14",
+    }
+)
 MATRIX_RUNNER_EXPRESSION = "${{ matrix.runner }}"
 JOB_KEY_PATTERN = re.compile(r"^  [a-zA-Z0-9_-]+:$")
 HOSTED_CACHE_WORKFLOWS = ("platforms.yml", "dependency-health.yml")
@@ -497,11 +515,9 @@ def self_hosted_runner_violations(workflow: str) -> list[str]:
     for value in runs_on:
         if value == MATRIX_RUNNER_EXPRESSION and matrix_runners:
             continue
-        if not HOSTED_RUNNER_LABEL_PATTERN.fullmatch(value):
+        if value not in GITHUB_HOSTED_RUNNER_LABELS:
             violations.append(value)
-    violations.extend(
-        value for value in matrix_runners if not HOSTED_RUNNER_LABEL_PATTERN.fullmatch(value)
-    )
+    violations.extend(value for value in matrix_runners if value not in GITHUB_HOSTED_RUNNER_LABELS)
     return violations
 
 
@@ -519,6 +535,9 @@ def test_workflows_use_github_hosted_runners_only() -> None:
     ("job", "expected"),
     [
         pytest.param("    runs-on: ubuntu-24.04\n", [], id="hosted-label"),
+        pytest.param(
+            "    runs-on: ubuntu-beryl\n", ["ubuntu-beryl"], id="custom-hosted-like-label"
+        ),
         pytest.param(
             "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        include:\n"
             "          - runner: macos-15\n",
