@@ -98,20 +98,17 @@ make deprecation-report
   the workspace MSRV and is checked weekly.
 - Python support starts at 3.10. CI tests 3.10 and 3.14 with PyO3 0.29.
 - Node support starts at 22. CI tests Node 22.23.0 and 26.5.0, plus all four native targets.
-- Trusted pull requests, `master` pushes, and Linux schedules use the ephemeral Beryl runner.
-  Fork pull requests use `ubuntu-24.04`, never receive Beryl access, and cannot read or write
-  dependency caches.
-- Beryl must run Actions Runner 2.327.1 or newer with `self-hosted`, `linux`, `x64`, and
-  `beryl` labels. A general organization runner group is acceptable only when every repository
-  allowed to target it is trusted and the runner exposes no privileged credentials or services.
-- Beryl workflows bootstrap checksum-verified Rustup 1.29.0 when the runner image does not
+- This repository is public. Every job uses a literal GitHub-hosted runner label, such as
+  `ubuntu-24.04`, or a matrix of such labels. Do not use self-hosted runners or runner
+  expressions: a fork pull request runs its own copy of the workflow and can change any
+  `runs-on` value. Self-hosted runners must not serve public repositories.
+- Linux workflows bootstrap checksum-verified Rustup 1.29.0 when the runner image does not
   already provide `rustup`.
-- Beryl workflows reuse local dependency-download state instead of transferring GitHub Actions
-  caches. Their frozen uv setup installs dependencies without building the project; later explicit
-  binding and production-build steps own project compilation.
+- Linux workflows do not transfer GitHub Actions caches. Their frozen uv setup installs
+  dependencies without building the project; later explicit binding and production-build steps
+  own project compilation.
 - The GitHub Actions pull-request gate jobs are `CI / linux-python-min` and
-  `CI / linux-full`. Verify the trusted and fork pull-request paths before making those checks
-  required in branch protection.
+  `CI / linux-full`.
 - Weekly vulnerability findings fail by design and must not be ignored. RustSec maintenance
   notices, including unmaintained, yanked, and unsound packages, are reported by the informational
   deprecation job. Missing, failed, or unparsable report inputs fail either job.

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   production-build:
     name: production-build
-    runs-on: [self-hosted, linux, x64, beryl]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always

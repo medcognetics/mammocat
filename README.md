@@ -635,8 +635,8 @@ Current test coverage includes Rust unit/integration tests and Python tests cove
 GitHub Actions uses five workflows:
 
 - `CI` runs Python 3.10 and the full Python 3.14/Rust/Node gate on pull requests to
-  `master`, pushes to `master`, and manual dispatches. Trusted events use the Beryl
-  self-hosted runner; fork pull requests use `ubuntu-24.04` without dependency caches.
+  `master`, pushes to `master`, and manual dispatches on GitHub-hosted `ubuntu-24.04`
+  runners without dependency caches.
 - `Production Build` verifies release Rust binaries, a wheel installed into an isolated
   Python 3.14 environment, and the Node package nightly at 04:17 UTC.
 - `Slow Linux` checks Rust 1.88, Python coverage, and commit-pinned npm Git installation

@@ -1,6 +1,7 @@
 """Regression tests for CI report parsing and policy classification."""
 
 import json
+import re
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -40,8 +41,29 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_FINDING_EXIT_CODE = 1
 UNEXPECTED_SCANNER_EXIT_CODE = 2
 INVALID_SHA256 = "0" * 64
-BERYL_WORKFLOWS = ("ci.yml", "production-build.yml", "slow-linux.yml")
-PYTHON_314_WORKFLOWS = (*BERYL_WORKFLOWS, "dependency-health.yml")
+LINUX_WORKFLOWS = ("ci.yml", "production-build.yml", "slow-linux.yml")
+PYTHON_314_WORKFLOWS = (*LINUX_WORKFLOWS, "dependency-health.yml")
+# Self-hosted runners can carry any custom label, such as `ubuntu-beryl`, so match exact
+# GitHub-hosted labels, not a name pattern.
+GITHUB_HOSTED_RUNNER_LABELS = frozenset(
+    {
+        "ubuntu-latest",
+        "ubuntu-24.04",
+        "ubuntu-22.04",
+        "ubuntu-24.04-arm",
+        "ubuntu-22.04-arm",
+        "windows-latest",
+        "windows-2025",
+        "windows-2022",
+        "windows-11-arm",
+        "macos-latest",
+        "macos-15",
+        "macos-15-intel",
+        "macos-14",
+    }
+)
+MATRIX_RUNNER_EXPRESSION = "${{ matrix.runner }}"
+JOB_KEY_PATTERN = re.compile(r"^  [a-zA-Z0-9_-]+:$")
 HOSTED_CACHE_WORKFLOWS = ("platforms.yml", "dependency-health.yml")
 CARGO_DOWNLOAD_CACHE_PATHS = {
     "~/.cargo/git/db",
@@ -463,16 +485,92 @@ def test_rustup_checksum_mismatch_is_rejected(tmp_path) -> None:
         verify_rustup_checksum(rustup_init, INVALID_SHA256)
 
 
-def test_beryl_workflows_bootstrap_rustup_after_python_setup() -> None:
+def test_linux_workflows_bootstrap_rustup_after_python_setup() -> None:
     workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
 
-    for workflow_name in BERYL_WORKFLOWS:
+    for workflow_name in LINUX_WORKFLOWS:
         workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
         python_setup = workflow.index("actions/setup-python@")
         rustup_bootstrap = workflow.index("python scripts/ci/bootstrap_rustup.py")
         toolchain_install = workflow.index("rustup toolchain install")
 
         assert python_setup < rustup_bootstrap < toolchain_install
+
+
+def self_hosted_runner_violations(workflow: str) -> list[str]:
+    """Return runner values that are not literal GitHub-hosted labels."""
+    # This repository is public. A fork pull request runs its own copy of the workflow and can
+    # change any runner expression, so self-hosted runners must never serve it.
+    jobs = workflow.split("\njobs:\n", maxsplit=1)[1]
+    job_count = sum(1 for line in jobs.splitlines() if JOB_KEY_PATTERN.fullmatch(line))
+    runs_on = [
+        line.split("runs-on:", 1)[1].strip()
+        for line in jobs.splitlines()
+        if line.startswith("    runs-on:")
+    ]
+    matrix_runners = [
+        line.split("runner:", 1)[1].strip() for line in jobs.splitlines() if "- runner:" in line
+    ]
+    violations = [] if len(runs_on) == job_count else ["job without runs-on"]
+    for value in runs_on:
+        if value == MATRIX_RUNNER_EXPRESSION and matrix_runners:
+            continue
+        if value not in GITHUB_HOSTED_RUNNER_LABELS:
+            violations.append(value)
+    violations.extend(value for value in matrix_runners if value not in GITHUB_HOSTED_RUNNER_LABELS)
+    return violations
+
+
+def test_workflows_use_github_hosted_runners_only() -> None:
+    workflow_paths = sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.y*ml"))
+
+    assert workflow_paths
+    for workflow_path in workflow_paths:
+        assert self_hosted_runner_violations(workflow_path.read_text(encoding="utf-8")) == [], (
+            workflow_path.name
+        )
+
+
+@pytest.mark.parametrize(
+    ("job", "expected"),
+    [
+        pytest.param("    runs-on: ubuntu-24.04\n", [], id="hosted-label"),
+        pytest.param(
+            "    runs-on: ubuntu-beryl\n", ["ubuntu-beryl"], id="custom-hosted-like-label"
+        ),
+        pytest.param(
+            "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        include:\n"
+            "          - runner: macos-15\n",
+            [],
+            id="hosted-matrix",
+        ),
+        pytest.param(
+            "    runs-on: [self-hosted, linux, x64, beryl]\n",
+            ["[self-hosted, linux, x64, beryl]"],
+            id="self-hosted-labels",
+        ),
+        pytest.param(
+            "    runs-on: ${{ github.event_name == 'push' && 'beryl' || 'ubuntu-24.04' }}\n",
+            ["${{ github.event_name == 'push' && 'beryl' || 'ubuntu-24.04' }}"],
+            id="routing-expression",
+        ),
+        pytest.param(
+            "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        include:\n"
+            "          - runner: beryl\n",
+            ["beryl"],
+            id="self-hosted-matrix",
+        ),
+        pytest.param(
+            "    uses: ./.github/workflows/reusable.yml\n",
+            ["job without runs-on"],
+            id="reusable-workflow",
+        ),
+    ],
+)
+def test_self_hosted_runner_policy(job: str, expected: list[str]) -> None:
+    workflow = f"name: Synthetic\n\non: [pull_request]\n\njobs:\n  build:\n{job}    steps:\n      - run: true\n"
+
+    assert self_hosted_runner_violations(workflow) == expected
 
 
 def test_frozen_uv_workflows_have_a_committed_lockfile() -> None:
@@ -487,10 +585,10 @@ def test_frozen_uv_workflows_have_a_committed_lockfile() -> None:
     assert uv_lock.name not in ignored_paths
 
 
-def test_beryl_workflows_do_not_transfer_dependency_caches() -> None:
+def test_linux_workflows_do_not_transfer_dependency_caches() -> None:
     workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
 
-    for workflow_name in BERYL_WORKFLOWS:
+    for workflow_name in LINUX_WORKFLOWS:
         workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
 
         assert "uses: actions/cache@" not in workflow
@@ -499,7 +597,7 @@ def test_beryl_workflows_do_not_transfer_dependency_caches() -> None:
 def test_explicit_binding_builds_skip_project_install_during_uv_sync() -> None:
     workflow_directory = REPOSITORY_ROOT / ".github" / "workflows"
 
-    for workflow_name in BERYL_WORKFLOWS:
+    for workflow_name in LINUX_WORKFLOWS:
         workflow = (workflow_directory / workflow_name).read_text(encoding="utf-8")
         sync_commands = [line.strip() for line in workflow.splitlines() if "uv sync" in line]
 
