@@ -6,7 +6,10 @@ rust-version = "1.88"
 
 [dependencies]
 # DICOM handling
-dicom = "=0.10.0"
+# Default features off: `pixeldata` brings the dicom-rs built-in JPEG and RLE readers, which
+# would replace the dicom-preprocessing readers in a consumer (Aegis). Only parser and
+# transfer-syntax APIs are used here.
+dicom = { version = "=0.10.0", default-features = false, features = ["inventory-registry"] }
 dicom-core = "=0.10.0"
 dicom-dictionary-std = "=0.10.0"
 dicom-object = "=0.10.0"
